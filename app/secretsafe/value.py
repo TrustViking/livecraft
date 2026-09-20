@@ -19,9 +19,12 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from enum import Enum
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from app.ui import messages_ru as msg
+
+if TYPE_CHECKING:      # только для аннотаций: crypto.py сам импортирует SecretField, кольца в рантайме нет
+    from app.secretsafe.crypto import EncryptedField, VaultCrypto
 
 FINGERPRINT_CHARS: Final[int] = 4      # первые 4 hex sha256: различить два значения — да, восстановить — нет
 TAIL_HEAD_CHARS: Final[int] = 3        # у ключа API показываем начало…
@@ -119,6 +122,16 @@ class SecretValue:
         if not self.value:
             return text
         return text.replace(self.value, self.log_label)
+
+    def encrypt(self, crypto: VaultCrypto) -> EncryptedField:
+        """Зашифровать себя переданным шифратором и отдать зашифрованное поле.
+
+        Шифрование — операция внутри сейфа, а не выдача значения наружу, поэтому правило принадлежит самому
+        секрету (§0): значение объект не покидает, наружу уходит только шифротекст. Своё поле секрет тоже
+        называет сам — от него зависит привязка блоба к месту (AAD в VaultCrypto), и перепутать её вызывающий
+        уже не может.
+        """
+        return crypto.encrypt(self.field, self.value)
 
     @property
     def _tail_mask(self) -> str:

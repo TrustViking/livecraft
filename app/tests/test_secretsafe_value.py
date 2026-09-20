@@ -10,6 +10,13 @@ from pathlib import Path
 import pytest
 
 from app.observability.logging_setup import close_logging, get_logger, setup_logging
+from app.secretsafe.crypto import (
+    SALT_BYTES,
+    VAULT_KEY_BYTES,
+    EncryptedField,
+    VaultCrypto,
+    VaultDecryptError,
+)
 from app.secretsafe.value import (
     FINGERPRINT_CHARS,
     MASK_HIDDEN,
@@ -278,3 +285,63 @@ def test_scrub_does_not_touch_other_secrets() -> None:
     assert OPENAI_KEY not in scrubbed
     assert FORM_URL in scrubbed
     assert form.scrub(scrubbed) == f"{key.log_label} {form.log_label}"
+
+
+# --- encrypt: шифрование — правило самого секрета (§0, §7.4)
+
+
+VAULT_KEY: bytes = bytes(range(VAULT_KEY_BYTES))
+SALT: bytes = bytes(range(SALT_BYTES))
+
+
+@pytest.fixture
+def crypto() -> VaultCrypto:
+    return VaultCrypto(key=VAULT_KEY, salt=SALT)
+
+
+def test_encrypt_gives_what_the_cipher_would_give_directly(secret: SecretValue, crypto: VaultCrypto) -> None:
+    """Нонс случайный, поэтому сверяем не байты, а то, что расшифровывается: результат тот же."""
+    by_secret: EncryptedField = secret.encrypt(crypto)
+    by_cipher: EncryptedField = crypto.encrypt(secret.field, SECRETS[secret.field])
+    assert by_secret.nonce != by_cipher.nonce
+    assert crypto.decrypt(secret.field, by_secret) == crypto.decrypt(secret.field, by_cipher)
+
+
+def test_an_encrypted_field_decrypts_back_into_the_value(secret: SecretValue, crypto: VaultCrypto) -> None:
+    assert crypto.decrypt(secret.field, secret.encrypt(crypto)) == SECRETS[secret.field]
+
+
+def test_the_ciphertext_carries_no_value(secret: SecretValue, crypto: VaultCrypto) -> None:
+    blob: EncryptedField = secret.encrypt(crypto)
+    assert SECRETS[secret.field].encode("utf-8") not in blob.ciphertext
+
+
+def test_two_encryptions_of_one_secret_differ(secret: SecretValue, crypto: VaultCrypto) -> None:
+    """Нонс новый на каждое шифрование — за это отвечает VaultCrypto, а секрет ему не мешает."""
+    first: EncryptedField = secret.encrypt(crypto)
+    second: EncryptedField = secret.encrypt(crypto)
+    assert first.nonce != second.nonce and first.ciphertext != second.ciphertext
+
+
+def test_the_secret_names_its_own_field_so_the_binding_holds(crypto: VaultCrypto) -> None:
+    """Поле берётся из самого секрета: блоб чужого поля не расшифруется, перепутать привязку нельзя."""
+    sheets: SecretValue = SecretValue(field=SecretField.SHEETS_ID, value=SHEETS_ID)
+    blob: EncryptedField = sheets.encrypt(crypto)
+    assert crypto.decrypt(SecretField.SHEETS_ID, blob) == SHEETS_ID
+    with pytest.raises(VaultDecryptError):
+        crypto.decrypt(SecretField.KEY_FORM_URL, blob)
+
+
+def test_every_field_keeps_its_own_binding(crypto: VaultCrypto) -> None:
+    for field, value in SECRETS.items():
+        blob: EncryptedField = SecretValue(field=field, value=value).encrypt(crypto)
+        for other in SecretField:
+            if other is field:
+                continue
+            with pytest.raises(VaultDecryptError):
+                crypto.decrypt(other, blob)
+
+
+def test_an_empty_value_encrypts_and_comes_back_empty(crypto: VaultCrypto) -> None:
+    empty: SecretValue = SecretValue(field=SecretField.SHEETS_RANGE, value="")
+    assert crypto.decrypt(SecretField.SHEETS_RANGE, empty.encrypt(crypto)) == ""

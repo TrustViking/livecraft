@@ -163,9 +163,9 @@ class VaultStore:
             secret: SecretValue | None = self._own_secret(vault, field)
             if secret is None:
                 continue
-            # Единственная точка, где значение выходит из SecretValue в этом пакете: зашифровать можно
-            # только то, что прочитано. Открытый текст живёт до конца этой строки и остаётся в памяти (§7.4).
-            fields[field.value] = crypto.encrypt(field, secret.reveal())
+            # Шифрует себя сам секрет: значение не выходит из SecretValue, сюда возвращается только
+            # шифротекст, и своё поле (а с ним привязку блоба к месту) секрет называет сам (§7.4, §0).
+            fields[field.value] = secret.encrypt(crypto)
         wrapped_key: bytes = self.dpapi.protect(key)
         text: str = VaultFile(
             version=FORMAT_VERSION, salt=salt, fields=fields, wrapped_key=wrapped_key

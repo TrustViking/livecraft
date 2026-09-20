@@ -408,3 +408,48 @@ def test_a_failed_save_leaves_the_previous_local_file_untouched(store: VaultStor
 def test_the_source_names_are_english_identifiers() -> None:
     """Значение уходит в лог вместо пути к секретам (§7.4)."""
     assert [source.value for source in VaultSource] == ["supplied", "local"]
+
+
+def test_a_local_file_written_the_old_way_still_reads(store: VaultStore) -> None:
+    """Формат не менялся: файл, чьи поля зашифрованы вызовом VaultCrypto напрямую, читается как свой.
+
+    Так локальный сейф писался до того, как шифрование стало правилом самого секрета (задача 1.3a) —
+    и так его пишет сборка Артура для поставочного файла.
+    """
+    key: bytes = bytes(range(VAULT_KEY_BYTES))
+    salt: bytes = VaultFile.empty().salt
+    crypto: VaultCrypto = VaultCrypto(key=key, salt=salt)
+    fields: dict[str, EncryptedField] = {
+        field.value: crypto.encrypt(field, value) for field, value in OWN_VALUES.items()
+    }
+    store.local_path.write_text(
+        VaultFile(
+            version=FORMAT_VERSION, salt=salt, fields=fields, wrapped_key=store.dpapi.protect(key)
+        ).render(),
+        encoding=VAULT_FILE_ENCODING,
+    )
+    vault: Vault = store.load()
+    for field, value in OWN_VALUES.items():
+        secret: SecretValue | None = vault.get(field)
+        assert secret is not None and secret.reveal() == value
+        assert vault.origin_of(field) is VaultOrigin.OWN
+
+
+def test_a_file_written_now_and_one_written_the_old_way_have_the_same_shape(store: VaultStore) -> None:
+    """Набор записей в файле тот же: поменялось, кто зовёт шифратор, а не что ложится на диск."""
+    store.save_local(_own_vault(OWN_VALUES))
+    now: dict[str, Any] = _local_json(store)
+    salt: bytes = VaultFile.empty().salt
+    crypto: VaultCrypto = VaultCrypto(key=PROGRAM_KEY, salt=salt)
+    old: dict[str, Any] = json.loads(
+        VaultFile(
+            version=FORMAT_VERSION,
+            salt=salt,
+            fields={field.value: crypto.encrypt(field, value) for field, value in OWN_VALUES.items()},
+            wrapped_key=b"wrapped",
+        ).render()
+    )
+    assert sorted(now) == sorted(old)
+    assert sorted(now[KEY_FIELDS]) == sorted(old[KEY_FIELDS])
+    for name in now[KEY_FIELDS]:
+        assert sorted(now[KEY_FIELDS][name]) == sorted(old[KEY_FIELDS][name])
