@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -9,7 +10,14 @@ import pytest
 
 from app.main import ExitCode, RunRequest, build_parser, run_cli
 from app.observability.logging_setup import close_logging
-from app.paths import ROOT_ENV_VAR
+from app.paths import ROOT_ENV_VAR, LivecraftPaths, build_paths, ensure_dirs
+from app.runtime.single_instance import (
+    EVENT_ACQUIRED,
+    EVENT_REJECTED,
+    EVENT_RELEASED,
+    InstanceLock,
+    LockOwner,
+)
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
 
@@ -21,6 +29,29 @@ def _closed_logging() -> Iterator[None]:
     """Лог запуска закрывается и в тестах: иначе Windows не отдаст tmp_path."""
     yield
     close_logging()
+
+
+@pytest.fixture
+def dead_pid() -> int:
+    """Честный номер мёртвого процесса: запускаем python с пустой командой и дожидаемся его конца."""
+    child: subprocess.Popen[bytes] = subprocess.Popen([sys.executable, "-c", ""])
+    child.wait()
+    return child.pid
+
+
+@pytest.fixture
+def live_foreign_process() -> Iterator[subprocess.Popen[bytes]]:
+    """Живой посторонний процесс: его номером занимаем замок, как это делает первый экземпляр."""
+    child: subprocess.Popen[bytes] = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        yield child
+    finally:
+        child.kill()
+        child.wait()
 
 
 @pytest.fixture
@@ -182,3 +213,55 @@ def test_debug_puts_the_log_into_the_terminal(
     captured: pytest.CaptureResult[str] = capsys.readouterr()
     assert "run_started version=" in captured.err          # сырой лог — в stderr
     assert msg.SETUP_REQUIRED in captured.out              # тексты оператора — в stdout
+
+
+def test_a_run_leaves_no_lock_behind(livecraft_root: Path) -> None:
+    """Замок снимается на любом исходе: следующий запуск не должен спотыкаться о прошлый."""
+    assert run_cli([]) == int(ExitCode.CONFIG)
+    assert not build_paths(livecraft_root).lock_file.exists()
+
+
+def test_the_run_writes_acquire_and_release_into_the_startup_log(livecraft_root: Path) -> None:
+    """Замок берётся до настройки логов, поэтому его след — logs\\startup.log (инвариант 12)."""
+    assert run_cli([]) == int(ExitCode.CONFIG)
+    text: str = build_paths(livecraft_root).startup_log_file.read_text(encoding="utf-8")
+    assert EVENT_ACQUIRED in text and EVENT_RELEASED in text
+
+
+def test_a_live_lock_stops_the_run(
+    livecraft_root: Path,
+    live_foreign_process: subprocess.Popen[bytes],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Второй экземпляр: русская строка в stderr, код 1, файла лога этого запуска нет (инвариант 12)."""
+    paths: LivecraftPaths = build_paths(livecraft_root)
+    ensure_dirs(paths)
+    InstanceLock(
+        path=paths.lock_file, startup_log=paths.startup_log_file, pid=live_foreign_process.pid
+    ).acquire()
+    held: bytes = paths.lock_file.read_bytes()
+    owner: LockOwner | None = LockOwner.parse(held.decode("utf-8"))
+    assert owner is not None
+    assert run_cli([]) == int(ExitCode.ERRORS)
+    captured: pytest.CaptureResult[str] = capsys.readouterr()
+    assert msg.LOCK_REJECTED.format(pid=owner.pid, started_at=owner.started_at) in captured.err
+    assert captured.out == ""                                    # отказ идёт в stderr, не в stdout
+    assert list(paths.logs_dir.glob(LOG_GLOB)) == []              # логи этого запуска не настраивались
+    assert EVENT_REJECTED in paths.startup_log_file.read_text(encoding="utf-8")
+    assert paths.lock_file.read_bytes() == held                   # чужой замок не тронут
+
+
+def test_a_stale_lock_does_not_stop_the_run(livecraft_root: Path, dead_pid: int) -> None:
+    """Замок мёртвого процесса — застарелый: запуск идёт своим ходом и снимает его за собой."""
+    paths: LivecraftPaths = build_paths(livecraft_root)
+    ensure_dirs(paths)
+    InstanceLock(path=paths.lock_file, startup_log=paths.startup_log_file, pid=dead_pid).acquire()
+    assert run_cli([]) == int(ExitCode.CONFIG)
+    assert not paths.lock_file.exists()
+
+
+def test_version_flag_takes_no_lock(livecraft_root: Path) -> None:
+    """--version ничего не читает и ничего не занимает: argparse выходит внутри parse_args."""
+    with pytest.raises(SystemExit):
+        run_cli(["--version"])
+    assert not livecraft_root.exists()

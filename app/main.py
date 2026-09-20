@@ -20,19 +20,19 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import IntEnum
 from pathlib import Path
+from typing import Final
 
 from app.core.dates import format_datetime_text
 from app.observability.logging_setup import close_logging, get_logger, setup_logging
 from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
+from app.runtime.single_instance import AnotherInstanceRunning, InstanceLock, LockOwner
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
 
 LOGGER = get_logger("main")
 
-PROGRAM_NAME: str = "livecraft"
-AUTH_ALL: str = "all"
-EXPORT_SLOTS_METAVAR: str = "ПУТЬ"
-AUTH_METAVAR: str = "HANDLE"
+PROGRAM_NAME: Final[str] = "livecraft"
+AUTH_ALL: Final[str] = "all"
 
 
 class ExitCode(IntEnum):
@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dry-run", action="store_true", help=msg.HELP_DRY_RUN)
     parser.add_argument("--no-llm", action="store_true", help=msg.HELP_NO_LLM)
-    parser.add_argument("--export-slots", metavar=EXPORT_SLOTS_METAVAR, help=msg.HELP_EXPORT_SLOTS)
+    parser.add_argument("--export-slots", metavar=msg.CLI_METAVAR_PATH, help=msg.HELP_EXPORT_SLOTS)
     parser.add_argument("--debug", action="store_true", help=msg.HELP_DEBUG)
     parser.add_argument(
         "--version",
@@ -102,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     modes: argparse._MutuallyExclusiveGroup = parser.add_mutually_exclusive_group()
     modes.add_argument("--setup", action="store_true", help=msg.HELP_SETUP)
     modes.add_argument("--check", action="store_true", help=msg.HELP_CHECK)
-    modes.add_argument("--auth", metavar=AUTH_METAVAR, help=msg.HELP_AUTH)
+    modes.add_argument("--auth", metavar=msg.CLI_METAVAR_HANDLE, help=msg.HELP_AUTH)
     modes.add_argument("--status", action="store_true", help=msg.HELP_STATUS)
     return parser
 
@@ -111,26 +111,35 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
     # Консоль настраивается до разбора флагов: --help, --version и ошибку разбора печатает сам argparse,
     # и в консоли с кодировкой cp1251 «→» из CLI_DESCRIPTION иначе роняет запуск вместо вывода справки.
     _configure_console()
-    # Здесь берётся файл-замок state\livecraft.lock — до настройки логов (CLAUDE.md §6, инвариант 12).
     request: RunRequest = RunRequest.from_args(build_parser().parse_args(argv))
     paths: LivecraftPaths = build_paths(resolve_root())
     ensure_dirs(paths)
-    log_path: Path = setup_logging(paths.logs_dir, debug=request.debug)
-    LOGGER.info(
-        "run_started version=%s root=%s %s log=%s",
-        APP_VERSION,
-        paths.root,
-        request.log_line,
-        log_path,
-    )
-    now_utc: datetime = datetime.now(timezone.utc)
-    _say_title(now_utc)
+    # Замок — до настройки логов и после ensure_dirs: без state\ и logs\ ему некуда лечь
+    # (CLAUDE.md §6, инвариант 12). Сбой файловой системы здесь не перехватывается: лога,
+    # в который пишется причина падения, ещё нет.
+    lock: InstanceLock = InstanceLock(path=paths.lock_file, startup_log=paths.startup_log_file)
     try:
+        lock.acquire()
+    except AnotherInstanceRunning as conflict:
+        _say_lock_rejected(conflict.owner)
+        return int(ExitCode.ERRORS)
+    try:
+        log_path: Path = setup_logging(paths.logs_dir, debug=request.debug)
+        LOGGER.info(
+            "run_started version=%s root=%s %s log=%s",
+            APP_VERSION,
+            paths.root,
+            request.log_line,
+            log_path,
+        )
+        now_utc: datetime = datetime.now(timezone.utc)
+        _say_title(now_utc)
         exit_code: int = _run_guarded(request, paths, log_path)
         LOGGER.info("run_finished exit_code=%d", exit_code)
         return exit_code
     finally:
         close_logging()
+        lock.release()
 
 
 def _run_guarded(request: RunRequest, paths: LivecraftPaths, log_path: Path) -> int:
@@ -166,6 +175,19 @@ def _configure_console() -> None:
 def _say(text: str) -> None:
     """flush — чтобы строка была видна сразу и в собранном exe, а не в конце запуска."""
     print(text, flush=True)
+
+
+def _say_error(text: str) -> None:
+    """Отказ запуска — в stderr: в stdout идут только тексты работающего запуска."""
+    print(text, file=sys.stderr, flush=True)
+
+
+def _say_lock_rejected(owner: LockOwner) -> None:
+    """Замок занят: называем владельца, если его удалось опознать (инвариант 12)."""
+    if owner.is_known:
+        _say_error(msg.LOCK_REJECTED.format(pid=owner.pid, started_at=owner.started_at))
+        return
+    _say_error(msg.LOCK_REJECTED_UNKNOWN_OWNER)
 
 
 def _say_title(now_utc: datetime) -> None:

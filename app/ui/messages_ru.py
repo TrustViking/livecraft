@@ -27,6 +27,9 @@ HELP_STATUS: Final[str] = "сверка эфиров livecraft, keys.txt и от
 HELP_DEBUG: Final[str] = "подробный лог в терминал"
 HELP_VERSION: Final[str] = "показать номер версии и выйти"
 VERSION_TEXT: Final[str] = "Livecraft {version}"
+# Подписи значений в справке argparse: их видит человек, поэтому они здесь, а не в main.py (§11).
+CLI_METAVAR_PATH: Final[str] = "ПУТЬ"
+CLI_METAVAR_HANDLE: Final[str] = "НИК"
 
 # --- шапка запуска: первая строка любого запуска, время — то же, что в отчёте этого запуска
 CONSOLE_TITLE: Final[str] = "Livecraft {version} — {generated_at}"
@@ -35,6 +38,16 @@ CONSOLE_TITLE: Final[str] = "Livecraft {version} — {generated_at}"
 SETUP_REQUIRED: Final[str] = (
     "Livecraft ещё не настроен: нет ни ключа OpenAI, ни ссылки на таблицу плана, ни ссылки на форму ключей. "
     "Запустите livecraft.bat --setup и заполните настройки."
+)
+
+# --- один экземпляр на машину (CLAUDE.md §6, инвариант 12): замок занят — работать нельзя
+LOCK_REJECTED: Final[str] = (
+    "Livecraft уже работает на этой машине: процесс {pid}, запущен {started_at}. "
+    "Дождитесь окончания первого запуска или закройте его окно."
+)
+LOCK_REJECTED_UNKNOWN_OWNER: Final[str] = (
+    "Livecraft уже работает на этой машине, но какой именно процесс держит запуск — определить не удалось. "
+    "Закройте открытые окна Livecraft и запустите заново."
 )
 
 # --- обрыв и падение запуска (app\main.py::run_cli)
