@@ -109,6 +109,17 @@ class SecretValue:
         """Что уходит в лог вместо значения: `key-form(9c2b)` (§7.4)."""
         return LOG_LABEL_TEMPLATE.format(label=self.field.log_label, fingerprint=self.fingerprint)
 
+    def scrub(self, text: str) -> str:
+        """Вычеркнуть своё значение из готовой строки, подставив вместо него ярлык с отпечатком.
+
+        Вычёркиванием занимается сам секрет, а не фильтр логов: так значение не покидает объект — фильтру
+        незачем знать, что именно он вычёркивает (§7.4, первый пункт). Пустое значение строку не меняет:
+        пустая подстрока нашлась бы в любом тексте.
+        """
+        if not self.value:
+            return text
+        return text.replace(self.value, self.log_label)
+
     @property
     def _tail_mask(self) -> str:
         """«sk-…dc7f»; короткое значение скрывается целиком — из трёх символов складывается весь секрет."""

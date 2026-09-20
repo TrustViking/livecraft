@@ -231,3 +231,50 @@ def test_percent_style_logging_of_the_owner_also_masks(secret: SecretValue, tmp_
     logging.getLogger("googleapiclient.discovery").warning("%r", _Owner(name="x", secret=secret))
     close_logging()
     assert secret.reveal() not in log_path.read_text(encoding="utf-8")
+
+
+# --- scrub: вычёркивание значения из готовой строки (§7.4, страховка фильтра логов)
+
+
+def test_scrub_replaces_the_value_with_the_log_label(secret: SecretValue) -> None:
+    text: str = f"GET {secret.reveal()} returned 200"
+    scrubbed: str = secret.scrub(text)
+    assert secret.reveal() not in scrubbed
+    assert secret.log_label in scrubbed
+    assert scrubbed == f"GET {secret.log_label} returned 200"
+
+
+def test_scrub_replaces_every_occurrence_not_just_the_first(secret: SecretValue) -> None:
+    value: str = secret.reveal()
+    scrubbed: str = secret.scrub(f"{value} -> {value} -> {value}")
+    assert value not in scrubbed
+    assert scrubbed.count(secret.log_label) == 3
+
+
+def test_scrub_leaves_a_text_without_the_value_alone(secret: SecretValue) -> None:
+    text: str = r"run_started version=0.1.0 root=D:\_exe\Livecraft"
+    assert secret.scrub(text) == text
+
+
+def test_scrub_of_an_empty_secret_changes_nothing() -> None:
+    """Пустая подстрока нашлась бы в любом тексте — пустое значение вычёркивать нечем."""
+    empty: SecretValue = SecretValue(field=SecretField.SHEETS_RANGE, value="")
+    text: str = "form_ready questions=6"
+    assert empty.scrub(text) == text
+    assert empty.scrub("") == ""
+
+
+def test_scrub_works_on_a_value_glued_to_other_text(secret: SecretValue) -> None:
+    """Секрет в логе чужой библиотеки редко стоит отдельным словом — чаще внутри URL или JSON."""
+    scrubbed: str = secret.scrub(f'{{"url":"{secret.reveal()}","code":200}}')
+    assert secret.reveal() not in scrubbed and secret.log_label in scrubbed
+
+
+def test_scrub_does_not_touch_other_secrets() -> None:
+    """Каждый секрет вычёркивает только своё: чужое значение остаётся делом чужого объекта."""
+    key: SecretValue = SecretValue(field=SecretField.OPENAI_API_KEY, value=OPENAI_KEY)
+    form: SecretValue = SecretValue(field=SecretField.KEY_FORM_URL, value=FORM_URL)
+    scrubbed: str = key.scrub(f"{OPENAI_KEY} {FORM_URL}")
+    assert OPENAI_KEY not in scrubbed
+    assert FORM_URL in scrubbed
+    assert form.scrub(scrubbed) == f"{key.log_label} {form.log_label}"

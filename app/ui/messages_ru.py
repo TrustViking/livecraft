@@ -58,6 +58,14 @@ VAULT_FIELD_SHEETS_RANGE: Final[str] = "диапазон таблицы"
 VAULT_FIELD_KEY_FORM_URL: Final[str] = "форма ключей"
 # Маска по отпечатку: название поля и четыре знака sha256 — различить два значения можно, восстановить нет.
 VAULT_MASK_FINGERPRINT: Final[str] = "{label} (…{fingerprint})"
+# Происхождение поля: пришло со сборкой или его вписал сам пользователь (§7.3).
+VAULT_ORIGIN_SUPPLIED: Final[str] = "поставка"
+VAULT_ORIGIN_OWN: Final[str] = "своё"
+# Сейф заполнен не до конца — запускаться не с чем; перечень недостающих полей строит сам сейф.
+VAULT_NOT_READY: Final[str] = (
+    "Сейф заполнен не до конца: не хватает {fields}. "
+    "Запустите livecraft.bat --setup и впишите недостающие значения."
+)
 
 # --- обрыв и падение запуска (app\main.py::run_cli)
 RUN_INTERRUPTED: Final[str] = (
