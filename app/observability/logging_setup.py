@@ -19,11 +19,13 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from app.core.dates import FILE_STAMP_FORMAT
-from app.secretsafe.value import SecretValue
-from app.secretsafe.vault import Vault
+
+if TYPE_CHECKING:      # только для аннотаций: в рантайме наблюдаемость о сейфе не знает и кольца нет
+    from app.secretsafe.value import SecretValue
+    from app.secretsafe.vault import Vault
 
 ROOT_LOGGER_NAME: Final[str] = "livecraft"
 LOG_FORMAT: Final[str] = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"

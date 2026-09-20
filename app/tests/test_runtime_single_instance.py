@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -26,29 +24,6 @@ STARTED_AT: str = "20-09-2026 15:30"
 def lock(livecraft_paths: LivecraftPaths) -> InstanceLock:
     """Замок в корне из tmp_path: папки state\\ и logs\\ создал ensure_dirs, как в боевом запуске."""
     return InstanceLock(path=livecraft_paths.lock_file, startup_log=livecraft_paths.startup_log_file)
-
-
-@pytest.fixture
-def dead_pid() -> int:
-    """Честный номер мёртвого процесса: запускаем python с пустой командой и дожидаемся его конца."""
-    child: subprocess.Popen[bytes] = subprocess.Popen([sys.executable, "-c", ""])
-    child.wait()
-    return child.pid
-
-
-@pytest.fixture
-def live_foreign_process() -> Iterator[subprocess.Popen[bytes]]:
-    """Живой посторонний процесс: его номером заняты замки в проверках «чужой владелец жив»."""
-    child: subprocess.Popen[bytes] = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        yield child
-    finally:
-        child.kill()
-        child.wait()
 
 
 def _lines(path: Path) -> list[str]:

@@ -14,6 +14,7 @@ from app.secretsafe.crypto import (
     KEY_NONCE,
     KEY_SALT,
     KEY_VERSION,
+    KEY_WRAPPED,
     NONCE_BYTES,
     SALT_BYTES,
     VAULT_KEY_BYTES,
@@ -307,3 +308,81 @@ def test_the_format_constants_are_the_ones_section_seven_names() -> None:
     assert FORMAT_VERSION == 1
     assert HKDF_INFO == b"livecraft.vault.v1"
     assert (VAULT_KEY_BYTES, SALT_BYTES, NONCE_BYTES) == (32, 16, 12)
+
+
+# --- запись «key»: завёрнутый ключ файла (§14, решение 9)
+
+
+WRAPPED_KEY: bytes = b"blob, \x00\xff\x01 which DPAPI would have produced"
+
+
+def test_a_file_without_a_key_record_renders_without_it(crypto: VaultCrypto) -> None:
+    """Так выглядит поставочный файл: ключ приходит извне, записи «key» в нём нет и быть не должно."""
+    text: str = VaultFile(version=FORMAT_VERSION, salt=SALT, fields={}).render()
+    assert KEY_WRAPPED not in text
+    assert KEY_WRAPPED not in json.loads(text)
+
+
+def test_a_file_with_a_key_record_renders_and_parses_back() -> None:
+    """Так выглядит локальный файл: свой ключ лежит в нём пятой записью."""
+    original: VaultFile = VaultFile(
+        version=FORMAT_VERSION, salt=SALT, fields={}, wrapped_key=WRAPPED_KEY
+    )
+    text: str = original.render()
+    assert base64.b64decode(json.loads(text)[KEY_WRAPPED], validate=True) == WRAPPED_KEY
+    assert VaultFile.parse(text) == original
+
+
+def test_a_file_without_a_key_record_parses_with_none() -> None:
+    text: str = json.dumps(
+        {KEY_VERSION: FORMAT_VERSION, KEY_SALT: base64.b64encode(SALT).decode("ascii"), KEY_FIELDS: {}}
+    )
+    assert VaultFile.parse(text).wrapped_key is None
+
+
+def test_an_empty_file_carries_no_key() -> None:
+    assert VaultFile.empty().wrapped_key is None
+
+
+def test_fields_and_a_key_record_live_together(crypto: VaultCrypto) -> None:
+    fields: dict[str, EncryptedField] = {
+        field.value: crypto.encrypt(field, VALUES[field]) for field in ALL_FIELDS
+    }
+    original: VaultFile = VaultFile(
+        version=FORMAT_VERSION, salt=SALT, fields=fields, wrapped_key=WRAPPED_KEY
+    )
+    restored: VaultFile = VaultFile.parse(original.render())
+    assert restored == original
+    reader: VaultCrypto = VaultCrypto(key=VAULT_KEY, salt=restored.salt)
+    for field in ALL_FIELDS:
+        assert reader.decrypt(field, restored.fields[field.value]) == VALUES[field]
+
+
+@pytest.mark.parametrize("wrapped", ["не base64!", "", None, 42, [], {}])
+def test_a_broken_key_record_is_an_error(wrapped: Any) -> None:
+    """Запись есть, но прочитать её нельзя — ошибка формата, а не «ключа нет»."""
+    text: str = json.dumps(
+        {
+            KEY_VERSION: FORMAT_VERSION,
+            KEY_SALT: base64.b64encode(SALT).decode("ascii"),
+            KEY_FIELDS: {},
+            KEY_WRAPPED: wrapped,
+        }
+    )
+    with pytest.raises(VaultFormatError) as raised:
+        VaultFile.parse(text)
+    assert KEY_WRAPPED in str(raised.value)
+
+
+def test_the_key_record_error_carries_no_key_material() -> None:
+    text: str = json.dumps(
+        {
+            KEY_VERSION: FORMAT_VERSION,
+            KEY_SALT: base64.b64encode(SALT).decode("ascii"),
+            KEY_FIELDS: {},
+            KEY_WRAPPED: "секретный мусор!",
+        }
+    )
+    with pytest.raises(VaultFormatError) as raised:
+        VaultFile.parse(text)
+    assert "секретный мусор" not in str(raised.value)

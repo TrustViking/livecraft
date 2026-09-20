@@ -32,29 +32,6 @@ def _closed_logging() -> Iterator[None]:
 
 
 @pytest.fixture
-def dead_pid() -> int:
-    """Честный номер мёртвого процесса: запускаем python с пустой командой и дожидаемся его конца."""
-    child: subprocess.Popen[bytes] = subprocess.Popen([sys.executable, "-c", ""])
-    child.wait()
-    return child.pid
-
-
-@pytest.fixture
-def live_foreign_process() -> Iterator[subprocess.Popen[bytes]]:
-    """Живой посторонний процесс: его номером занимаем замок, как это делает первый экземпляр."""
-    child: subprocess.Popen[bytes] = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        yield child
-    finally:
-        child.kill()
-        child.wait()
-
-
-@pytest.fixture
 def livecraft_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Корень как после установки без настройки: ни сейфа, ни конфигов (CLAUDE.md §8)."""
     root: Path = tmp_path / "root"

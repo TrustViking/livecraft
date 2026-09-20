@@ -1,0 +1,410 @@
+from __future__ import annotations
+
+import base64
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from app.paths import LivecraftPaths
+from app.secretsafe.crypto import (
+    FORMAT_VERSION,
+    KEY_CIPHERTEXT,
+    KEY_FIELDS,
+    KEY_SALT,
+    KEY_VERSION,
+    KEY_WRAPPED,
+    SALT_BYTES,
+    VAULT_KEY_BYTES,
+    EncryptedField,
+    VaultCrypto,
+    VaultFile,
+    VaultFormatError,
+)
+from app.secretsafe.dpapi import Dpapi, DpapiUnavailable
+from app.secretsafe.store import VAULT_FILE_ENCODING, ProgramKey, VaultSource, VaultStore
+from app.secretsafe.value import SecretField, SecretValue
+from app.secretsafe.vault import Vault, VaultOrigin
+
+SUPPLIED_VALUES: dict[SecretField, str] = {
+    SecretField.OPENAI_API_KEY: "sk-proj-supplied-Ab3dEfGhIjKlMnOpQrStUvWxYz0123456789",
+    SecretField.SHEETS_ID: "1supplied-B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ-abcdefg",
+    SecretField.SHEETS_RANGE: "A:F",
+    SecretField.KEY_FORM_URL: "https://docs.google.com/forms/d/e/1FAIpQLSf-supplied/viewform",
+}
+OWN_VALUES: dict[SecretField, str] = {
+    SecretField.SHEETS_ID: "1own-B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ-own-table",
+    SecretField.KEY_FORM_URL: "https://docs.google.com/forms/d/e/1FAIpQLSf-own/viewform",
+}
+PROGRAM_KEY: bytes = bytes(range(VAULT_KEY_BYTES))
+ALL_FIELDS: tuple[SecretField, ...] = tuple(SecretField)
+
+
+def _secret(field: SecretField, value: str) -> SecretValue:
+    return SecretValue(field=field, value=value)
+
+
+@pytest.fixture
+def program_key_file(livecraft_paths: LivecraftPaths) -> Path:
+    """Ключ поставочного сейфа в dev-режиме: файл secrets\\program.key (§7.3)."""
+    livecraft_paths.program_key_file.write_bytes(PROGRAM_KEY)
+    return livecraft_paths.program_key_file
+
+
+@pytest.fixture
+def store(livecraft_paths: LivecraftPaths, program_key_file: Path) -> VaultStore:
+    """Сейф на временном корне с известным поставочным ключом — собирается боевым путём."""
+    return VaultStore(
+        supplied_path=livecraft_paths.vault_file,
+        local_path=livecraft_paths.vault_local_file,
+        program_key=ProgramKey.load(program_key_file),
+        dpapi=Dpapi.load(),
+    )
+
+
+def _write_supplied(store: VaultStore, values: dict[SecretField, str]) -> bytes:
+    """Поставочный файл так пишет сборка Артура: ключ снаружи, записи «key» в файле нет.
+
+    Программа этот файл писать не умеет и не должна — поэтому в тесте он собирается напрямую из VaultFile.
+    """
+    salt: bytes = VaultFile.empty().salt
+    crypto: VaultCrypto = VaultCrypto(key=PROGRAM_KEY, salt=salt)
+    fields: dict[str, EncryptedField] = {
+        field.value: crypto.encrypt(field, value) for field, value in values.items()
+    }
+    store.supplied_path.write_text(
+        VaultFile(version=FORMAT_VERSION, salt=salt, fields=fields).render(), encoding=VAULT_FILE_ENCODING
+    )
+    return store.supplied_path.read_bytes()
+
+
+def _own_vault(values: dict[SecretField, str]) -> Vault:
+    vault: Vault = Vault.empty()
+    for field, value in values.items():
+        vault = vault.with_field(field, _secret(field, value), VaultOrigin.OWN)
+    return vault
+
+
+def _local_json(store: VaultStore) -> dict[str, Any]:
+    return json.loads(store.local_path.read_text(encoding=VAULT_FILE_ENCODING))
+
+
+def _rewrite_local(store: VaultStore, data: dict[str, Any]) -> None:
+    store.local_path.write_text(json.dumps(data), encoding=VAULT_FILE_ENCODING)
+
+
+# --- приоритет: локальное поверх поставочного (§7.3, таблица приоритета)
+
+
+def test_a_local_field_overrides_the_supplied_one(store: VaultStore) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.save_local(_own_vault(OWN_VALUES))
+    vault: Vault = store.load()
+    assert vault.is_ready
+    for field in ALL_FIELDS:
+        secret: SecretValue | None = vault.get(field)
+        assert secret is not None
+        expected: str = OWN_VALUES.get(field, SUPPLIED_VALUES[field])
+        assert secret.reveal() == expected
+
+
+def test_each_field_carries_the_origin_of_the_file_it_came_from(store: VaultStore) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.save_local(_own_vault(OWN_VALUES))
+    vault: Vault = store.load()
+    assert vault.origin_of(SecretField.SHEETS_ID) is VaultOrigin.OWN
+    assert vault.origin_of(SecretField.KEY_FORM_URL) is VaultOrigin.OWN
+    assert vault.origin_of(SecretField.OPENAI_API_KEY) is VaultOrigin.SUPPLIED
+    assert vault.origin_of(SecretField.SHEETS_RANGE) is VaultOrigin.SUPPLIED
+
+
+def test_without_a_local_file_the_vault_is_the_supplied_one(store: VaultStore) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    vault: Vault = store.load()
+    assert vault.is_ready
+    assert all(vault.origin_of(field) is VaultOrigin.SUPPLIED for field in ALL_FIELDS)
+
+
+def test_without_a_supplied_file_the_vault_is_the_local_one(store: VaultStore) -> None:
+    store.save_local(_own_vault(OWN_VALUES))
+    vault: Vault = store.load()
+    assert not store.supplied_path.exists()
+    assert vault.missing == (SecretField.OPENAI_API_KEY, SecretField.SHEETS_RANGE)
+    assert vault.origin_of(SecretField.SHEETS_ID) is VaultOrigin.OWN
+
+
+def test_without_both_files_the_vault_is_empty_and_not_ready(store: VaultStore) -> None:
+    """Чистая установка до настройщика: сейф пуст, запускаться не с чем (§8)."""
+    vault: Vault = store.load()
+    assert vault.entries == {}
+    assert not vault.is_ready
+    assert vault.missing == ALL_FIELDS
+    assert vault.admission_reason is not None
+
+
+# --- поставочный файл не переписывается никогда (§7.3)
+
+
+def test_saving_the_local_vault_does_not_touch_the_supplied_file(store: VaultStore) -> None:
+    """Сверка побайтно и по времени правки — обещание §7.4 «поставочный файл не изменился»."""
+    before: bytes = _write_supplied(store, SUPPLIED_VALUES)
+    stat_before: os.stat_result = store.supplied_path.stat()
+    store.save_local(_own_vault(OWN_VALUES))
+    store.save_local(_own_vault(OWN_VALUES))
+    assert store.supplied_path.read_bytes() == before
+    stat_after: os.stat_result = store.supplied_path.stat()
+    assert stat_after.st_mtime_ns == stat_before.st_mtime_ns
+    assert stat_after.st_size == stat_before.st_size
+
+
+def test_saving_writes_only_the_local_file(store: VaultStore) -> None:
+    store.save_local(_own_vault(OWN_VALUES))
+    assert store.local_path.is_file()
+    assert not store.supplied_path.exists()      # поставочный файл программа не создаёт
+
+
+def test_the_supplied_file_never_gets_a_wrapped_key_record(store: VaultStore) -> None:
+    """Записи «key» в поставочном файле быть не должно (§14, решение 9)."""
+    _write_supplied(store, SUPPLIED_VALUES)
+    assert KEY_WRAPPED not in json.loads(store.supplied_path.read_text(encoding=VAULT_FILE_ENCODING))
+
+
+# --- локальный файл: ключ в самом файле, завёрнутый DPAPI
+
+
+def test_the_local_file_carries_its_wrapped_key(store: VaultStore) -> None:
+    store.save_local(_own_vault(OWN_VALUES))
+    data: dict[str, Any] = _local_json(store)
+    assert sorted(data) == sorted((KEY_VERSION, KEY_SALT, KEY_FIELDS, KEY_WRAPPED))
+    wrapped: bytes = base64.b64decode(data[KEY_WRAPPED], validate=True)
+    assert len(wrapped) > VAULT_KEY_BYTES                       # DPAPI добавляет свою обвязку
+    assert len(Dpapi.load().unprotect(wrapped)) == VAULT_KEY_BYTES
+
+
+def test_the_local_file_carries_no_plaintext(store: VaultStore) -> None:
+    store.save_local(_own_vault(OWN_VALUES))
+    text: str = store.local_path.read_text(encoding=VAULT_FILE_ENCODING)
+    for value in OWN_VALUES.values():
+        assert value not in text
+
+
+def test_a_second_save_gets_a_new_key_and_a_new_salt(store: VaultStore) -> None:
+    """Новый ключ и новая соль на каждую запись: два файла одного сейфа не совпадают побайтно."""
+    store.save_local(_own_vault(OWN_VALUES))
+    first: dict[str, Any] = _local_json(store)
+    store.save_local(_own_vault(OWN_VALUES))
+    second: dict[str, Any] = _local_json(store)
+    assert first[KEY_SALT] != second[KEY_SALT]
+    assert first[KEY_WRAPPED] != second[KEY_WRAPPED]
+    assert first[KEY_FIELDS] != second[KEY_FIELDS]
+    assert store.load().get(SecretField.SHEETS_ID) is not None      # и всё равно читается
+
+
+def test_the_round_trip_returns_the_same_values(store: VaultStore) -> None:
+    store.save_local(_own_vault(OWN_VALUES))
+    vault: Vault = store.load()
+    for field, value in OWN_VALUES.items():
+        secret: SecretValue | None = vault.get(field)
+        assert secret is not None and secret.reveal() == value
+
+
+def test_a_russian_value_survives_the_round_trip(store: VaultStore) -> None:
+    vault: Vault = Vault.empty().with_field(
+        SecretField.SHEETS_RANGE, _secret(SecretField.SHEETS_RANGE, "Лист1!A:F"), VaultOrigin.OWN
+    )
+    store.save_local(vault)
+    restored: SecretValue | None = store.load().get(SecretField.SHEETS_RANGE)
+    assert restored is not None and restored.reveal() == "Лист1!A:F"
+
+
+# --- save_local пишет только свои поля
+
+
+def test_saving_writes_own_fields_and_skips_supplied_ones(store: VaultStore) -> None:
+    """Поставочное значение в локальный файл не переезжает: иначе «сброс к поставке» стал бы невозможен."""
+    mixed: Vault = (
+        Vault.empty()
+        .with_field(
+            SecretField.OPENAI_API_KEY,
+            _secret(SecretField.OPENAI_API_KEY, SUPPLIED_VALUES[SecretField.OPENAI_API_KEY]),
+            VaultOrigin.SUPPLIED,
+        )
+        .with_field(SecretField.SHEETS_ID, _secret(SecretField.SHEETS_ID, OWN_VALUES[SecretField.SHEETS_ID]), VaultOrigin.OWN)
+    )
+    store.save_local(mixed)
+    fields: dict[str, Any] = _local_json(store)[KEY_FIELDS]
+    assert sorted(fields) == [SecretField.SHEETS_ID.value]
+
+
+def test_saving_an_empty_vault_writes_a_file_without_fields(store: VaultStore) -> None:
+    """Так настройщик сбрасывает к поставке всё: файл есть, ключ есть, полей нет."""
+    store.save_local(Vault.empty())
+    data: dict[str, Any] = _local_json(store)
+    assert data[KEY_FIELDS] == {} and KEY_WRAPPED in data
+    assert store.load().entries == {}
+
+
+def test_removing_a_field_returns_the_supplied_value(store: VaultStore) -> None:
+    """Сброс к поставке — удаление поля из локального сейфа, а не правка поставочного (§7.3)."""
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.save_local(_own_vault(OWN_VALUES))
+    store.save_local(store.load().without_field(SecretField.SHEETS_ID))
+    vault: Vault = store.load()
+    secret: SecretValue | None = vault.get(SecretField.SHEETS_ID)
+    assert secret is not None and secret.reveal() == SUPPLIED_VALUES[SecretField.SHEETS_ID]
+    assert vault.origin_of(SecretField.SHEETS_ID) is VaultOrigin.SUPPLIED
+
+
+# --- нечитаемый файл не валит запуск
+
+
+def test_a_tampered_local_field_leaves_the_run_alive_on_the_supplied_vault(store: VaultStore) -> None:
+    """Подменённый байт в шифротексте: локального сейфа как будто нет, поставочный работает."""
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.save_local(_own_vault(OWN_VALUES))
+    data: dict[str, Any] = _local_json(store)
+    record: dict[str, Any] = data[KEY_FIELDS][SecretField.SHEETS_ID.value]
+    blob: bytes = base64.b64decode(record[KEY_CIPHERTEXT], validate=True)
+    record[KEY_CIPHERTEXT] = base64.b64encode(bytes([blob[0] ^ 0x01]) + blob[1:]).decode("ascii")
+    _rewrite_local(store, data)
+    vault: Vault = store.load()
+    assert vault.is_ready
+    for field in ALL_FIELDS:
+        secret: SecretValue | None = vault.get(field)
+        assert secret is not None and secret.reveal() == SUPPLIED_VALUES[field]
+        assert vault.origin_of(field) is VaultOrigin.SUPPLIED
+
+
+def test_a_tampered_wrapped_key_leaves_the_run_alive(store: VaultStore) -> None:
+    """DPAPI сам проверяет целостность: подменённая запись «key» не разворачивается."""
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.save_local(_own_vault(OWN_VALUES))
+    data: dict[str, Any] = _local_json(store)
+    wrapped: bytes = base64.b64decode(data[KEY_WRAPPED], validate=True)
+    data[KEY_WRAPPED] = base64.b64encode(wrapped[:-1] + bytes([wrapped[-1] ^ 0xFF])).decode("ascii")
+    _rewrite_local(store, data)
+    vault: Vault = store.load()
+    assert all(vault.origin_of(field) is VaultOrigin.SUPPLIED for field in ALL_FIELDS)
+
+
+def test_a_local_file_without_a_wrapped_key_is_unreadable(store: VaultStore) -> None:
+    """Локальному файлу запись «key» обязательна: нечем разворачивать — файл нечитаем (§14, решение 9)."""
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.save_local(_own_vault(OWN_VALUES))
+    data: dict[str, Any] = _local_json(store)
+    data.pop(KEY_WRAPPED)
+    _rewrite_local(store, data)
+    vault: Vault = store.load()
+    assert all(vault.origin_of(field) is VaultOrigin.SUPPLIED for field in ALL_FIELDS)
+
+
+def test_a_local_file_read_by_another_windows_account_is_unreadable(store: VaultStore) -> None:
+    """Файл с чужого профиля: ключ завёрнут не нашим DPAPI, развернуть его нельзя — работаем на поставочном."""
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.save_local(_own_vault(OWN_VALUES))
+    data: dict[str, Any] = _local_json(store)
+    data[KEY_WRAPPED] = base64.b64encode(b"blob from another windows account").decode("ascii")
+    _rewrite_local(store, data)
+    assert all(store.load().origin_of(field) is VaultOrigin.SUPPLIED for field in ALL_FIELDS)
+
+
+def test_a_supplied_file_without_a_program_key_is_unreadable(livecraft_paths: LivecraftPaths) -> None:
+    """Нет ProgramKey — поставочный сейф просто не читается, программа работает на локальном (§7.3)."""
+    keyless: VaultStore = VaultStore(
+        supplied_path=livecraft_paths.vault_file,
+        local_path=livecraft_paths.vault_local_file,
+        program_key=ProgramKey(material=None),
+        dpapi=Dpapi.load(),
+    )
+    _write_supplied(keyless, SUPPLIED_VALUES)
+    keyless.save_local(_own_vault(OWN_VALUES))
+    vault: Vault = keyless.load()
+    assert vault.missing == (SecretField.OPENAI_API_KEY, SecretField.SHEETS_RANGE)
+    assert all(vault.origin_of(field) is VaultOrigin.OWN for field in OWN_VALUES)
+
+
+def test_a_supplied_file_under_a_foreign_program_key_is_unreadable(store: VaultStore) -> None:
+    """Чужой ProgramKey: блоб не расшифровался — полей этого файла нет, запуск продолжается."""
+    _write_supplied(store, SUPPLIED_VALUES)
+    foreign: VaultStore = VaultStore(
+        supplied_path=store.supplied_path,
+        local_path=store.local_path,
+        program_key=ProgramKey(material=bytes(VAULT_KEY_BYTES)),
+        dpapi=store.dpapi,
+    )
+    assert foreign.load().entries == {}
+
+
+@pytest.mark.parametrize("version", [0, 2, "1", None])
+def test_an_unknown_format_version_goes_out_as_an_error(store: VaultStore, version: Any) -> None:
+    """§7.3: чужой формат — ошибка наружу (код 2 решает main), а не тихое игнорирование."""
+    _rewrite_local(
+        store,
+        {
+            KEY_VERSION: version,
+            KEY_SALT: base64.b64encode(bytes(SALT_BYTES)).decode("ascii"),
+            KEY_FIELDS: {},
+        },
+    )
+    with pytest.raises(VaultFormatError):
+        store.load()
+
+
+def test_an_unknown_format_version_of_the_supplied_file_goes_out_too(store: VaultStore) -> None:
+    store.supplied_path.write_text(
+        json.dumps({KEY_VERSION: 99, KEY_SALT: base64.b64encode(bytes(SALT_BYTES)).decode("ascii"), KEY_FIELDS: {}}),
+        encoding=VAULT_FILE_ENCODING,
+    )
+    with pytest.raises(VaultFormatError):
+        store.load()
+
+
+def test_an_unknown_field_name_in_the_file_is_ignored(store: VaultStore) -> None:
+    """Поле, которого в этой версии программы нет, не мешает читать остальные."""
+    store.save_local(_own_vault(OWN_VALUES))
+    data: dict[str, Any] = _local_json(store)
+    data[KEY_FIELDS]["telegram_token"] = data[KEY_FIELDS][SecretField.SHEETS_ID.value]
+    _rewrite_local(store, data)
+    vault: Vault = store.load()
+    assert vault.origin_of(SecretField.SHEETS_ID) is VaultOrigin.OWN
+
+
+# --- без DPAPI локальный сейф не пишется
+
+
+def test_saving_without_dpapi_refuses_and_creates_no_file(livecraft_paths: LivecraftPaths) -> None:
+    """DpapiUnavailable наружу, файла нет: «локальный сейф» без привязки к аккаунту был бы обманом (§7.2)."""
+    without_dpapi: VaultStore = VaultStore(
+        supplied_path=livecraft_paths.vault_file,
+        local_path=livecraft_paths.vault_local_file,
+        program_key=ProgramKey(material=PROGRAM_KEY),
+        dpapi=Dpapi(),
+    )
+    with pytest.raises(DpapiUnavailable):
+        without_dpapi.save_local(_own_vault(OWN_VALUES))
+    assert not without_dpapi.local_path.exists()
+
+
+def test_a_failed_save_leaves_the_previous_local_file_untouched(store: VaultStore) -> None:
+    """Запись атомарная: сорвавшаяся вторая запись не рвёт первую."""
+    store.save_local(_own_vault(OWN_VALUES))
+    before: bytes = store.local_path.read_bytes()
+    broken: VaultStore = VaultStore(
+        supplied_path=store.supplied_path,
+        local_path=store.local_path,
+        program_key=store.program_key,
+        dpapi=Dpapi(),
+    )
+    with pytest.raises(DpapiUnavailable):
+        broken.save_local(_own_vault(OWN_VALUES))
+    assert store.local_path.read_bytes() == before
+
+
+# --- имена файлов в логе, а не пути
+
+
+def test_the_source_names_are_english_identifiers() -> None:
+    """Значение уходит в лог вместо пути к секретам (§7.4)."""
+    assert [source.value for source in VaultSource] == ["supplied", "local"]

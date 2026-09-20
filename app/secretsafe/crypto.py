@@ -43,6 +43,7 @@ KEY_SALT: Final[str] = "salt"
 KEY_FIELDS: Final[str] = "fields"
 KEY_NONCE: Final[str] = "nonce"
 KEY_CIPHERTEXT: Final[str] = "ct"
+KEY_WRAPPED: Final[str] = "key"      # завёрнутый DPAPI ключ файла; только у локального сейфа (§14, решение 9)
 
 
 class VaultFormatError(Exception):
@@ -91,15 +92,22 @@ class EncryptedField:
 
 @dataclass(frozen=True)
 class VaultFile:
-    """Содержимое файла сейфа как объект: версия формата, соль файла и зашифрованные поля."""
+    """Содержимое файла сейфа как объект: версия формата, соль файла, зашифрованные поля и, может быть,
+    завёрнутый ключ этого файла.
+
+    `wrapped_key` — пятая запись `"key"` (§14, решение 9): 32 байта ключа файла, завёрнутые DPAPI. Она есть
+    только у локального сейфа; у поставочного ключ приходит извне (`ProgramKey`), и записи `"key"` в нём
+    нет и быть не должно. Кому какая запись положена, решает `VaultStore`; файл лишь умеет её нести.
+    """
 
     version: int
     salt: bytes
     fields: dict[str, EncryptedField]
+    wrapped_key: bytes | None = None
 
     @classmethod
     def empty(cls) -> VaultFile:
-        """Новый файл: своя случайная соль, полей ещё нет."""
+        """Новый файл: своя случайная соль, полей ещё нет, ключа в файле нет."""
         return cls(version=FORMAT_VERSION, salt=os.urandom(SALT_BYTES), fields={})
 
     @classmethod
@@ -124,20 +132,32 @@ class VaultFile:
             version=FORMAT_VERSION,
             salt=salt,
             fields={name: EncryptedField.from_json(name, blob) for name, blob in raw_fields.items()},
+            wrapped_key=cls._decode_wrapped_key(data),
         )
 
     def render(self) -> str:
-        """Текст файла сейфа; писать его на диск — дело VaultStore (задача 1.2)."""
-        return json.dumps(
-            {
-                KEY_VERSION: self.version,
-                KEY_SALT: base64.b64encode(self.salt).decode("ascii"),
-                KEY_FIELDS: {name: blob.to_json() for name, blob in self.fields.items()},
-            },
-            ensure_ascii=True,
-            indent=2,
-            sort_keys=True,
-        )
+        """Текст файла сейфа; писать его на диск — дело VaultStore. Нет ключа — нет и записи «key»."""
+        data: dict[str, Any] = {
+            KEY_VERSION: self.version,
+            KEY_SALT: base64.b64encode(self.salt).decode("ascii"),
+            KEY_FIELDS: {name: blob.to_json() for name, blob in self.fields.items()},
+        }
+        if self.wrapped_key is not None:
+            data[KEY_WRAPPED] = base64.b64encode(self.wrapped_key).decode("ascii")
+        return json.dumps(data, ensure_ascii=True, indent=2, sort_keys=True)
+
+    @staticmethod
+    def _decode_wrapped_key(data: dict[str, Any]) -> bytes | None:
+        """Записи «key» нет — файл её и не несёт (так устроен поставочный сейф); есть, но не base64 — ошибка."""
+        if KEY_WRAPPED not in data:
+            return None
+        raw: Any = data[KEY_WRAPPED]
+        if not isinstance(raw, str) or not raw:
+            raise VaultFormatError(f"{KEY_WRAPPED!r} must be a non-empty base64 string")
+        try:
+            return base64.b64decode(raw, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise VaultFormatError(f"{KEY_WRAPPED!r} is not valid base64: {error}") from error
 
     @staticmethod
     def _decode_salt(data: dict[str, Any]) -> bytes:
