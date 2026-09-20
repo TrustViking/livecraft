@@ -168,6 +168,8 @@ app\
   secretsafe\             сейф: value.py (SecretValue), vault.py (Vault), store.py (VaultStore), crypto.py (AES-GCM + HKDF), dpapi.py (ctypes), program_key.py (генерируется сборкой, в git нет)
   config\                 loader.py → LivecraftConfig (настройки + каналы), объекты ChannelConfig / LivecraftSettings
   observability\          logging_setup.py — маскирование секретов и ключей потока
+  runtime\                single_instance.py (InstanceLock — замок одного экземпляра),
+                          ytdlp_updater.py, deno_updater.py, cookies_updater.py — автообновление внешних бинарников
   sheets\                 client.py (Google Sheets API), plan.py (SheetPlan, SheetRow), rows.py (нормализация, дедуп, язык)
   sources\                fetcher.py (Protocol), ytdlp.py (YtDlpFetcher), preview.py (Preview, нормализация Pillow), metadata.py
   llm\                    client.py, factory.py, providers\, rate_limits.py, usage_tracker.py, model_*.py, merges\ (контракты merge), prompts\
@@ -452,7 +454,7 @@ build_release.bat         exe + инсталлятор без данных оп�
 
 Каждая закрывается экспериментом до реализации соответствующего модуля; результат — строкой сюда.
 
-- **[ПРОВЕРИТЬ]** `tkinter` в установленном `Python 3.13.9` у Артура: `.\.venv_livecraft\Scripts\python.exe -c "import tkinter; print(tkinter.TkVersion)"`. Нет — переустановка Python с компонентом «tcl/tk and IDLE».
+- **Закрыто 20-09-2026:** `tkinter` в `.venv_livecraft` есть, `tkinter.TkVersion` = 8.6. Решение §8.1 (настройщик на Tkinter) выполнимо без переустановки Python.
 - **[ПРОВЕРИТЬ]** Вес one-folder сборки с Tcl/Tk против сборки без него (снять `"tkinter"` из `excludes` и сравнить `dist\`). Если рост окажется неприемлемым — вынести настройщик отдельным маленьким exe из того же кода, а не менять решение §8.1 на браузер.
 - **[ПРОВЕРИТЬ]** DPAPI через `ctypes` на Windows 11 Home (build 26200): `CryptProtectData` без `CRYPTPROTECT_LOCAL_MACHINE`, расшифровка тем же пользователем и отказ под другим пользователем.
 - **[ПРОВЕРИТЬ]** Режим доступа к боевой таблице и боевой форме (открыты по ссылке или выданы поимённо) — от этого зависит, что именно даёт шифрование ссылок (§7.2) и какая формулировка пойдёт в README.
@@ -465,6 +467,9 @@ build_release.bat         exe + инсталлятор без данных оп�
 
 ## 16. Текущее состояние
 
-- 20-09-2026: в `D:\_projects\livecraft` только окружение `.venv_livecraft` (Python 3.13.9), `.vscode\settings.json` и `requirements.txt` со снимком пустого окружения (`pip==26.2.1`). Кода нет. Этот файл — единственный документ проекта.
 - Исходные репозитории на дату разбора: `restreamer` — коммит `3f10426` (17-09-2026), ветка разработки `feature/restreamer`, baseline тестов 700; `broadcaster` — `efcbb3e` (09-09-2026), сборочный чекаут; `planers` — `9af58a6` (19-09-2026), ветка `feature/planers`, этап 5 в работе.
-- Этап 0 не начат.
+- **Этап 0 — задача 0.1 принята 20-09-2026, коммит `af998b3` в `feature/livecraft`.** Есть: `.gitattributes`, `livecraft.bat`, `requirements.txt` снимком заполненного окружения (все пакеты инварианта 11 плюс `pytest` и `pyinstaller`), `app\version.py` (`APP_VERSION = "0.1.0"`), `app\paths.py` (`LivecraftPaths` — все файлы и папки §5 и §7.3, `resolve_root` по `LIVECRAFT_ROOT`, `write_text_atomically`), `app\core\dates.py`, `app\observability\logging_setup.py` (логгер `livecraft`, файл `{stamp}_livecraft.log`, `mask_stream_key`), `app\ui\messages_ru.py`, `app\main.py` (`ExitCode`, `RunRequest`, разбор всех флагов §10). Baseline тестов livecraft — **101**.
+- Пока нет сейфа и загрузчика конфига, любой режим, кроме `--version`, печатает `SETUP_REQUIRED` и возвращает код 2 (`app\main.py::_run`). Настоящую проверку сейфа и конфига эта ветка получает в задаче 1.3.
+- `ExitCode` временно живёт в `app\main.py`; переезжает в `app\pipeline\runner.py` вместе с `decide_exit` и `RunExit` на этапе 4.
+- Известный мелкий долг: `app\main.py::EXPORT_SLOTS_METAVAR = "ПУТЬ"` — русский текст для человека в коде вместо `messages_ru` (§11); эти четыре константы `main.py` также объявлены без `Final`. Чинится задачей 0.2.
+- Этап 0 — задача 0.2 (замок одного экземпляра) не начата.
