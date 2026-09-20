@@ -1,0 +1,146 @@
+########################################
+# livecraft: privacy + clean repo
+# структуру livecraft (CLAUDE.md §5): secrets\, image\, keystreams\, state\, logs\.
+# Широкие правила вида *.bat или *.ico не заводить — они прячут нужные файлы проекта.
+########################################
+
+########################################
+# Environment files
+########################################
+.env
+.env.*
+
+########################################
+# Секреты: всё, что в secrets\, — личное (CLAUDE.md §7).
+# В git из этой папки — только livecraft.json: технические настройки,
+# единственный источник и для dev, и для сборки.
+# Явные строки ниже избыточны при /secrets/*, но оставлены как документ намерения:
+#   vault.dat            — поставочный сейф (ключ OpenAI, id таблицы, URL формы)
+#   vault.local.dat      — личный сейф пользователя (DPAPI, привязан к Windows-аккаунту)
+#   program.key          — ключ поставочного сейфа в dev-режиме
+#   channels.json        — каналы владельца; channels.previous.json, channels_passport.json
+#   livecraft.sqlite3    — память программы (что сделано на YouTube и что подтвердила форма)
+#   client_secret.json, <handle>.token.json, sheets.token.json, cookies.txt
+########################################
+/secrets/*
+!/secrets/livecraft.json
+/secrets/vault.dat
+/secrets/vault.local.dat
+/secrets/program.key
+/secrets/livecraft.sqlite3
+/secrets/livecraft.sqlite3.broken-*
+/secrets/cookies.txt
+
+########################################
+# Программный ключ поставочного сейфа: модуль генерируется build_release.bat
+# перед PyInstaller (CLAUDE.md §7.3). В git его нет и быть не должно.
+########################################
+app/secretsafe/program_key.py
+
+########################################
+# Google OAuth / API
+########################################
+credentials*.json
+credentials_bot.json
+.credentials_bot.json
+client_secret*.json
+*oauth*.json
+*service_account*.json
+*service-account*.json
+*token.json
+
+########################################
+# Keys / certs
+########################################
+*.pem
+*.key
+*.p12
+
+########################################
+# Local helper materials
+########################################
+_HELP/
+
+########################################
+# Python / caches
+########################################
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+# PyInstaller / Inno Setup: build\, dist\livecraft, dist\installer
+# (build_local.bat / build_release.bat)
+/build/
+/dist/
+
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+########################################
+# Virtual environments
+########################################
+.venv/
+venv/
+ENV/
+.venv_*/
+.venv-*/
+.poetry/
+
+########################################
+# Данные запуска, логи, временное.
+# Пути привязаны к корню репо: app\output\, app\tools\ и app\texts\ —
+# это пакеты с исходниками, их прятать нельзя.
+########################################
+*.log
+/logs/
+tmp/
+temp/
+/out/
+/output/
+/outputs/
+/data/
+/docs/
+/downloads/
+# превью источников: image\{date}\{language}
+/image/
+# ключи потоков для ручной передачи стримеру
+/keystreams/
+# файл-замок одного экземпляра и отметки автообновлений
+/state/
+# внешние бинарники: yt-dlp.exe, deno.exe (обновляются сами)
+/tools/
+# отладочная выгрузка слотов (--export-slots)
+/export/
+
+########################################
+# Локальные пусковые скрипты с абсолютными путями
+########################################
+*.local.bat
+run_local*.bat
+
+########################################
+# IDE / OS / local workspace stuff
+########################################
+.vscode/
+*.code-workspace
+
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+########################################
+# Claude Code local session state
+########################################
+.claude/
