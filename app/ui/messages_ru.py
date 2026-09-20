@@ -50,6 +50,15 @@ LOCK_REJECTED_UNKNOWN_OWNER: Final[str] = (
     "Закройте открытые окна Livecraft и запустите заново."
 )
 
+# --- сейф (CLAUDE.md §7): названия полей и маска, которую человек видит вместо значения.
+# Само значение не показывается нигде, кроме поля настройщика, куда его ввёл сам пользователь (§8.2).
+VAULT_FIELD_OPENAI_API_KEY: Final[str] = "ключ OpenAI"
+VAULT_FIELD_SHEETS_ID: Final[str] = "таблица плана"
+VAULT_FIELD_SHEETS_RANGE: Final[str] = "диапазон таблицы"
+VAULT_FIELD_KEY_FORM_URL: Final[str] = "форма ключей"
+# Маска по отпечатку: название поля и четыре знака sha256 — различить два значения можно, восстановить нет.
+VAULT_MASK_FINGERPRINT: Final[str] = "{label} (…{fingerprint})"
+
 # --- обрыв и падение запуска (app\main.py::run_cli)
 RUN_INTERRUPTED: Final[str] = (
     "Запуск прерван. Что уже сделано на YouTube, найдёт и учтёт следующий запуск."
