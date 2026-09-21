@@ -77,7 +77,7 @@ def test_the_admission_reason_names_the_absent_fields_in_russian() -> None:
         fields=f"{msg.VAULT_FIELD_SHEETS_ID}, {msg.VAULT_FIELD_KEY_FORM_URL}"
     )
     assert msg.VAULT_FIELD_OPENAI_API_KEY not in reason      # это поле на месте, о нём не говорим
-    assert "--setup" in reason
+    assert "--setup" not in reason      # что делать, говорит main один раз — SETUP_REQUIRED
 
 
 def test_the_admission_reason_of_an_empty_vault_lists_all_four_labels() -> None:

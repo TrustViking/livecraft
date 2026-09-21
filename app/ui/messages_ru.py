@@ -199,10 +199,8 @@ VAULT_MASK_FINGERPRINT: Final[str] = "{label} (…{fingerprint})"
 VAULT_ORIGIN_SUPPLIED: Final[str] = "поставка"
 VAULT_ORIGIN_OWN: Final[str] = "своё"
 # Сейф заполнен не до конца — запускаться не с чем; перечень недостающих полей строит сам сейф.
-VAULT_NOT_READY: Final[str] = (
-    "Сейф заполнен не до конца: не хватает {fields}. "
-    "Запустите livecraft.bat --setup и впишите недостающие значения."
-)
+# Что делать, говорит SETUP_REQUIRED, который main печатает следом, — здесь только чего не хватает.
+VAULT_NOT_READY: Final[str] = "Сейф заполнен не до конца: не хватает {fields}."
 
 # --- обрыв и падение запуска (app\main.py::run_cli)
 RUN_INTERRUPTED: Final[str] = (

@@ -16,7 +16,8 @@
 
 Один нечитаемый файл не валит запуск: нет ключа, DPAPI не развернул, блоб подменён — полей этого файла
 просто нет, причина уходит в лог, работа продолжается на втором файле. Наружу идёт только `VaultFormatError`
-(файл чужого формата — по §7.3 это код 2; решение о коде принимает `main`, не этот объект) и
+(файл чужого формата, повреждённый или не открывающийся — по §7.3 это код 2; решение о коде принимает
+`main`, не этот объект; «файла нет» — только когда его действительно нет) и
 `DpapiUnavailable` из `save_local` (записать локальный сейф без DPAPI нельзя, и делать вид, что записали,
 запрещено).
 """
@@ -217,7 +218,7 @@ class VaultStore:
 
     def _read_supplied(self) -> Vault:
         """Поставочный сейф: ключ приходит извне, записи «key» в файле нет и быть не должно."""
-        file: VaultFile | None = self._read_file(VaultSource.SUPPLIED, self.supplied_path)
+        file: VaultFile | None = self._read_file(self.supplied_path)
         if file is None:
             return Vault.empty()
         key: bytes | None = self.program_key.material
@@ -232,7 +233,7 @@ class VaultStore:
 
         Состояние решается здесь, где оно известно, а не догадкой по пустоте сейфа снаружи.
         """
-        file: VaultFile | None = self._read_file(VaultSource.LOCAL, self.local_path)
+        file: VaultFile | None = self._read_file(self.local_path)
         if file is None:
             return VaultLoad(vault=Vault.empty(), local_state=LocalVaultState.ABSENT)
         key: bytes | None = self._unwrap_local_key(file)
@@ -260,18 +261,23 @@ class VaultStore:
             return None
         return key
 
-    def _read_file(self, source: VaultSource, path: Path) -> VaultFile | None:
-        """Нет файла — нет и его полей. Чужой формат — VaultFormatError наружу (§7.3)."""
+    def _read_file(self, path: Path) -> VaultFile | None:
+        """Нет файла — нет его полей; файл есть, но не открывается или не текст, и чужой формат —
+        VaultFormatError с именем файла (§7.3).
+
+        «Не открылся» — это не «нет»: заблокированный антивирусом или синхронизацией личный файл иначе
+        читался бы как отсутствующий, и работа молча шла бы на поставочных значениях (§16). В тексте
+        ошибки — имя файла и короткая причина, без полного пути; исходная ошибка сохраняется через from.
+        """
         try:
             text: str = path.read_text(encoding=VAULT_FILE_ENCODING)
         except FileNotFoundError:
             return None
         except OSError as error:
-            LOGGER.warning("vault_unreadable source=%s reason=io error=%s", source.value, error)
-            return None
+            reason: str = error.strerror or type(error).__name__
+            raise VaultFormatError(f"{path.name}: {reason}") from error
         except UnicodeDecodeError as error:
-            LOGGER.warning("vault_unreadable source=%s reason=encoding error=%s", source.value, error.reason)
-            return None
+            raise VaultFormatError(f"{path.name}: {error.reason}") from error
         try:
             return VaultFile.parse(text)
         except VaultFormatError as error:

@@ -345,6 +345,20 @@ def test_an_unreadable_own_vault_is_announced_and_the_run_goes_on(
     ) in out
 
 
+def test_a_broken_own_vault_file_stops_the_run_with_code_2(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Повреждённый vault.local.dat — не «файла нет»: отказ с именем файла, без отката на поставку (§16)."""
+    ready_root.vault_local_file.write_bytes(b"\xff\xfe\x00vault\x80\x81")
+    assert run_cli([]) == int(ExitCode.CONFIG)
+    out: str = capsys.readouterr().out
+    assert ready_root.vault_local_file.name in out
+    assert msg.SETUP_REQUIRED in out
+    assert msg.VAULT_LOCAL_UNREADABLE not in out
+    assert "ВНИМАНИЕ" not in out
+
+
 def test_the_secret_filter_works_during_a_normal_run(
     ready_root: LivecraftPaths,
     monkeypatch: pytest.MonkeyPatch,

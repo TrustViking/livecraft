@@ -555,6 +555,54 @@ def test_the_format_error_names_only_the_file_not_the_folder(store: VaultStore) 
     assert str(store.supplied_path.parent) not in str(raised.value)
 
 
+# --- повреждённый или не открывающийся файл — не «файла нет» (§7.3, §16)
+
+NOT_UTF8_BYTES: bytes = b"\xff\xfe\x00vault\x80\x81"
+
+
+def test_a_local_file_that_is_not_utf8_is_a_format_error(store: VaultStore) -> None:
+    """Иначе личный файл читался бы как отсутствующий и работа молча шла бы на поставке (§16)."""
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.local_path.write_bytes(NOT_UTF8_BYTES)
+    with pytest.raises(VaultFormatError) as raised:
+        store.load()
+    assert store.local_path.name in str(raised.value)
+    assert str(store.local_path.parent) not in str(raised.value)
+    assert isinstance(raised.value.__cause__, UnicodeDecodeError)
+
+
+def test_a_supplied_file_that_is_not_utf8_is_a_format_error(store: VaultStore) -> None:
+    store.supplied_path.write_bytes(NOT_UTF8_BYTES)
+    with pytest.raises(VaultFormatError) as raised:
+        store.load()
+    assert store.supplied_path.name in str(raised.value)
+    assert str(store.supplied_path.parent) not in str(raised.value)
+
+
+def test_a_local_file_that_does_not_open_is_a_format_error_not_absent(store: VaultStore) -> None:
+    """Папка на месте файла: на Windows открытие даёт PermissionError — как файл под замком антивируса."""
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.local_path.mkdir()
+    with pytest.raises(VaultFormatError) as raised:
+        store.load()
+    assert store.local_path.name in str(raised.value)
+    assert str(store.local_path.parent) not in str(raised.value)
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_a_supplied_file_that_does_not_open_is_a_format_error(store: VaultStore) -> None:
+    store.supplied_path.mkdir()
+    with pytest.raises(VaultFormatError) as raised:
+        store.load()
+    assert store.supplied_path.name in str(raised.value)
+
+
+def test_a_missing_local_file_is_still_absent(store: VaultStore) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    assert not store.local_path.exists()
+    assert store.load().local_state is LocalVaultState.ABSENT
+
+
 # --- VaultStore.open собирает объект из путей установки
 
 

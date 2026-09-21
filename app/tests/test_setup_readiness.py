@@ -194,6 +194,29 @@ def test_a_vault_file_of_an_unknown_format_is_named(ready_paths: LivecraftPaths)
     assert "vault=broken" in readiness.log_line
 
 
+NOT_UTF8_BYTES: bytes = b"\xff\xfe\x00vault\x80\x81"
+
+
+def _assert_broken_local_file(paths: LivecraftPaths, readiness: Readiness) -> None:
+    """Повреждённый личный файл — не «чужой сейф»: отказ с именем файла, а не предупреждение и поставка."""
+    assert not readiness.is_ready
+    assert readiness.vault_error is not None
+    assert readiness.vault is None
+    assert any(paths.vault_local_file.name in line for line in readiness.problems)
+    assert readiness.problems[-1] == msg.VAULT_FILE_BROKEN.format(error=readiness.vault_error)
+    assert readiness.warnings == ()
+
+
+def test_a_local_vault_file_that_is_not_utf8_stops_the_run(ready_paths: LivecraftPaths) -> None:
+    ready_paths.vault_local_file.write_bytes(NOT_UTF8_BYTES)
+    _assert_broken_local_file(ready_paths, Readiness.check(ready_paths))
+
+
+def test_a_local_vault_file_that_does_not_open_stops_the_run(ready_paths: LivecraftPaths) -> None:
+    ready_paths.vault_local_file.mkdir()
+    _assert_broken_local_file(ready_paths, Readiness.check(ready_paths))
+
+
 def test_the_config_problem_comes_before_the_vault_problem(livecraft_paths: LivecraftPaths) -> None:
     readiness: Readiness = Readiness.check(livecraft_paths)
     assert readiness.problems[0] == str(readiness.config_error)
