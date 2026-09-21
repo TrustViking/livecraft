@@ -40,6 +40,127 @@ SETUP_REQUIRED: Final[str] = (
     "Запустите livecraft.bat --setup и заполните настройки."
 )
 
+# --- конфиги (CLAUDE.md §5): два JSON, все поля обязательные, умолчаний и копирования примеров нет
+CONFIG_ERROR: Final[str] = "Ошибка в конфиге {path}: {key} — {problem}"
+CONFIG_ROOT_KEY: Final[str] = "(корень файла)"
+CONFIG_CHANNELS_HINT: Final[str] = "Создайте файл {path} с таким содержимым и впишите свои значения:"
+# Что вписать в каждое поле: печатается между CONFIG_CHANNELS_HINT и шаблоном.
+# {languages} — CONFIG_LANGUAGES_RULE, {privacy} и {platform} — допустимые значения из config\loader.py.
+CONFIG_CHANNELS_FIELDS: Final[tuple[str, ...]] = (
+    "  account_name — название канала как на YouTube: оно уходит в форму как «Название канала»;",
+    "  handle — ник канала на YouTube, начинается с @ (Студия -> аватар вверху справа); "
+    "ник и название программа потом выравнивает сама;",
+    "  google_account — почта аккаунта Google, в котором этот канал;",
+    "  languages — языки стримов этого канала: {languages};",
+    "  privacy — видимость эфиров: {privacy};",
+    "  platform — {platform}.",
+)
+CONFIG_LANGUAGES_RULE: Final[str] = 'непустой список кодов строчными буквами без повторов, например ["uk"] или ["uk", "ru"]'
+CONFIG_SETTINGS_HINT: Final[str] = "Восстановите файл {path} с таким содержимым и впишите свои значения:"
+# Точные шаблоны файлов для консоли: печатаются, когда файла или поля нет. В код как умолчания не идут.
+# Шаблон настроек совпадает с поставочным secrets\livecraft.json — это проверяет тест.
+CONFIG_CHANNELS_TEMPLATE: Final[str] = """{
+  "channels": [
+    {"platform": "youtube", "account_name": "Название канала на YouTube", "handle": "@ник_канала", "google_account": "you@gmail.com",
+     "languages": ["ru"], "privacy": "unlisted"}
+  ]
+}"""
+CONFIG_SETTINGS_TEMPLATE: Final[str] = """{
+  "min_lead_minutes": 60,
+  "keep_days": 30,
+  "auto_start": true,
+  "set_thumbnail": true,
+  "category_id": "22",
+  "youtube_pause_seconds": 0.5,
+  "image_dir_template": "{date}/{language}",
+  "timezone": "Europe/Kyiv",
+  "llm": {
+    "model": "gpt-5.2",
+    "fallback_model": "gpt-5.2",
+    "reasoning_effort": "medium",
+    "service_tier": "default",
+    "timeout_sec": 120,
+    "max_output_tokens": 6000
+  },
+  "form": {
+    "fields": {
+      "language": "Язык стрима ( Language of stream)",
+      "account_name": "Название канала ( Channel name)",
+      "date": "Время стрима ( Stream time )",
+      "platform": "Платформа (Platform)",
+      "stream_key": "You Tube Stream Key",
+      "stream_url": "Stream-URL (YT)",
+      "time": null,
+      "broadcast_url": null,
+      "slot_id": null
+    },
+    "values": {
+      "language": {
+        "uk": "Украинский ( Ukranian)",
+        "ru": "Русский ( Russian)",
+        "en": "Английский ( English)",
+        "hu": "Венгерский (Hungarian, Magyar)"
+      },
+      "platform": {
+        "youtube": "You Tube",
+        "facebook": "Facebook",
+        "rumble": "Rumble"
+      }
+    },
+    "date_format": "%d.%m.%Y"
+  }
+}"""
+CONFIG_PROBLEM_FILE_MISSING: Final[str] = "файла нет"
+CONFIG_PROBLEM_JSON: Final[str] = "файл не читается как JSON: {error}"
+CONFIG_PROBLEM_NOT_MAPPING: Final[str] = "нужен объект JSON в фигурных скобках"
+CONFIG_PROBLEM_MISSING_KEY: Final[str] = "обязательное поле отсутствует"
+CONFIG_PROBLEM_UNKNOWN_KEY: Final[str] = "неизвестное поле"
+CONFIG_PROBLEM_DUPLICATE_KEY: Final[str] = "поле указано дважды"
+CONFIG_PROBLEM_NON_EMPTY_STRING: Final[str] = "нужна непустая строка в кавычках"
+CONFIG_PROBLEM_TEXT_OR_NULL: Final[str] = "нужно название вопроса формы в кавычках или null, если такого вопроса в форме нет"
+CONFIG_PROBLEM_TEXT_MAPPING: Final[str] = (
+    'нужен непустой объект «код — текст варианта», например {"uk": "Украинский ( Ukranian)"}'
+)
+CONFIG_PROBLEM_INT_MIN: Final[str] = "нужно целое число не меньше {minimum}"
+CONFIG_PROBLEM_NUMBER_MIN: Final[str] = "нужно число не меньше {minimum:g}, можно дробное, например 0.5"
+CONFIG_PROBLEM_BOOL: Final[str] = "нужно true или false"
+CONFIG_PROBLEM_CHOICE: Final[str] = "допустимо: {allowed}"
+CONFIG_PROBLEM_FORM_PLATFORM: Final[str] = "среди вариантов площадки обязан быть «{platform}»"
+CONFIG_PROBLEM_FORM_DATE_FORMAT: Final[str] = "в формате даты обязательны {required}; нет {absent}"
+CONFIG_PROBLEM_IMAGE_TEMPLATE_PLACEHOLDERS: Final[str] = (
+    "в шаблоне папки превью обязательны {{date}} и {{language}}; нет: {absent}"
+)
+CONFIG_PROBLEM_IMAGE_TEMPLATE_ABSOLUTE: Final[str] = (
+    "шаблон папки превью должен быть относительным, например {date}/{language}: корень задаёт сама программа"
+)
+CONFIG_PROBLEM_IMAGE_TEMPLATE_FORMAT: Final[str] = (
+    "в шаблоне папки превью есть подстановка, которой программа не знает; допустимы только {date} и {language}"
+)
+CONFIG_PROBLEM_CHANNELS_EMPTY: Final[str] = "нужен непустой список каналов"
+CONFIG_PROBLEM_ACCOUNT_NAME_TOO_LONG: Final[str] = (
+    "название канала длиннее {maximum} символов (сейчас {length}): на YouTube таких названий нет"
+)
+CONFIG_PROBLEM_ACCOUNT_NAME_CONTROL: Final[str] = "в названии канала есть управляющий символ (перевод строки, табуляция)"
+CONFIG_PROBLEM_ACCOUNT_NAME_SPACE_EDGE: Final[str] = (
+    "название канала начинается или заканчивается пробелом: «{value}»; на YouTube таких названий нет — уберите пробел"
+)
+CONFIG_PROBLEM_HANDLE_PREFIX: Final[str] = "ник «{value}» должен начинаться с {prefix}, как на YouTube"
+CONFIG_PROBLEM_HANDLE_LENGTH: Final[str] = (
+    "в нике «{value}» после @ нужно от {minimum} до {maximum} символов (сейчас {length})"
+)
+CONFIG_PROBLEM_HANDLE_CHAR: Final[str] = (
+    "в нике «{value}» недопустимый символ {char}: пробелы, управляющие символы и < > : \" / \\ | ? * в нике не бывают"
+)
+CONFIG_PROBLEM_HANDLE_DUPLICATE: Final[str] = (
+    "ник «{value}» уже есть у другого канала («{other}»); большие и маленькие буквы в нике не различаются"
+)
+CONFIG_PROBLEM_GOOGLE_ACCOUNT: Final[str] = (
+    "«{value}» не похоже на почту аккаунта Google: нужен вид имя@домен, ровно один @ и без пробелов"
+)
+CONFIG_PROBLEM_PLATFORM_UNKNOWN: Final[str] = "неизвестная площадка «{value}»; допустимо: {allowed}"
+CONFIG_PROBLEM_LANGUAGES: Final[str] = "нужен " + CONFIG_LANGUAGES_RULE
+CONFIG_PROBLEM_LANGUAGE_DUPLICATE: Final[str] = "язык «{value}» указан дважды"
+
 # --- один экземпляр на машину (CLAUDE.md §6, инвариант 12): замок занят — работать нельзя
 LOCK_REJECTED: Final[str] = (
     "Livecraft уже работает на этой машине: процесс {pid}, запущен {started_at}. "
