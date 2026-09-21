@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Final
 
 from app.observability.logging_setup import get_logger
-from app.paths import write_text_atomically
+from app.paths import LivecraftPaths, write_text_atomically
 from app.secretsafe.crypto import (
     FORMAT_VERSION,
     VAULT_KEY_BYTES,
@@ -38,6 +38,7 @@ from app.secretsafe.crypto import (
     VaultCrypto,
     VaultDecryptError,
     VaultFile,
+    VaultFormatError,
 )
 from app.secretsafe.dpapi import Dpapi, DpapiUnavailable
 from app.secretsafe.value import SecretField, SecretValue
@@ -57,6 +58,31 @@ class VaultSource(str, Enum):
 
     SUPPLIED = "supplied"
     LOCAL = "local"
+
+
+class LocalVaultState(str, Enum):
+    """Что с личным сейфом: его нет, он прочитан, или он есть, но не читается.
+
+    Пустой, но прочитанный файл — READ: пользователь сбросил всё к поставке, это не поломка. UNREADABLE —
+    файл есть, а значений из него нет: оператор должен узнать об этом громко (§16, требование к связке с main).
+    """
+
+    ABSENT = "absent"
+    READ = "read"
+    UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True)
+class VaultLoad:
+    """Результат чтения сейфа: сам сейф и состояние личного файла — полем, а не только строкой в логе (§0)."""
+
+    vault: Vault
+    local_state: LocalVaultState
+
+    @property
+    def is_local_unreadable(self) -> bool:
+        """Личный файл есть, но значения из него не прочитаны: работа идёт на поставочных."""
+        return self.local_state is LocalVaultState.UNREADABLE
 
 
 @dataclass(frozen=True)
@@ -137,17 +163,27 @@ class VaultStore:
     program_key: ProgramKey
     dpapi: Dpapi
 
-    def load(self) -> Vault:
+    @classmethod
+    def open(cls, paths: LivecraftPaths) -> VaultStore:
+        """Сейф этой установки: оба файла из paths, ключ поставки из сборки или program.key, DPAPI машины."""
+        return cls(
+            supplied_path=paths.vault_file,
+            local_path=paths.vault_local_file,
+            program_key=ProgramKey.load(paths.program_key_file),
+            dpapi=Dpapi.load(),
+        )
+
+    def load(self) -> VaultLoad:
         """Оба файла в один сейф: поле локального перекрывает поле поставочного (§7.3)."""
         vault: Vault = self._read_supplied()
-        local: Vault = self._read_local()
+        local: VaultLoad = self._read_local()
         for field in SecretField:
-            secret: SecretValue | None = local.get(field)
+            secret: SecretValue | None = local.vault.get(field)
             if secret is None:
                 continue
             vault = vault.with_field(field, secret, VaultOrigin.OWN)
-        LOGGER.info("vault_loaded fields=%s", vault.log_line)
-        return vault
+        LOGGER.info("vault_loaded fields=%s local=%s", vault.log_line, local.local_state.value)
+        return VaultLoad(vault=vault, local_state=local.local_state)
 
     def save_local(self, vault: Vault) -> None:
         """Записать локальный сейф: только свои поля, новый ключ и новая соль на каждую запись.
@@ -184,20 +220,28 @@ class VaultStore:
         file: VaultFile | None = self._read_file(VaultSource.SUPPLIED, self.supplied_path)
         if file is None:
             return Vault.empty()
-        if not self.program_key.is_available:
+        key: bytes | None = self.program_key.material
+        if key is None:
             LOGGER.info("vault_unreadable source=%s reason=no_program_key", VaultSource.SUPPLIED.value)
             return Vault.empty()
-        return self._decrypt(VaultSource.SUPPLIED, file, self.program_key.material, VaultOrigin.SUPPLIED)
+        decrypted: Vault | None = self._decrypt(VaultSource.SUPPLIED, file, key, VaultOrigin.SUPPLIED)
+        return Vault.empty() if decrypted is None else decrypted
 
-    def _read_local(self) -> Vault:
-        """Локальный сейф: ключ лежит в самом файле, завёрнутый DPAPI (§14, решение 9)."""
+    def _read_local(self) -> VaultLoad:
+        """Локальный сейф: ключ лежит в самом файле, завёрнутый DPAPI (§14, решение 9).
+
+        Состояние решается здесь, где оно известно, а не догадкой по пустоте сейфа снаружи.
+        """
         file: VaultFile | None = self._read_file(VaultSource.LOCAL, self.local_path)
         if file is None:
-            return Vault.empty()
+            return VaultLoad(vault=Vault.empty(), local_state=LocalVaultState.ABSENT)
         key: bytes | None = self._unwrap_local_key(file)
         if key is None:
-            return Vault.empty()
-        return self._decrypt(VaultSource.LOCAL, file, key, VaultOrigin.OWN)
+            return VaultLoad(vault=Vault.empty(), local_state=LocalVaultState.UNREADABLE)
+        decrypted: Vault | None = self._decrypt(VaultSource.LOCAL, file, key, VaultOrigin.OWN)
+        if decrypted is None:
+            return VaultLoad(vault=Vault.empty(), local_state=LocalVaultState.UNREADABLE)
+        return VaultLoad(vault=decrypted, local_state=LocalVaultState.READ)
 
     def _unwrap_local_key(self, file: VaultFile) -> bytes | None:
         """Нет записи «key» или DPAPI её не развернул — файл нечитаем, работаем на поставочном (§14, решение 9)."""
@@ -228,18 +272,23 @@ class VaultStore:
         except UnicodeDecodeError as error:
             LOGGER.warning("vault_unreadable source=%s reason=encoding error=%s", source.value, error.reason)
             return None
-        return VaultFile.parse(text)
+        try:
+            return VaultFile.parse(text)
+        except VaultFormatError as error:
+            # §7.3: ошибка с именем файла. Путь к файлу сейфа — не секрет, секрет — его содержимое.
+            raise VaultFormatError(f"{path.name}: {error}") from error
 
     def _decrypt(
         self,
         source: VaultSource,
         file: VaultFile,
-        key: bytes | None,
+        key: bytes,
         origin: VaultOrigin,
-    ) -> Vault:
-        """Поля файла в сейф. Хоть одно не расшифровалось — файл считается нечитаемым целиком."""
-        if key is None:
-            return Vault.empty()
+    ) -> Vault | None:
+        """Поля файла в сейф. Хоть одно не расшифровалось — файл нечитаем целиком: None, а не пустой сейф.
+
+        Пустой сейф — это прочитанный файл без полей; None — файл, из которого ничему нельзя верить.
+        """
         crypto: VaultCrypto = VaultCrypto(key=key, salt=file.salt)
         vault: Vault = Vault.empty()
         for field in SecretField:
@@ -251,7 +300,7 @@ class VaultStore:
                 vault = vault.with_field(field, secret, origin)
             except VaultDecryptError as error:
                 LOGGER.warning("vault_unreadable source=%s reason=decrypt error=%s", source.value, error)
-                return Vault.empty()
+                return None
         unknown: tuple[str, ...] = tuple(
             name for name in file.fields if name not in {field.value for field in SecretField}
         )

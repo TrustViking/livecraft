@@ -35,9 +35,25 @@ CLI_METAVAR_HANDLE: Final[str] = "НИК"
 CONSOLE_TITLE: Final[str] = "Livecraft {version} — {generated_at}"
 
 # --- настройка программы (CLAUDE.md §8): без сейфа и конфига обычный запуск не начинается
-SETUP_REQUIRED: Final[str] = (
-    "Livecraft ещё не настроен: нет ни ключа OpenAI, ни ссылки на таблицу плана, ни ссылки на форму ключей. "
-    "Запустите livecraft.bat --setup и заполните настройки."
+# Что именно не так, перечислено строками выше (сейф и конфиги называют свои причины сами) — здесь только что делать.
+SETUP_REQUIRED: Final[str] = "Запустите livecraft.bat --setup и заполните настройки."
+
+# --- готовность к запуску (app\setup\readiness.py): сводка без значений — только откуда что взялось (§7.4)
+READINESS_SUMMARY_TITLE: Final[str] = "Настройки livecraft:"
+READINESS_FIELD_LINE: Final[str] = "  {label}: {origin}"
+READINESS_FIELD_ABSENT: Final[str] = "нет"
+READINESS_CHANNELS_LINE: Final[str] = "  каналов: {count}, языки стримов: {languages}"
+READINESS_CHANNELS_ABSENT: Final[str] = "  каналы: не прочитаны"
+# Личный сейф есть, но не читается: молчаливый откат на поставку недопустим (§16) — иначе получатель
+# незаметно работает на ключе OpenAI и таблице того, кто передал ему программу.
+VAULT_LOCAL_UNREADABLE: Final[str] = (
+    "ВНИМАНИЕ: ваши личные настройки из secrets\\vault.local.dat не прочитаны — программа работает на значениях, "
+    "пришедших вместе с программой (ключ OpenAI, таблица плана, форма ключей). Так бывает после переноса папки "
+    "на другой компьютер или смены пользователя Windows. Введите свои значения заново: livecraft.bat --setup."
+)
+VAULT_FILE_BROKEN: Final[str] = (
+    "Файл сейфа не читается: {error}. Если это secrets\\vault.local.dat — введите свои значения заново через "
+    "livecraft.bat --setup; если secrets\\vault.dat — переустановите программу."
 )
 
 # --- конфиги (CLAUDE.md §5): два JSON, все поля обязательные, умолчаний и копирования примеров нет

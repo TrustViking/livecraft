@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
 import io
+import json
+import logging
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -8,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from app import main as main_module
 from app.main import ExitCode, RunRequest, build_parser, run_cli
 from app.observability.logging_setup import close_logging
 from app.paths import ROOT_ENV_VAR, LivecraftPaths, build_paths, ensure_dirs
@@ -18,6 +23,11 @@ from app.runtime.single_instance import (
     InstanceLock,
     LockOwner,
 )
+from app.secretsafe.crypto import KEY_WRAPPED
+from app.secretsafe.store import VAULT_FILE_ENCODING, VaultStore
+from app.secretsafe.value import SecretField, SecretValue
+from app.secretsafe.vault import Vault, VaultOrigin
+from app.tests.conftest import REPO_CHANNELS_EXAMPLE, SUPPLIED_VALUES
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
 
@@ -29,6 +39,13 @@ def _closed_logging() -> Iterator[None]:
     """Лог запуска закрывается и в тестах: иначе Windows не отдаст tmp_path."""
     yield
     close_logging()
+
+
+@pytest.fixture
+def ready_root(ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch) -> LivecraftPaths:
+    """Готовый к запуску корень из conftest, подставленный запуску через LIVECRAFT_ROOT."""
+    monkeypatch.setenv(ROOT_ENV_VAR, str(ready_paths.root))
+    return ready_paths
 
 
 @pytest.fixture
@@ -59,7 +76,6 @@ def test_version_flag_creates_no_folders(livecraft_root: Path) -> None:
     "argv",
     [
         [],
-        ["--setup"],
         ["--check"],
         ["--status"],
         ["--auth", "@Osvald.X"],
@@ -75,9 +91,12 @@ def test_without_setup_every_mode_asks_for_setup(
     livecraft_root: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Нет сейфа и конфига — обычный запуск не начинается: код 2 и строка про --setup (CLAUDE.md §8)."""
+    """Нет сейфа и конфига — обычный запуск не начинается: код 2, шаблон и строка про --setup (CLAUDE.md §8)."""
     assert run_cli(argv) == int(ExitCode.CONFIG)
-    assert msg.SETUP_REQUIRED in capsys.readouterr().out
+    out: str = capsys.readouterr().out
+    assert msg.SETUP_REQUIRED in out
+    assert msg.CONFIG_CHANNELS_TEMPLATE in out        # загрузчик читает channels.json первым — его шаблон
+    assert out.rstrip().endswith(msg.SETUP_REQUIRED)  # что делать — последней строкой
 
 
 def test_the_title_is_the_first_line_of_any_run(
@@ -242,3 +261,123 @@ def test_version_flag_takes_no_lock(livecraft_root: Path) -> None:
     with pytest.raises(SystemExit):
         run_cli(["--version"])
     assert not livecraft_root.exists()
+
+
+# --- готовность к запуску (задача 1.5): сейф и конфиги читаются при каждом запуске
+
+
+def test_setup_on_a_clean_root_shows_what_is_missing_and_exits_0(
+    livecraft_root: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--setup проверка не останавливает: настройщик и есть способ всё починить (§8.2)."""
+    assert run_cli(["--setup"]) == int(ExitCode.OK)
+    out: str = capsys.readouterr().out
+    assert msg.READINESS_SUMMARY_TITLE in out
+    for field in SecretField:
+        assert msg.READINESS_FIELD_LINE.format(label=field.human_label, origin=msg.READINESS_FIELD_ABSENT) in out
+    assert Vault.empty().admission_reason in out
+    assert msg.CONFIG_CHANNELS_TEMPLATE in out
+    assert msg.SETUP_REQUIRED not in out
+
+
+def test_a_missing_settings_file_prints_its_template(
+    livecraft_root: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (livecraft_root / "secrets").mkdir(parents=True)
+    shutil.copyfile(REPO_CHANNELS_EXAMPLE, livecraft_root / "secrets" / "channels.json")
+    assert run_cli([]) == int(ExitCode.CONFIG)
+    out: str = capsys.readouterr().out
+    assert msg.CONFIG_SETTINGS_TEMPLATE in out and msg.SETUP_REQUIRED in out
+
+
+def test_a_ready_root_prints_the_summary_and_exits_0(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert run_cli([]) == int(ExitCode.OK)
+    out: str = capsys.readouterr().out
+    assert msg.READINESS_SUMMARY_TITLE in out
+    assert msg.READINESS_CHANNELS_LINE.format(count=2, languages="en, ru, uk") in out
+    assert msg.SETUP_REQUIRED not in out
+
+
+def test_the_ready_run_prints_no_value_and_no_mask(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """В консоль уходит, откуда значение, но не само значение и не его маска (§7.4)."""
+    assert run_cli([]) == int(ExitCode.OK)
+    out: str = capsys.readouterr().out
+    for field, value in SUPPLIED_VALUES.items():
+        secret: SecretValue = SecretValue(field=field, value=value)
+        assert value not in out and secret.masked not in out
+
+
+def test_config_errors_land_in_the_log(livecraft_root: Path) -> None:
+    assert run_cli([]) == int(ExitCode.CONFIG)
+    close_logging()
+    [log_file] = list((livecraft_root / "logs").glob(LOG_GLOB))
+    text: str = log_file.read_text(encoding="utf-8")
+    assert "config_error path=" in text and "kind=file_missing" in text
+    assert "readiness config=error" in text
+
+
+def test_an_unreadable_own_vault_is_announced_and_the_run_goes_on(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """§16: личный сейф не прочитан — громкая строка, работа на поставочных значениях, код как у готового."""
+    own: Vault = Vault.empty().with_field(
+        SecretField.SHEETS_ID, SecretValue(field=SecretField.SHEETS_ID, value="1own-table-0123456789"), VaultOrigin.OWN
+    )
+    VaultStore.open(ready_root).save_local(own)
+    data: dict[str, object] = json.loads(ready_root.vault_local_file.read_text(encoding=VAULT_FILE_ENCODING))
+    wrapped: bytes = base64.b64decode(str(data[KEY_WRAPPED]), validate=True)
+    data[KEY_WRAPPED] = base64.b64encode(wrapped[:-1] + bytes([wrapped[-1] ^ 0xFF])).decode("ascii")
+    ready_root.vault_local_file.write_text(json.dumps(data), encoding=VAULT_FILE_ENCODING)
+    assert run_cli([]) == int(ExitCode.OK)
+    out: str = capsys.readouterr().out
+    assert msg.VAULT_LOCAL_UNREADABLE in out
+    assert msg.READINESS_FIELD_LINE.format(
+        label=SecretField.SHEETS_ID.human_label, origin=msg.VAULT_ORIGIN_SUPPLIED
+    ) in out
+
+
+def test_the_secret_filter_works_during_a_normal_run(
+    ready_root: LivecraftPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Чужая библиотека пишет в лог URL с id таблицы посреди запуска — в файл уходит ярлык, а не значение.
+
+    Подмены логики нет: к боевой печати сводки добавлена запись от имени googleapiclient, как это случится
+    на этапе 3, когда клиент Sheets начнёт ходить в сеть. Чистит её боевой фильтр, поставленный самим main.
+    """
+    sheets_id: str = SUPPLIED_VALUES[SecretField.SHEETS_ID]
+    say_lines = main_module._say_lines
+
+    def _say_lines_with_library_noise(lines: tuple[str, ...]) -> None:
+        logging.getLogger("googleapiclient.discovery").warning(
+            "URL being requested: GET https://sheets.googleapis.com/v4/spreadsheets/%s/values/A:F", sheets_id
+        )
+        say_lines(lines)
+
+    monkeypatch.setattr(main_module, "_say_lines", _say_lines_with_library_noise)
+    assert run_cli([]) == int(ExitCode.OK)
+    close_logging()
+    [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
+    text: str = log_file.read_text(encoding="utf-8")
+    assert "URL being requested" in text                      # запись дошла до файла…
+    assert sheets_id not in text                              # …без значения
+    assert SecretValue(field=SecretField.SHEETS_ID, value=sheets_id).log_label in text
+
+
+def test_the_readiness_line_in_the_log_carries_no_value(ready_root: LivecraftPaths) -> None:
+    assert run_cli([]) == int(ExitCode.OK)
+    close_logging()
+    [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
+    text: str = log_file.read_text(encoding="utf-8")
+    assert "readiness config=ok channels=2 local=absent vault=" in text
+    for value in SUPPLIED_VALUES.values():
+        assert value not in text

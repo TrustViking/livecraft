@@ -6,9 +6,11 @@
 Обрыв (Ctrl+C) и любое необработанное исключение ловятся в run_cli: строка в лог и в консоль, код 1 —
 это единственный перехват Exception во всей программе (§11).
 
-Пока нет сейфа (§7) и загрузчика конфига (§5), обычный запуск не начинается: любой режим, кроме
---version, печатает SETUP_REQUIRED и возвращает код 2. Ветка получит настоящую проверку сейфа и конфига
-в задаче про загрузчик; поведение программы без настройки от этого не изменится (§8).
+Каждый запуск, кроме --version, начинается с проверки готовности (app\\setup\\readiness.py): сейф и оба
+конфига прочитаны, всего хватает. Фильтр секретов в логах встаёт сразу после чтения сейфа (§7.4). Не готово —
+обычный запуск не начинается: что не так, шаблон сломанного конфига, строка про --setup и код 2 (§8.2).
+--setup проверка не останавливает: настройщик и есть способ всё починить. Готово — сводка без значений;
+после неё этап 3 поставит конвейер.
 """
 from __future__ import annotations
 
@@ -22,17 +24,18 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Final
 
+from app.config.loader import ConfigError
 from app.core.dates import format_datetime_text
-from app.observability.logging_setup import close_logging, get_logger, setup_logging
+from app.observability.logging_setup import close_logging, get_logger, install_secret_filter, setup_logging
 from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
 from app.runtime.single_instance import AnotherInstanceRunning, InstanceLock, LockOwner
+from app.setup.readiness import Readiness
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
 
 LOGGER = get_logger("main")
 
 PROGRAM_NAME: Final[str] = "livecraft"
-AUTH_ALL: Final[str] = "all"
 
 
 class ExitCode(IntEnum):
@@ -159,10 +162,40 @@ def _run_guarded(request: RunRequest, paths: LivecraftPaths, log_path: Path) -> 
 
 
 def _run(request: RunRequest, paths: LivecraftPaths) -> int:
-    """Сейфа и конфига ещё нет — значит настроенной программы нет: код 2 и строка про --setup (§8)."""
-    LOGGER.error("setup_required vault=%s config=%s", paths.vault_local_file, paths.config_file)
-    _say(msg.SETUP_REQUIRED)
-    return int(ExitCode.CONFIG)
+    """Готовность решает Readiness; здесь — только печать и выбор кода (§8.2)."""
+    readiness: Readiness = Readiness.check(paths)
+    if readiness.vault is not None:
+        install_secret_filter(readiness.vault)      # сразу после чтения сейфа, до любых строк лога (§7.4)
+    _log_readiness(readiness)
+    _say_lines(readiness.warnings)
+    if request.setup:
+        # Окно настройщика заменит эту ветку на этапе 2; пока --setup показывает, что есть и чего нет.
+        _say_lines(readiness.summary_lines + readiness.problems + readiness.template_lines)
+        return int(ExitCode.OK)
+    if not readiness.is_ready:
+        _say_lines(readiness.problems + readiness.template_lines)
+        _say(msg.SETUP_REQUIRED)
+        return int(ExitCode.CONFIG)
+    _say_lines(readiness.summary_lines)
+    return int(ExitCode.OK)
+
+
+def _log_readiness(readiness: Readiness) -> None:
+    """Строка готовности и причины отказа — в лог; значений сейфа здесь нет ни в одной строке."""
+    LOGGER.info("readiness %s ready=%s", readiness.log_line, readiness.is_ready)
+    error: ConfigError | None = readiness.config_error
+    if error is not None:
+        LOGGER.error(
+            "config_error path=%s key=%s kind=%s problem=%s",
+            error.config_path,
+            error.key_path,
+            error.kind.value,
+            error.problem,
+        )
+    if readiness.vault_error is not None:
+        LOGGER.error("vault_error error=%s", readiness.vault_error)
+    if readiness.vault_load is not None and readiness.vault_load.is_local_unreadable:
+        LOGGER.warning("vault_local_unreadable working_on=supplied")
 
 
 def _configure_console() -> None:
@@ -175,6 +208,11 @@ def _configure_console() -> None:
 def _say(text: str) -> None:
     """flush — чтобы строка была видна сразу и в собранном exe, а не в конце запуска."""
     print(text, flush=True)
+
+
+def _say_lines(lines: tuple[str, ...]) -> None:
+    for line in lines:
+        _say(line)
 
 
 def _say_error(text: str) -> None:
