@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, ClassVar, Final
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from app.paths import write_text_atomically
 from app.ui import messages_ru as msg
@@ -253,9 +254,9 @@ class FormSettings:
 class LivecraftSettings:
     """Технические настройки livecraft.json: действуют на все каналы.
 
-    `timezone` — основная зона дат и времени (§6 инвариант 4). Проверку, что зона читается zoneinfo,
-    этот объект не делает: на Windows у Python нет своей базы зон, нужен пакет tzdata, а он вне
-    разрешённого набора зависимостей (§6 инвариант 11).
+    `timezone` — основная зона дат и времени (§6 инвариант 4). Объект сам проверяет, что зона читается,
+    и сам отдаёт её готовой (`zone`): кто переводит время ряда в момент старта, спрашивает зону здесь, а не
+    строит её по месту. База зон — пакет tzdata (§14 решение 10): на Windows своей у Python нет.
     """
 
     min_lead_minutes: int
@@ -270,8 +271,35 @@ class LivecraftSettings:
     form: FormSettings
 
     @property
+    def zone(self) -> ZoneInfo:
+        """Часовой пояс программы. Настройки, прошедшие загрузчик, дают его всегда: зону проверил `problem`."""
+        return ZoneInfo(self.timezone)
+
+    @property
     def problem(self) -> SettingProblem | None:
-        """Что не так с настройками по смыслу: шаблон папки превью — относительный, с {date} и {language}."""
+        """Что не так с настройками по смыслу: шаблон папки превью и часовой пояс."""
+        return self._image_template_problem or self._timezone_problem
+
+    @property
+    def _timezone_problem(self) -> SettingProblem | None:
+        """Зона читается и названа каноническим именем базы tzdata.
+
+        Одного ZoneInfo мало: на Windows он открывает и «Europe\\Kyiv», и «Europe/Kyiv » с пробелом —
+        файловая система прощает то, чего нет в базе зон. Сверка со списком базы отсекает такие имена.
+        """
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            # ZoneInfoNotFoundError — нет такой зоны; ValueError — имя не ключ базы: пустое, с «..»,
+            # абсолютное, с нулевым символом, или файл базы, который не является зоной.
+            return SettingProblem(key="timezone", text=msg.CONFIG_PROBLEM_TIMEZONE_UNKNOWN)
+        if self.timezone not in available_timezones():
+            return SettingProblem(key="timezone", text=msg.CONFIG_PROBLEM_TIMEZONE_UNKNOWN)
+        return None
+
+    @property
+    def _image_template_problem(self) -> SettingProblem | None:
+        """Шаблон папки превью — относительный, с {date} и {language}, без чужих подстановок."""
         template: str = self.image_dir_template
         absent: tuple[str, ...] = tuple(
             name for name in IMAGE_TEMPLATE_PLACEHOLDERS if f"{{{name}}}" not in template

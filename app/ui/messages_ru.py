@@ -152,6 +152,9 @@ CONFIG_PROBLEM_IMAGE_TEMPLATE_ABSOLUTE: Final[str] = (
 CONFIG_PROBLEM_IMAGE_TEMPLATE_FORMAT: Final[str] = (
     "в шаблоне папки превью есть подстановка, которой программа не знает; допустимы только {date} и {language}"
 )
+CONFIG_PROBLEM_TIMEZONE_UNKNOWN: Final[str] = (
+    "часовой пояс не распознан: нужно имя зоны из базы IANA с учётом регистра, например Europe/Kyiv"
+)
 CONFIG_PROBLEM_CHANNELS_EMPTY: Final[str] = "нужен непустой список каналов"
 CONFIG_PROBLEM_ACCOUNT_NAME_TOO_LONG: Final[str] = (
     "название канала длиннее {maximum} символов (сейчас {length}): на YouTube таких названий нет"

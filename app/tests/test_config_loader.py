@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -295,6 +297,58 @@ def test_a_whole_number_pause_is_read_as_a_number(tmp_path: Path) -> None:
     data: dict[str, Any] = _settings_data()
     data["youtube_pause_seconds"] = 2
     assert load_settings(_write(tmp_path / "livecraft.json", data)).youtube_pause_seconds == 2.0
+
+
+# --- часовой пояс: объект настроек сам проверяет и сам отдаёт зону (§14 решение 10)
+
+KYIV: str = "Europe/Kyiv"
+
+
+def test_the_shipped_settings_give_the_kyiv_zone() -> None:
+    zone: ZoneInfo = load_settings(REPO_SETTINGS).zone
+    assert isinstance(zone, ZoneInfo)
+    assert zone.key == KYIV
+
+
+def test_the_zone_is_real_and_follows_summer_time() -> None:
+    """Не заглушка UTC: зимой Киев +02:00, летом +03:00 — база зон стоит и читается."""
+    zone: ZoneInfo = load_settings(REPO_SETTINGS).zone
+    assert datetime(2027, 1, 15, 12, 0, tzinfo=zone).utcoffset() == timedelta(hours=2)
+    assert datetime(2027, 7, 15, 12, 0, tzinfo=zone).utcoffset() == timedelta(hours=3)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Europe/Nowhere",       # такой зоны нет
+        "europe/kyiv",          # регистр имени зоны значим
+        "Europe",               # папка базы, а не зона
+        "../etc/passwd",        # выход из базы
+        "Europe/../Europe/Kyiv",  # не нормализованный путь
+        "/Europe/Kyiv",         # абсолютный путь
+        "Europe\\Kyiv",         # на Windows открывается, но в базе такого имени нет
+        "Europe/Kyiv ",         # то же с хвостовым пробелом
+        "Europe/Kyiv\x00",      # нулевой символ
+        "__init__.py",          # файл пакета tzdata, а не зона
+    ],
+)
+def test_an_unreadable_zone_is_a_config_error_on_timezone(tmp_path: Path, name: str) -> None:
+    data: dict[str, Any] = _settings_data()
+    data["timezone"] = name
+    error: ConfigError = _settings_error(tmp_path, data)
+    assert error.key_path == "timezone"
+    assert error.problem == msg.CONFIG_PROBLEM_TIMEZONE_UNKNOWN
+    assert error.kind is ConfigProblem.INVALID
+
+
+def test_another_real_zone_is_accepted(tmp_path: Path) -> None:
+    data: dict[str, Any] = _settings_data()
+    data["timezone"] = "UTC"
+    assert load_settings(_write(tmp_path / "livecraft.json", data)).zone.key == "UTC"
+
+
+def test_the_zone_hint_names_a_correct_example() -> None:
+    assert KYIV in msg.CONFIG_PROBLEM_TIMEZONE_UNKNOWN
 
 
 @pytest.mark.parametrize("template", ["{date}", "{language}", "image/fixed", "", "   "])
