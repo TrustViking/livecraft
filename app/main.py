@@ -9,8 +9,8 @@
 Каждый запуск, кроме --version, начинается с проверки готовности (app\\setup\\readiness.py): сейф и оба
 конфига прочитаны, всего хватает. Фильтр секретов в логах встаёт сразу после чтения сейфа (§7.4). Не готово —
 обычный запуск не начинается: что не так, шаблон сломанного конфига, строка про --setup и код 2 (§8.2).
---setup проверка не останавливает: настройщик и есть способ всё починить. Готово — сводка без значений;
-после неё этап 3 поставит конвейер.
+--setup проверка не останавливает: настройщик и есть способ всё починить — открывается окно (app\\setup\\app.py).
+Готово — сводка без значений; после неё этап 3 поставит конвейер.
 """
 from __future__ import annotations
 
@@ -169,14 +169,30 @@ def _run(request: RunRequest, paths: LivecraftPaths) -> int:
     _log_readiness(readiness)
     _say_lines(readiness.warnings)
     if request.setup:
-        # Окно настройщика заменит эту ветку на этапе 2; пока --setup показывает, что есть и чего нет.
-        _say_lines(readiness.summary_lines + readiness.problems + readiness.template_lines)
-        return int(ExitCode.OK)
+        return _run_setup(paths)
     if not readiness.is_ready:
         _say_lines(readiness.problems + readiness.template_lines)
         _say(msg.SETUP_REQUIRED)
         return int(ExitCode.CONFIG)
     _say_lines(readiness.summary_lines)
+    return int(ExitCode.OK)
+
+
+def _run_setup(paths: LivecraftPaths) -> int:
+    """Окно настройщика (§8). tkinter тянется только сюда: обычный запуск окна не знает.
+
+    TclError при создании окна — нет Tk или рабочего стола: строка в консоль и в лог, код 1.
+    """
+    from tkinter import TclError
+
+    from app.setup.app import SetupApp
+
+    try:
+        SetupApp(paths).run()
+    except TclError as error:
+        LOGGER.error("setup_window_failed error=%s", error)
+        _say(msg.SETUP_WINDOW_FAILED.format(error=error))
+        return int(ExitCode.ERRORS)
     return int(ExitCode.OK)
 
 

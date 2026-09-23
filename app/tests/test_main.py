@@ -27,7 +27,7 @@ from app.secretsafe.crypto import KEY_WRAPPED
 from app.secretsafe.store import VAULT_FILE_ENCODING, VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
-from app.tests.conftest import REPO_CHANNELS_EXAMPLE, SUPPLIED_VALUES
+from app.tests.conftest import REPO_CHANNELS_EXAMPLE, REPO_ROOT, SUPPLIED_VALUES
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
 
@@ -266,19 +266,51 @@ def test_version_flag_takes_no_lock(livecraft_root: Path) -> None:
 # --- готовность к запуску (задача 1.5): сейф и конфиги читаются при каждом запуске
 
 
-def test_setup_on_a_clean_root_shows_what_is_missing_and_exits_0(
+def test_setup_opens_the_window_once_and_exits_0(
     livecraft_root: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """--setup проверка не останавливает: настройщик и есть способ всё починить (§8.2)."""
+    """--setup проверка не останавливает: настройщик и есть способ всё починить — открывается окно (§8.2)."""
+    from app.setup.app import SetupApp
+
+    calls: list[LivecraftPaths] = []
+    monkeypatch.setattr(SetupApp, "run", lambda self: calls.append(self.paths))
     assert run_cli(["--setup"]) == int(ExitCode.OK)
+    assert calls == [build_paths(livecraft_root)]
     out: str = capsys.readouterr().out
-    assert msg.READINESS_SUMMARY_TITLE in out
-    for field in SecretField:
-        assert msg.READINESS_FIELD_LINE.format(label=field.human_label, origin=msg.READINESS_FIELD_ABSENT) in out
-    assert Vault.empty().admission_reason in out
-    assert msg.CONFIG_CHANNELS_TEMPLATE in out
     assert msg.SETUP_REQUIRED not in out
+    assert msg.CONFIG_CHANNELS_TEMPLATE not in out      # что не так, показывает окно, а не консоль
+
+
+def test_a_window_that_cannot_open_gives_code_1(
+    livecraft_root: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Нет Tk или рабочего стола — русская строка в консоль, setup_window_failed в лог, код 1."""
+    from tkinter import TclError
+
+    from app.setup.app import SetupApp
+
+    def _fail(self: SetupApp) -> None:
+        raise TclError("no display name")
+
+    monkeypatch.setattr(SetupApp, "run", _fail)
+    assert run_cli(["--setup"]) == int(ExitCode.ERRORS)
+    assert msg.SETUP_WINDOW_FAILED.format(error="no display name") in capsys.readouterr().out
+    close_logging()
+    [log_file] = list((livecraft_root / "logs").glob(LOG_GLOB))
+    assert "setup_window_failed error=no display name" in log_file.read_text(encoding="utf-8")
+
+
+def test_the_normal_run_does_not_import_the_window() -> None:
+    """tkinter тянет только ветка --setup: обычный запуск окна не знает."""
+    code: str = "import sys, app.main; print('tkinter' in sys.modules)"
+    result: subprocess.CompletedProcess[str] = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True, cwd=REPO_ROOT
+    )
+    assert result.stdout.strip() == "False"
 
 
 def test_a_missing_settings_file_prints_its_template(

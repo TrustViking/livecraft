@@ -256,6 +256,66 @@ SETUP_SETTINGS_NOTICE_UNREADABLE: Final[str] = (
     "программы; файл будет записан только по кнопке «Сохранить»."
 )
 
+# --- окно настройщика (CLAUDE.md §8, app\setup\app.py и app\setup\tabs\): подписи, кнопки, диалоги.
+# Значения сейфа сюда не подставляются никогда: окно показывает только маски из модели вкладки (§7.4).
+SETUP_WINDOW_TITLE: Final[str] = "Livecraft {version} — настройка"
+SETUP_WINDOW_FAILED: Final[str] = (
+    "Окно настройщика не открылось ({error}). Нужен рабочий стол Windows и Python с компонентом tcl/tk."
+)
+SETUP_TAB_KEYS: Final[str] = "Ключи и ссылки"
+SETUP_TAB_CHANNELS: Final[str] = "Каналы YouTube"
+SETUP_TAB_SETTINGS: Final[str] = "Настройки запуска"
+SETUP_READY: Final[str] = "Готово к запуску."
+SETUP_BUTTON_SAVE: Final[str] = "Сохранить"
+SETUP_PROBLEM_LINE: Final[str] = "{label}: {text}"
+SETUP_SAVE_FAILED_TITLE: Final[str] = "Не сохранено"
+SETUP_CLOSE_DIRTY_TITLE: Final[str] = "Несохранённые изменения"
+SETUP_CLOSE_DIRTY_TEXT: Final[str] = "Есть несохранённые изменения. Закрыть без сохранения?"
+# Вкладка «Ключи и ссылки»: заголовки колонок, кнопки строки, отказы записи — без значения и без пути к сейфу.
+SETUP_KEYS_HEADER_FIELD: Final[str] = "Поле"
+SETUP_KEYS_HEADER_ORIGIN: Final[str] = "Откуда"
+SETUP_KEYS_HEADER_VALUE: Final[str] = "Значение"
+SETUP_KEYS_HEADER_INPUT: Final[str] = "Своё значение"
+SETUP_KEYS_BUTTON_ACCEPT: Final[str] = "Сохранить значение"
+SETUP_KEYS_BUTTON_RESET: Final[str] = "Сбросить к поставке"
+SETUP_KEYS_SAVE_FAILED_OS: Final[str] = (
+    "Не удалось записать файл ваших значений. Проверьте, не занят ли он другой программой "
+    "(антивирус, синхронизация), и нажмите «Сохранить» ещё раз."
+)
+# Вкладка «Каналы YouTube»: подписи по ключам SettingProblem (имя поля строки канала) и по полям ChannelDraft.
+SETUP_CHANNEL_FIELD_LABELS: Final[dict[str, str]] = {
+    "account_name": "название канала",
+    "handle": "ник",
+    "google_account": "аккаунт Google",
+    "languages": "языки",
+    "privacy": "видимость",
+    "platform": "площадка",
+    "channels": "список каналов",
+}
+SETUP_CHANNELS_BUTTON_ADD: Final[str] = "Добавить"
+SETUP_CHANNELS_BUTTON_UPDATE: Final[str] = "Изменить выбранный"
+SETUP_CHANNELS_BUTTON_REMOVE: Final[str] = "Удалить выбранный"
+SETUP_CHANNELS_NOTHING_SELECTED: Final[str] = "Сначала выберите канал в таблице."
+SETUP_CHANNELS_SAVE_FAILED: Final[str] = "Не удалось записать secrets\\channels.json: {error}"
+# Вкладка «Настройки запуска»: подписи по ключам SettingProblem (путь поля в livecraft.json).
+SETUP_SETTINGS_FIELD_LABELS: Final[dict[str, str]] = {
+    "min_lead_minutes": "минимальный запас до старта (минут)",
+    "keep_days": "хранить старые файлы (дней)",
+    "auto_start": "автостарт эфира",
+    "set_thumbnail": "ставить обложку",
+    "category_id": "категория YouTube (номер)",
+    "youtube_pause_seconds": "пауза между обращениями к YouTube (секунд)",
+    "image_dir_template": "папка превью (шаблон)",
+    "timezone": "часовой пояс",
+    "llm.model": "модель LLM",
+    "llm.fallback_model": "запасная модель LLM",
+    "llm.reasoning_effort": "уровень рассуждений",
+    "llm.service_tier": "тариф OpenAI",
+    "llm.timeout_sec": "таймаут запроса к LLM (секунд)",
+    "llm.max_output_tokens": "предел ответа LLM (токенов)",
+}
+SETUP_SETTINGS_SAVE_FAILED: Final[str] = "Не удалось записать secrets\\livecraft.json: {error}"
+
 # --- обрыв и падение запуска (app\main.py::run_cli)
 RUN_INTERRUPTED: Final[str] = (
     "Запуск прерван. Что уже сделано на YouTube, найдёт и учтёт следующий запуск."
