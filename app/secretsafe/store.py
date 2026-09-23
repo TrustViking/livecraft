@@ -163,14 +163,20 @@ class ProgramKey:
 
     @classmethod
     def _from_dev_file(cls, path: Path) -> bytes | None:
-        """Файл разработчика: 32 байта либо base64 от них — лишь бы длина совпала."""
+        """Файл разработчика: 32 байта либо base64 от них — лишь бы длина совпала.
+
+        Файла нет — ключа нет, это штатно. Файл есть, но не открывается (папка на его месте, блокировка,
+        нет прав) — VaultFormatError с именем файла и короткой причиной, исходная ошибка через from: «не
+        открылся» — это не «нет», иначе оператор получил бы неверную причину «не хватает полей» (§16, тот же
+        приём, что в `VaultStore._read_file`). Содержимого файла и полного пути в тексте ошибки нет.
+        """
         try:
             raw: bytes = path.read_bytes()
         except FileNotFoundError:
             return None      # обычная установка без своего ключа
         except OSError as error:
-            LOGGER.warning("program_key_file_unreadable error=%s", error)
-            return None
+            reason: str = error.strerror or type(error).__name__
+            raise VaultFormatError(f"{path.name}: {reason}") from error
         return cls._checked(cls._as_key_bytes(raw), str(path))
 
     @staticmethod

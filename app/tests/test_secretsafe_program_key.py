@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 
 from app.paths import LivecraftPaths
-from app.secretsafe.crypto import VAULT_KEY_BYTES
-from app.secretsafe.store import GENERATED_KEY_MODULE, GENERATED_KEY_PARTS, ProgramKey
+from app.secretsafe.crypto import VAULT_KEY_BYTES, VaultFormatError
+from app.secretsafe.store import GENERATED_KEY_MODULE, GENERATED_KEY_PARTS, ProgramKey, VaultStore
 
 KEY: bytes = bytes(range(VAULT_KEY_BYTES))
 
@@ -60,9 +60,23 @@ def test_a_key_of_the_wrong_length_counts_as_absent(dev_key_path: Path, raw: byt
     assert not ProgramKey.load(dev_key_path).is_available
 
 
-def test_a_directory_in_place_of_the_key_file_counts_as_absent(dev_key_path: Path) -> None:
+def test_a_key_file_that_does_not_open_is_a_format_error_not_absent(dev_key_path: Path) -> None:
+    """«Не открылся» — это не «нет» (§16): иначе оператор получил бы неверную причину «не хватает полей»."""
     dev_key_path.mkdir()
-    assert not ProgramKey.load(dev_key_path).is_available
+    with pytest.raises(VaultFormatError) as raised:
+        ProgramKey.load(dev_key_path)
+    text: str = str(raised.value)
+    assert "program.key" in text
+    assert str(dev_key_path.parent) not in text          # только имя файла, без папки
+    assert isinstance(raised.value.__cause__, OSError)
+
+
+def test_a_key_file_that_does_not_open_stops_the_store_from_opening(livecraft_paths: LivecraftPaths) -> None:
+    """Боевой путь: VaultStore.open → ProgramKey.load; дальше Readiness превращает ошибку в код 2."""
+    livecraft_paths.program_key_file.mkdir()
+    with pytest.raises(VaultFormatError) as raised:
+        VaultStore.open(livecraft_paths)
+    assert "program.key" in str(raised.value)
 
 
 def test_the_wrong_length_is_reported_without_the_key_bytes(
