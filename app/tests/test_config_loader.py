@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -668,3 +669,47 @@ def test_parsing_data_names_the_given_path_in_the_error(tmp_path: Path) -> None:
         parse_settings(data, path)
     assert raised.value.config_path == path
     assert raised.value.key_path == "keep_days"
+
+
+# --- NaN и бесконечность в дробных настройках (задача 2.2a)
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_a_non_finite_pause_in_the_file_is_a_config_error(tmp_path: Path, literal: str) -> None:
+    """json.loads принимает эти слова, а nan < 0 ложно: без проверки конечности пауза прошла бы минимум."""
+    text: str = json.dumps(_settings_data(), ensure_ascii=False).replace(
+        '"youtube_pause_seconds": 0.5', f'"youtube_pause_seconds": {literal}'
+    )
+    assert literal in text
+    path: Path = tmp_path / "livecraft.json"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ConfigError) as raised:
+        load_settings(path)
+    assert raised.value.key_path == "youtube_pause_seconds"
+    assert raised.value.problem == msg.CONFIG_PROBLEM_NUMBER_FINITE
+
+
+def test_a_negative_pause_still_names_the_minimum(tmp_path: Path) -> None:
+    data: dict[str, Any] = _settings_data()
+    data["youtube_pause_seconds"] = -1
+    error: ConfigError = _settings_error(tmp_path, data)
+    assert error.key_path == "youtube_pause_seconds"
+    assert error.problem == msg.CONFIG_PROBLEM_NUMBER_MIN.format(minimum=0.0)
+
+
+def test_parsing_data_with_nan_gives_the_same_error(tmp_path: Path) -> None:
+    data: dict[str, Any] = _settings_data()
+    data["youtube_pause_seconds"] = float("nan")
+    with pytest.raises(ConfigError) as raised:
+        parse_settings(data, tmp_path / "livecraft.json")
+    assert raised.value.key_path == "youtube_pause_seconds"
+    assert raised.value.problem == msg.CONFIG_PROBLEM_NUMBER_FINITE
+
+
+def test_rendering_settings_built_around_the_loader_with_nan_fails() -> None:
+    """Страховка записи: нестандартного JSON в livecraft.json не бывает."""
+    settings: LivecraftSettings = dataclasses.replace(
+        load_settings(REPO_SETTINGS), youtube_pause_seconds=float("nan")
+    )
+    with pytest.raises(ValueError):
+        render_settings_file(settings)

@@ -19,6 +19,7 @@ save_channels_file (текст — только render_channels_file); преж�
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import unicodedata
 from collections.abc import Iterable
@@ -437,8 +438,13 @@ def save_channels_file(channels_file: Path, previous_file: Path, channels: Itera
 
 
 def render_settings_file(settings: LivecraftSettings) -> str:
-    """Текст livecraft.json: тот же вид, что у поставочного файла."""
-    return json.dumps(settings.to_data(), indent=SETTINGS_FILE_INDENT, ensure_ascii=False) + SETTINGS_FILE_END
+    """Текст livecraft.json: тот же вид, что у поставочного файла.
+
+    Только стандартный JSON: настройки после разбора конечны всегда, а объект, собранный в обход загрузчика
+    с NaN или бесконечностью, даёт ValueError, а не файл, который другие программы не прочитают.
+    """
+    text: str = json.dumps(settings.to_data(), indent=SETTINGS_FILE_INDENT, ensure_ascii=False, allow_nan=False)
+    return text + SETTINGS_FILE_END
 
 
 def save_settings_file(config_file: Path, settings: LivecraftSettings) -> None:
@@ -674,9 +680,17 @@ class _ConfigParser:
         return value
 
     def _number(self, mapping: dict[str, Any], key: str, *, prefix: str, minimum: float) -> float:
-        """Число, можно дробное: int и float — да; bool, строка и меньше минимума — ошибка."""
+        """Число, можно дробное: int и float — да; bool, строка, NaN, бесконечность и меньше минимума — ошибка.
+
+        json.loads принимает NaN, Infinity и -Infinity, а nan < minimum ложно: без проверки конечности
+        такое значение прошло бы минимум.
+        """
         value: Any = mapping[key]
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < minimum:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise self._error(f"{prefix}{key}", msg.CONFIG_PROBLEM_NUMBER_MIN.format(minimum=minimum))
+        if not math.isfinite(value):
+            raise self._error(f"{prefix}{key}", msg.CONFIG_PROBLEM_NUMBER_FINITE)
+        if value < minimum:
             raise self._error(f"{prefix}{key}", msg.CONFIG_PROBLEM_NUMBER_MIN.format(minimum=minimum))
         return float(value)
 

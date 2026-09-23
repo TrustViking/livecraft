@@ -139,6 +139,7 @@ CONFIG_PROBLEM_TEXT_MAPPING: Final[str] = (
 )
 CONFIG_PROBLEM_INT_MIN: Final[str] = "нужно целое число не меньше {minimum}"
 CONFIG_PROBLEM_NUMBER_MIN: Final[str] = "нужно число не меньше {minimum:g}, можно дробное, например 0.5"
+CONFIG_PROBLEM_NUMBER_FINITE: Final[str] = "нужно обычное число: NaN и бесконечность не годятся"
 CONFIG_PROBLEM_BOOL: Final[str] = "нужно true или false"
 CONFIG_PROBLEM_CHOICE: Final[str] = "допустимо: {allowed}"
 CONFIG_PROBLEM_FORM_PLATFORM: Final[str] = "среди вариантов площадки обязан быть «{platform}»"
