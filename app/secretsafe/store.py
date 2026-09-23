@@ -75,15 +75,54 @@ class LocalVaultState(str, Enum):
 
 @dataclass(frozen=True)
 class VaultLoad:
-    """Результат чтения сейфа: сам сейф и состояние личного файла — полем, а не только строкой в логе (§0)."""
+    """Результат чтения сейфа: сам сейф и состояние личного файла — полем, а не только строкой в логе (§0).
+
+    `vault` — то, с чем работает запуск: личный слой поверх поставочного. `supplied` — поставочный слой как он
+    прочитан, без наложения: без него не узнать, что окажется под личным значением после «Сбросить к поставке»
+    (§8.2). Личный слой отдельного поля не держит — это ровно поля `vault` с происхождением «своё» (`own`).
+    """
 
     vault: Vault
     local_state: LocalVaultState
+    supplied: Vault
+
+    @classmethod
+    def from_layers(cls, supplied: Vault, own: Vault, local_state: LocalVaultState) -> VaultLoad:
+        """Наложить личный слой на поставочный: поле личного перекрывает поле поставочного (§7.3).
+
+        Единственное место этого правила: по нему собирает сейф и `VaultStore.load`, и настройщик, меняя поля.
+        """
+        vault: Vault = supplied
+        for field in SecretField:
+            secret: SecretValue | None = own.get(field)
+            if secret is None:
+                continue
+            vault = vault.with_field(field, secret, VaultOrigin.OWN)
+        return cls(vault=vault, local_state=local_state, supplied=supplied)
+
+    @property
+    def own(self) -> Vault:
+        """Личный слой: только поля с происхождением «своё», в порядке SecretField."""
+        own: Vault = Vault.empty()
+        for field in SecretField:
+            secret: SecretValue | None = self.vault.get(field)
+            if secret is None or self.vault.origin_of(field) is not VaultOrigin.OWN:
+                continue
+            own = own.with_field(field, secret, VaultOrigin.OWN)
+        return own
 
     @property
     def is_local_unreadable(self) -> bool:
         """Личный файл есть, но значения из него не прочитаны: работа идёт на поставочных."""
         return self.local_state is LocalVaultState.UNREADABLE
+
+
+@dataclass(frozen=True)
+class _LocalRead:
+    """Промежуточный итог чтения личного файла: его поля и состояние. Наружу store.py не выходит."""
+
+    vault: Vault
+    state: LocalVaultState
 
 
 @dataclass(frozen=True)
@@ -174,17 +213,18 @@ class VaultStore:
             dpapi=Dpapi.load(),
         )
 
+    @property
+    def can_save_local(self) -> bool:
+        """Можно ли записать личный сейф: без DPAPI своих значений на этой машине не будет (§7.3, Dpapi)."""
+        return self.dpapi.is_available
+
     def load(self) -> VaultLoad:
         """Оба файла в один сейф: поле локального перекрывает поле поставочного (§7.3)."""
-        vault: Vault = self._read_supplied()
-        local: VaultLoad = self._read_local()
-        for field in SecretField:
-            secret: SecretValue | None = local.vault.get(field)
-            if secret is None:
-                continue
-            vault = vault.with_field(field, secret, VaultOrigin.OWN)
-        LOGGER.info("vault_loaded fields=%s local=%s", vault.log_line, local.local_state.value)
-        return VaultLoad(vault=vault, local_state=local.local_state)
+        supplied: Vault = self._read_supplied()
+        local: _LocalRead = self._read_local()
+        loaded: VaultLoad = VaultLoad.from_layers(supplied=supplied, own=local.vault, local_state=local.state)
+        LOGGER.info("vault_loaded fields=%s local=%s", loaded.vault.log_line, local.state.value)
+        return loaded
 
     def save_local(self, vault: Vault) -> None:
         """Записать локальный сейф: только свои поля, новый ключ и новая соль на каждую запись.
@@ -228,21 +268,21 @@ class VaultStore:
         decrypted: Vault | None = self._decrypt(VaultSource.SUPPLIED, file, key, VaultOrigin.SUPPLIED)
         return Vault.empty() if decrypted is None else decrypted
 
-    def _read_local(self) -> VaultLoad:
+    def _read_local(self) -> _LocalRead:
         """Локальный сейф: ключ лежит в самом файле, завёрнутый DPAPI (§14, решение 9).
 
         Состояние решается здесь, где оно известно, а не догадкой по пустоте сейфа снаружи.
         """
         file: VaultFile | None = self._read_file(self.local_path)
         if file is None:
-            return VaultLoad(vault=Vault.empty(), local_state=LocalVaultState.ABSENT)
+            return _LocalRead(vault=Vault.empty(), state=LocalVaultState.ABSENT)
         key: bytes | None = self._unwrap_local_key(file)
         if key is None:
-            return VaultLoad(vault=Vault.empty(), local_state=LocalVaultState.UNREADABLE)
+            return _LocalRead(vault=Vault.empty(), state=LocalVaultState.UNREADABLE)
         decrypted: Vault | None = self._decrypt(VaultSource.LOCAL, file, key, VaultOrigin.OWN)
         if decrypted is None:
-            return VaultLoad(vault=Vault.empty(), local_state=LocalVaultState.UNREADABLE)
-        return VaultLoad(vault=decrypted, local_state=LocalVaultState.READ)
+            return _LocalRead(vault=Vault.empty(), state=LocalVaultState.UNREADABLE)
+        return _LocalRead(vault=decrypted, state=LocalVaultState.READ)
 
     def _unwrap_local_key(self, file: VaultFile) -> bytes | None:
         """Нет записи «key» или DPAPI её не развернул — файл нечитаем, работаем на поставочном (§14, решение 9)."""

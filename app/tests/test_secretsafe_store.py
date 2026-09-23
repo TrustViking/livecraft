@@ -620,3 +620,86 @@ def test_open_without_a_program_key_still_opens(livecraft_paths: LivecraftPaths)
     opened: VaultStore = VaultStore.open(livecraft_paths)
     assert not opened.program_key.is_available
     assert opened.load().vault.entries == {}
+
+
+# --- слои сейфа: поставочный как прочитан и личный отдельно (настройщик, §8.2)
+
+
+def _values_of(vault: Vault) -> dict[SecretField, str]:
+    return {field: entry.secret.reveal() for field, entry in vault.entries.items()}
+
+
+def test_only_supplied_gives_a_supplied_layer_and_no_own(store: VaultStore) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    loaded: VaultLoad = store.load()
+    assert _values_of(loaded.supplied) == SUPPLIED_VALUES
+    assert all(loaded.supplied.origin_of(field) is VaultOrigin.SUPPLIED for field in ALL_FIELDS)
+    assert loaded.own == Vault.empty()
+
+
+def test_only_own_gives_an_own_layer_and_an_empty_supplied_one(store: VaultStore) -> None:
+    store.save_local(_own_vault(OWN_VALUES))
+    loaded: VaultLoad = store.load()
+    assert loaded.supplied == Vault.empty()
+    assert _values_of(loaded.own) == OWN_VALUES
+    assert all(loaded.own.origin_of(field) is VaultOrigin.OWN for field in OWN_VALUES)
+
+
+def test_own_over_supplied_keeps_the_supplied_layer_whole(store: VaultStore) -> None:
+    """Под личным значением поставочное не теряется: без него не посчитать «Сбросить к поставке»."""
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.save_local(_own_vault(OWN_VALUES))
+    loaded: VaultLoad = store.load()
+    assert _values_of(loaded.supplied) == SUPPLIED_VALUES
+    assert _values_of(loaded.own) == OWN_VALUES
+    assert tuple(loaded.own.entries) == (SecretField.SHEETS_ID, SecretField.KEY_FORM_URL)
+    assert loaded.vault.origin_of(SecretField.SHEETS_ID) is VaultOrigin.OWN
+    assert loaded.vault.origin_of(SecretField.OPENAI_API_KEY) is VaultOrigin.SUPPLIED
+
+
+def test_the_supplied_layer_is_empty_without_a_program_key(livecraft_paths: LivecraftPaths) -> None:
+    opened: VaultStore = VaultStore.open(livecraft_paths)
+    livecraft_paths.vault_file.write_text(
+        VaultFile.empty().render(), encoding=VAULT_FILE_ENCODING
+    )
+    assert opened.load().supplied == Vault.empty()
+
+
+def test_the_layers_rebuild_the_same_vault(store: VaultStore) -> None:
+    """Наложение — одно правило: из двух слоёв собирается тот же сейф, что прочитан с диска."""
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.save_local(_own_vault(OWN_VALUES))
+    loaded: VaultLoad = store.load()
+    rebuilt: VaultLoad = VaultLoad.from_layers(
+        supplied=loaded.supplied, own=loaded.own, local_state=loaded.local_state
+    )
+    assert rebuilt == loaded
+
+
+def test_an_unreadable_local_file_leaves_no_own_layer(store: VaultStore) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.save_local(_own_vault(OWN_VALUES))
+    data: dict[str, Any] = _local_json(store)
+    del data[KEY_WRAPPED]
+    _rewrite_local(store, data)
+    loaded: VaultLoad = store.load()
+    assert loaded.own == Vault.empty()
+    assert _values_of(loaded.supplied) == SUPPLIED_VALUES
+
+
+# --- можно ли писать личный сейф
+
+
+def test_can_save_local_with_windows_dpapi(store: VaultStore) -> None:
+    assert Dpapi.load().is_available
+    assert store.can_save_local
+
+
+def test_cannot_save_local_without_dpapi(livecraft_paths: LivecraftPaths) -> None:
+    no_dpapi: VaultStore = VaultStore(
+        supplied_path=livecraft_paths.vault_file,
+        local_path=livecraft_paths.vault_local_file,
+        program_key=ProgramKey.load(livecraft_paths.program_key_file),
+        dpapi=Dpapi(),
+    )
+    assert not no_dpapi.can_save_local
