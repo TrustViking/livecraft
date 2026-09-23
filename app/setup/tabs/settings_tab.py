@@ -37,10 +37,14 @@ FIELD_KEYS: Final[dict[str, str]] = {
 }
 ENTRY_WIDTH_CHARS: Final[int] = 32
 READONLY: Final[str] = "readonly"
+HINT_FOREGROUND: Final[str] = "#6b6b6b"     # серая подсказка: читается, но не спорит с подписью поля
+HINT_WRAP_PIXELS: Final[int] = 420
 
 
 class SettingsTab:
-    """Вкладка «Настройки запуска». `panel` — текущая модель; `variables` — значения полей окна."""
+    """Вкладка «Настройки запуска». `panel` — текущая модель; `variables` — значения полей окна;
+    `hints` — серые подсказки у полей, которым они нужны (messages_ru, по тем же ключам, что подписи).
+    """
 
     def __init__(self, notebook: ttk.Notebook, paths: LivecraftPaths, on_saved: Callable[[], None]) -> None:
         self.paths: LivecraftPaths = paths
@@ -50,6 +54,7 @@ class SettingsTab:
         self.notice.pack(fill=tk.X, anchor=tk.W)
         self.variables: dict[str, tk.Variable] = {}
         self.inputs: dict[str, ttk.Widget] = {}
+        self.hints: dict[str, ttk.Label] = {}
         self._build_fields()
         self.problem: ProblemLine = ProblemLine(self.frame, msg.SETUP_SETTINGS_FIELD_LABELS)
         self.problem.label.pack(fill=tk.X, anchor=tk.W)
@@ -102,7 +107,7 @@ class SettingsTab:
         }
 
     def _build_fields(self) -> None:
-        """Строка на поле черновика: подпись и виджет по типу значения."""
+        """Строка на поле черновика: подпись, виджет по типу значения и серая подсказка, если она есть."""
         grid: ttk.Frame = ttk.Frame(self.frame)
         grid.pack(fill=tk.X, anchor=tk.W, pady=PAD)
         draft: SettingsDraft = self.panel.draft
@@ -115,6 +120,11 @@ class SettingsTab:
             widget: ttk.Widget = self._build_input(grid, name, getattr(draft, name), choices.get(name))
             widget.grid(row=row, column=1, sticky=tk.W, padx=PAD, pady=(PAD, 0))
             self.inputs[name] = widget
+            hint: str | None = msg.SETUP_SETTINGS_FIELD_HINTS.get(FIELD_KEYS[name])
+            if hint is not None:
+                label: ttk.Label = ttk.Label(grid, text=hint, foreground=HINT_FOREGROUND, wraplength=HINT_WRAP_PIXELS)
+                label.grid(row=row, column=2, sticky=tk.W, padx=PAD, pady=(PAD, 0))
+                self.hints[name] = label
 
     def _build_input(
         self, parent: ttk.Frame, name: str, value: str | bool, options: tuple[str, ...] | None

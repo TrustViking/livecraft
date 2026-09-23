@@ -91,12 +91,12 @@ CONFIG_SETTINGS_TEMPLATE: Final[str] = """{
   "image_dir_template": "{date}/{language}",
   "timezone": "Europe/Kyiv",
   "llm": {
-    "model": "gpt-5.2",
-    "fallback_model": "gpt-5.2",
+    "model": "gpt-5.6-sol",
+    "fallback_model": "gpt-5.4",
     "reasoning_effort": "medium",
-    "service_tier": "default",
-    "timeout_sec": 120,
-    "max_output_tokens": 6000
+    "service_tier": "flex",
+    "timeout_sec": 900,
+    "max_output_tokens": 8000
   },
   "form": {
     "fields": {
@@ -194,9 +194,11 @@ LOCK_REJECTED_UNKNOWN_OWNER: Final[str] = (
 # --- сейф (CLAUDE.md §7): названия полей и маска, которую человек видит вместо значения.
 # Само значение не показывается нигде, кроме поля настройщика, куда его ввёл сам пользователь (§8.2).
 VAULT_FIELD_OPENAI_API_KEY: Final[str] = "ключ OpenAI"
-VAULT_FIELD_SHEETS_ID: Final[str] = "таблица плана"
-VAULT_FIELD_SHEETS_RANGE: Final[str] = "диапазон таблицы"
-VAULT_FIELD_KEY_FORM_URL: Final[str] = "форма ключей"
+VAULT_FIELD_SHEETS_ID: Final[str] = "Google таблица контент-плана"
+# Пример в названии — не поставочный диапазон: название стоит в масках и сводках, и настоящий диапазон
+# в нём подсказал бы структуру таблицы, ради сокрытия которой диапазон и лежит в сейфе (§7.5).
+VAULT_FIELD_SHEETS_RANGE: Final[str] = "колонки Google таблицы (например, B:H)"
+VAULT_FIELD_KEY_FORM_URL: Final[str] = "Google форма для ключей стрима (эфира)"
 # Маска по отпечатку: название поля и четыре знака sha256 — различить два значения можно, восстановить нет.
 VAULT_MASK_FINGERPRINT: Final[str] = "{label} (…{fingerprint})"
 # Происхождение поля: пришло со сборкой или его вписал сам пользователь (§7.3).
@@ -223,22 +225,23 @@ SETUP_INPUT_SHEETS_RANGE: Final[str] = (
 SETUP_INPUT_KEY_FORM_URL: Final[str] = (
     "нужна ссылка на Google-форму: https://docs.google.com/forms/… или https://forms.gle/…, без пробелов"
 )
+# Тексты для человека без знания устройства программы: ни где лежат файлы, ни как шифруется (смотр окна 23-09-2026).
 SETUP_INPUT_OWN_UNAVAILABLE: Final[str] = (
-    "своё значение на этой машине сохранить нельзя: защита Windows (DPAPI) недоступна"
+    "на этом компьютере свои значения сохранить нельзя: программа работает на значениях, пришедших вместе с ней"
 )
-# Оговорка §7.2 и §14 решения 6: вкладка показывает её всегда, без неё шифрование выглядело бы защитой от всех.
+# Оговорка §7.2 и §14 решения 6: вкладка показывает её всегда, без неё защита выглядела бы защитой от всех.
+# «Не от специалиста» — обязательно; где лежит ключ и как шифруется — не говорим.
 SETUP_KEYS_NOTICE_PROTECTION: Final[str] = (
-    "Значения, пришедшие вместе с программой, зашифрованы от копирования и чтения глазами, но не от специалиста: "
-    "ключ к ним лежит внутри программы. Свои значения шифруются ключом вашей учётной записи Windows — "
-    "на другом компьютере или под другим пользователем файл с ними бесполезен."
+    "Значения, пришедшие вместе с программой, защищены от копирования и визуального отображения, но не от "
+    "специалиста. Свои значения, введённые здесь, действуют только на этом компьютере под вашей учётной записью "
+    "Windows."
 )
 SETUP_KEYS_NOTICE_NO_OWN: Final[str] = (
-    "На этой машине недоступна защита Windows (DPAPI), поэтому своих значений здесь не будет: "
-    "программа работает на значениях, пришедших вместе с программой."
+    "На этом компьютере свои значения сохранить нельзя: программа работает на значениях, пришедших вместе с ней."
 )
 SETUP_KEYS_NOTICE_LOCAL_UNREADABLE: Final[str] = (
-    "Прежний файл ваших значений (secrets\\vault.local.dat) не прочитался — так бывает после переноса папки на другой "
-    "компьютер или смены пользователя Windows. Первое сохранение заменит его тем, что вы введёте сейчас."
+    "Ваши прежние значения не прочитались — так бывает после переноса программы на другой компьютер или смены "
+    "пользователя Windows. Первое сохранение заменит их тем, что вы введёте сейчас."
 )
 
 # --- настройщик, вкладка «Каналы YouTube» (CLAUDE.md §8.2, п.2). {key} и {problem} — из ConfigError загрузчика.
@@ -302,20 +305,37 @@ SETUP_CHANNELS_NOTHING_SELECTED: Final[str] = "Сначала выберите �
 SETUP_CHANNELS_SAVE_FAILED: Final[str] = "Не удалось записать secrets\\channels.json: {error}"
 # Вкладка «Настройки запуска»: подписи по ключам SettingProblem (путь поля в livecraft.json).
 SETUP_SETTINGS_FIELD_LABELS: Final[dict[str, str]] = {
-    "min_lead_minutes": "минимальный запас до старта (минут)",
-    "keep_days": "хранить старые файлы (дней)",
-    "auto_start": "автостарт эфира",
-    "set_thumbnail": "ставить обложку",
-    "category_id": "категория YouTube (номер)",
+    "min_lead_minutes": "минимальный запас до старта эфира (минут)",
+    "keep_days": "хранить старые файлы программы (дней)",
+    "auto_start": "эфир стартует сам, когда пошёл видеопоток",
+    "set_thumbnail": "ставить эфиру обложку",
+    "category_id": "категория видео на YouTube",
     "youtube_pause_seconds": "пауза между обращениями к YouTube (секунд)",
-    "image_dir_template": "папка превью (шаблон)",
+    "image_dir_template": "папка для обложек",
     "timezone": "часовой пояс",
-    "llm.model": "модель LLM",
-    "llm.fallback_model": "запасная модель LLM",
-    "llm.reasoning_effort": "уровень рассуждений",
+    "llm.model": "модель OpenAI",
+    "llm.fallback_model": "запасная модель OpenAI",
+    "llm.reasoning_effort": "глубина рассуждений модели",
     "llm.service_tier": "тариф OpenAI",
-    "llm.timeout_sec": "таймаут запроса к LLM (секунд)",
-    "llm.max_output_tokens": "предел ответа LLM (токенов)",
+    "llm.timeout_sec": "сколько ждать ответа модели (секунд)",
+    "llm.max_output_tokens": "наибольшая длина ответа модели (токенов)",
+}
+# Серые подсказки справа от поля — по тем же ключам, что подписи; есть не у всех полей. Строки не проходят
+# через .format: {date} и {language} здесь — буквальный текст шаблона папки.
+SETUP_SETTINGS_FIELD_HINTS: Final[dict[str, str]] = {
+    "category_id": (
+        "номер категории YouTube: 22 — «Люди и блоги», 24 — «Развлечения», 25 — «Новости и политика», "
+        "27 — «Образование»"
+    ),
+    "image_dir_template": (
+        "где внутри папки image складывать обложки: {date} — дата эфира, {language} — язык. "
+        "{date}/{language} даёт image\\23-09-2026\\uk"
+    ),
+    "youtube_pause_seconds": "сколько ждать между обращениями к YouTube; 0.5 — обычно достаточно",
+    "llm.model": "модель OpenAI для текстов эфира, например gpt-5.6-sol",
+    "llm.fallback_model": "если основная модель недоступна, например gpt-5.4",
+    "llm.service_tier": "flex — дешевле и медленнее, default — обычный",
+    "timezone": "Europe/Kyiv — киевское время",
 }
 SETUP_SETTINGS_SAVE_FAILED: Final[str] = "Не удалось записать secrets\\livecraft.json: {error}"
 

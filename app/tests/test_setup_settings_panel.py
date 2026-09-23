@@ -53,12 +53,12 @@ def test_the_draft_shows_the_shipped_values(ready_paths: LivecraftPaths) -> None
         youtube_pause_seconds="0.5",
         image_dir_template="{date}/{language}",
         timezone="Europe/Kyiv",
-        llm_model="gpt-5.2",
-        llm_fallback_model="gpt-5.2",
+        llm_model="gpt-5.6-sol",
+        llm_fallback_model="gpt-5.4",
         llm_reasoning_effort="medium",
-        llm_service_tier="default",
-        llm_timeout_sec="120",
-        llm_max_output_tokens="6000",
+        llm_service_tier="flex",
+        llm_timeout_sec="900",
+        llm_max_output_tokens="8000",
     )
     assert panel.settings == _shipped()
     assert panel.loaded == panel.settings

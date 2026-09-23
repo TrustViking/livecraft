@@ -92,10 +92,11 @@ def test_the_shipped_settings_file_loads(tmp_path: Path) -> None:
     assert settings.youtube_pause_seconds == 0.5
     assert settings.image_dir_template == "{date}/{language}"
     assert settings.timezone == "Europe/Kyiv"
-    assert settings.llm.model == "gpt-5.2" and settings.llm.fallback_model == "gpt-5.2"
+    # Поставочная модель и её параметры — как в боевом restreamer (смотр окна 23-09-2026).
+    assert settings.llm.model == "gpt-5.6-sol" and settings.llm.fallback_model == "gpt-5.4"
     assert settings.llm.reasoning_effort is ReasoningEffort.MEDIUM
-    assert settings.llm.service_tier is ServiceTier.DEFAULT
-    assert (settings.llm.timeout_sec, settings.llm.max_output_tokens) == (120, 6000)
+    assert settings.llm.service_tier is ServiceTier.FLEX
+    assert (settings.llm.timeout_sec, settings.llm.max_output_tokens) == (900, 8000)
     assert settings.form.date_format == "%d.%m.%Y"
     assert settings.form.fields["time"] is None
     assert settings.form.values["platform"]["youtube"] == "You Tube"

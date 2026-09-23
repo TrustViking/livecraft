@@ -8,20 +8,20 @@ from __future__ import annotations
 import logging
 import tkinter as tk
 from collections.abc import Iterator
-from tkinter import messagebox, ttk
+from tkinter import font, messagebox, ttk
 
 import pytest
 
 from app.config.loader import load_channels, load_settings
 from app.paths import LivecraftPaths
 from app.secretsafe.value import SecretField, SecretValue
-from app.setup.app import SetupWindow
+from app.setup.app import SELECTED, TAB_STYLE, THEME, SetupWindow
 from app.setup.panels.keys_panel import KeysPanel
 from app.setup.readiness import Readiness
 from app.setup.tabs.channels_tab import ChannelsTab
 from app.setup.tabs.keys_tab import SECRET_ECHO, KeyRowView, KeysTab
 from app.setup.tabs.settings_tab import SettingsTab
-from app.tests.conftest import REPO_CHANNELS_EXAMPLE, REPO_SETTINGS_FILE
+from app.tests.conftest import REPO_CHANNELS_EXAMPLE, REPO_SETTINGS_FILE, SUPPLIED_VALUES
 from app.ui import messages_ru as msg
 
 OWN_OPENAI_KEY: str = "sk-proj-own-Zy9xWvUtSrQpOnMlKjIhGfEdCbA9876543210"
@@ -489,3 +489,93 @@ def test_the_revealed_value_goes_only_to_its_own_label(
     assert OWN_OPENAI_KEY not in window.readiness_line.cget("text")
     assert OWN_OPENAI_KEY not in window.root.title()
     assert not any(OWN_OPENAI_KEY in record.getMessage() for record in caplog.records)
+
+
+# --- понятность окна (задача 2.3b, смотр окна 23-09-2026)
+
+STORAGE_WORDS: tuple[str, ...] = ("vault", "DPAPI", "secrets", "внутри программы")
+
+
+def _state_value(window: SetupWindow, option: str, state: str) -> object | None:
+    """Значение опции вкладки для состояния из map стиля; нет такого состояния — None."""
+    for *states, value in window.style.map(TAB_STYLE, option):
+        if state in states:
+            return value
+    return None
+
+
+def test_the_tabs_have_inner_padding(window: SetupWindow) -> None:
+    padding: object = window.style.lookup(TAB_STYLE, "padding")
+    assert padding not in ("", None, ())
+    assert _state_value(window, "padding", SELECTED) not in ("", None, ())
+
+
+def test_the_selected_tab_is_bold_and_on_another_background(window: SetupWindow) -> None:
+    assert window.style.theme_use() == THEME          # тема Windows по умолчанию фон вкладки не берёт
+    selected_font: object = _state_value(window, "font", SELECTED)
+    assert selected_font is not None
+    assert font.Font(root=window.root, font=selected_font).actual("weight") == font.BOLD
+    normal_font: str = str(window.style.lookup(TAB_STYLE, "font"))
+    assert font.Font(root=window.root, font=normal_font).actual("weight") == font.NORMAL
+    selected_background: object = _state_value(window, "background", SELECTED)
+    other_background: object = _state_value(window, "background", "!" + SELECTED)
+    assert selected_background is not None and other_background is not None
+    assert selected_background != other_background
+
+
+def test_there_is_a_gap_between_the_tabs(window: SetupWindow) -> None:
+    """Между соседними вкладками — полоса, которая не принадлежит ни одной вкладке."""
+    window.root.deiconify()
+    window.root.update()
+    try:
+        row: list[str] = [window.notebook.identify(x, 10) for x in range(window.notebook.winfo_width())]
+    finally:
+        window.root.withdraw()
+    tabs: list[int] = [x for x, element in enumerate(row) if element == "tab"]
+    assert tabs
+    tab_parts: tuple[str, ...] = ("tab", "padding", "focus", "label")
+    gaps: list[str] = [element for element in row[tabs[0]:tabs[-1]] if element not in tab_parts]
+    assert gaps                                       # внутри ряда вкладок есть промежуток
+
+
+@pytest.mark.parametrize("name", ["category_id", "image_dir_template"])
+def test_the_settings_hint_is_shown_next_to_the_field(window: SetupWindow, name: str) -> None:
+    hint: ttk.Label = window.settings_tab.hints[name]
+    assert hint.cget("text") == msg.SETUP_SETTINGS_FIELD_HINTS[name]
+    assert hint.grid_info()["column"] == 2
+    assert hint.grid_info()["row"] == window.settings_tab.inputs[name].grid_info()["row"]
+
+
+def test_every_settings_hint_belongs_to_a_known_field() -> None:
+    assert set(msg.SETUP_SETTINGS_FIELD_HINTS) <= set(msg.SETUP_SETTINGS_FIELD_LABELS)
+
+
+def test_the_folder_hint_keeps_its_braces_literal(window: SetupWindow) -> None:
+    text: str = str(window.settings_tab.hints["image_dir_template"].cget("text"))
+    assert "{date}" in text and "{language}" in text
+
+
+def test_the_keys_notice_names_no_storage_details(window: SetupWindow) -> None:
+    notice: str = str(window.keys_tab.notice.cget("text"))
+    assert msg.SETUP_KEYS_NOTICE_PROTECTION in notice
+    assert "не от специалиста" in notice              # оговорка §14 решения 6 — обязательна
+    for word in STORAGE_WORDS:
+        assert word not in notice
+
+
+def test_setup_texts_name_no_storage_details() -> None:
+    """Ни одна строка настройщика не говорит, как и где хранятся значения."""
+    texts: dict[str, str] = {
+        name: value for name, value in vars(msg).items() if name.startswith("SETUP_") and isinstance(value, str)
+    }
+    assert texts
+    for name, text in texts.items():
+        assert "DPAPI" not in text, name
+        assert "vault.local" not in text, name
+
+
+def test_no_vault_field_name_contains_the_supplied_values() -> None:
+    """Название поля стоит в масках и сводках: в нём не может быть поставочного значения (§7.4, §7.5)."""
+    for field in SecretField:
+        for value in SUPPLIED_VALUES.values():
+            assert value not in field.human_label
