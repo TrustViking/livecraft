@@ -240,6 +240,21 @@ SETUP_KEYS_NOTICE_LOCAL_UNREADABLE: Final[str] = (
     "компьютер или смены пользователя Windows. Первое сохранение заменит его тем, что вы введёте сейчас."
 )
 
+# --- настройщик, вкладка «Каналы YouTube» (CLAUDE.md §8.2, п.2). {key} и {problem} — из ConfigError загрузчика.
+SETUP_CHANNELS_NOTICE_FILE_MISSING: Final[str] = (
+    "Файла secrets\\channels.json ещё нет: добавьте хотя бы один канал и сохраните."
+)
+SETUP_CHANNELS_NOTICE_UNREADABLE: Final[str] = (
+    "Файл secrets\\channels.json не прочитался: {key} — {problem}. Сохранение заменит его списком этой вкладки, "
+    "а прежний файл останется в secrets\\channels.previous.json."
+)
+
+# --- настройщик, вкладка «Настройки запуска» (CLAUDE.md §8.2, п.3). {key} и {problem} — из ConfigError загрузчика.
+SETUP_SETTINGS_NOTICE_UNREADABLE: Final[str] = (
+    "Файл secrets\\livecraft.json не прочитался: {key} — {problem}. Вкладка открыта на поставочных значениях "
+    "программы; файл будет записан только по кнопке «Сохранить»."
+)
+
 # --- обрыв и падение запуска (app\main.py::run_cli)
 RUN_INTERRUPTED: Final[str] = (
     "Запуск прерван. Что уже сделано на YouTube, найдёт и учтёт следующий запуск."

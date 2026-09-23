@@ -30,8 +30,12 @@ from app.config.loader import (
     load_livecraft_config,
     load_settings,
     normalize_handle,
+    parse_channels,
+    parse_settings,
     render_channels_file,
+    render_settings_file,
     save_channels_file,
+    save_settings_file,
 )
 from app.paths import LivecraftPaths
 from app.secretsafe.value import SecretField
@@ -615,3 +619,52 @@ def test_the_error_text_names_the_file_the_key_and_the_problem(tmp_path: Path) -
     assert str(error) == msg.CONFIG_ERROR.format(
         path=tmp_path / "livecraft.json", key="timezone", problem=msg.CONFIG_PROBLEM_MISSING_KEY
     )
+
+
+# --- запись livecraft.json и разбор уже прочитанных данных (задача 2.2)
+
+
+def test_the_rendered_settings_file_is_the_shipped_file_byte_for_byte() -> None:
+    """Настройщик, сохранивший поставку без правок, пишет ровно тот же файл."""
+    assert render_settings_file(load_settings(REPO_SETTINGS)).encode("utf-8") == REPO_SETTINGS.read_bytes()
+
+
+def test_the_saved_settings_file_reads_back_into_an_equal_object(livecraft_paths: LivecraftPaths) -> None:
+    settings: LivecraftSettings = load_settings(REPO_SETTINGS)
+    save_settings_file(livecraft_paths.config_file, settings)
+    assert load_settings(livecraft_paths.config_file) == settings
+    assert livecraft_paths.config_file.read_bytes() == REPO_SETTINGS.read_bytes()
+
+
+def test_the_settings_data_keep_the_key_order_of_the_file() -> None:
+    data: dict[str, Any] = load_settings(REPO_SETTINGS).to_data()
+    assert tuple(data) == SETTINGS_KEYS
+    assert tuple(data["llm"]) == LLM_KEYS
+    assert tuple(data["form"]) == FORM_KEYS
+    assert tuple(data["form"]["fields"]) == FormSettings.FIELD_KEYS
+    assert data == _settings_data()
+
+
+def test_the_channel_data_keep_the_key_order_of_the_file() -> None:
+    channels: tuple[ChannelConfig, ...] = load_channels(REPO_CHANNELS_EXAMPLE)
+    assert all(tuple(channel.to_data()) == CHANNEL_KEYS for channel in channels)
+    assert [channel.to_data() for channel in channels] == _channels_data()["channels"]
+
+
+def test_parsing_read_settings_data_equals_loading_the_file() -> None:
+    assert parse_settings(_settings_data(), REPO_SETTINGS) == load_settings(REPO_SETTINGS)
+
+
+def test_parsing_read_channels_data_equals_loading_the_file() -> None:
+    assert parse_channels(_channels_data(), REPO_CHANNELS_EXAMPLE) == load_channels(REPO_CHANNELS_EXAMPLE)
+
+
+def test_parsing_data_names_the_given_path_in_the_error(tmp_path: Path) -> None:
+    """path разбора нужен только ошибке: она называет тот файл, который будет записан."""
+    data: dict[str, Any] = _settings_data()
+    data["keep_days"] = 0
+    path: Path = tmp_path / "livecraft.json"
+    with pytest.raises(ConfigError) as raised:
+        parse_settings(data, path)
+    assert raised.value.config_path == path
+    assert raised.value.key_path == "keep_days"

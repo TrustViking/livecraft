@@ -10,6 +10,8 @@ LLM, контракт формы ключей (§6 инвариант 2), шаб
 
 Файла нет или поля нет — ConfigError с точным ключом; шаблон файла печатает main. Каналы пишет только
 save_channels_file (текст — только render_channels_file); прежний файл уходит в channels.previous.json.
+Настройки пишет только save_settings_file (текст — только render_settings_file). Данные JSON объект строит
+сам (`to_data`); настройщик проверяет свои черновики тем же разбором (`parse_settings`, `parse_channels`).
 
 Перенесено из planers\\app\\config\\loader.py почти целиком; расширено настройками LLM, формы, превью и
 часового пояса. Площадки v1 — только YouTube (§1).
@@ -114,6 +116,9 @@ CHANNEL_LINES: Final[str] = "    {{{first},\n     {second}}}"
 CHANNEL_FIELD: Final[str] = "{key}: {value}"
 CHANNEL_FIELD_JOINER: Final[str] = ", "
 CHANNEL_JOINER: Final[str] = ",\n"
+# Как render_settings_file раскладывает livecraft.json: так же, как поставочный файл.
+SETTINGS_FILE_INDENT: Final[int] = 2
+SETTINGS_FILE_END: Final[str] = "\n"
 ALLOWED_JOINER: Final[str] = ", "
 # Ник канала (@handle) — ключ канала: уникален на YouTube и не зависит от регистра (§6 инвариант 5).
 HANDLE_PREFIX: Final[str] = "@"
@@ -190,6 +195,17 @@ class ChannelConfig:
     def key(self) -> str:
         return normalize_handle(self.handle)
 
+    def to_data(self) -> dict[str, Any]:
+        """Канал как объект channels.json, поля в порядке CHANNEL_KEYS."""
+        return {
+            "platform": self.platform.value,
+            "account_name": self.account_name,
+            "handle": self.handle,
+            "google_account": self.google_account,
+            "languages": list(self.languages),
+            "privacy": self.privacy.value,
+        }
+
 
 @dataclass(frozen=True)
 class LlmSettings:
@@ -201,6 +217,17 @@ class LlmSettings:
     service_tier: ServiceTier
     timeout_sec: int
     max_output_tokens: int
+
+    def to_data(self) -> dict[str, Any]:
+        """Раздел llm файла livecraft.json, поля в порядке LLM_KEYS."""
+        return {
+            "model": self.model,
+            "fallback_model": self.fallback_model,
+            "reasoning_effort": self.reasoning_effort.value,
+            "service_tier": self.service_tier.value,
+            "timeout_sec": self.timeout_sec,
+            "max_output_tokens": self.max_output_tokens,
+        }
 
 
 @dataclass(frozen=True)
@@ -229,6 +256,14 @@ class FormSettings:
     fields: dict[str, str | None]
     values: dict[str, dict[str, str]]
     date_format: str
+
+    def to_data(self) -> dict[str, Any]:
+        """Раздел form файла livecraft.json: вопросы и варианты — как прочитаны, в том же порядке."""
+        return {
+            "fields": dict(self.fields),
+            "values": {key: dict(texts) for key, texts in self.values.items()},
+            "date_format": self.date_format,
+        }
 
     @property
     def problem(self) -> SettingProblem | None:
@@ -269,6 +304,21 @@ class LivecraftSettings:
     timezone: str
     llm: LlmSettings
     form: FormSettings
+
+    def to_data(self) -> dict[str, Any]:
+        """Данные livecraft.json, поля в порядке SETTINGS_KEYS."""
+        return {
+            "min_lead_minutes": self.min_lead_minutes,
+            "keep_days": self.keep_days,
+            "auto_start": self.auto_start,
+            "set_thumbnail": self.set_thumbnail,
+            "category_id": self.category_id,
+            "youtube_pause_seconds": self.youtube_pause_seconds,
+            "image_dir_template": self.image_dir_template,
+            "timezone": self.timezone,
+            LLM_KEY: self.llm.to_data(),
+            FORM_KEY: self.form.to_data(),
+        }
 
     @property
     def zone(self) -> ZoneInfo:
@@ -348,12 +398,22 @@ class LivecraftConfig:
 
 def load_settings(path: Path) -> LivecraftSettings:
     """secrets\\livecraft.json → технические настройки."""
-    return _ConfigParser(path).parse_settings(_read_json(path))
+    return parse_settings(_read_json(path), path)
 
 
 def load_channels(path: Path) -> tuple[ChannelConfig, ...]:
     """secrets\\channels.json → каналы."""
-    return _ConfigParser(path).parse_channels(_read_json(path))
+    return parse_channels(_read_json(path), path)
+
+
+def parse_settings(raw: Any, path: Path) -> LivecraftSettings:
+    """Уже прочитанные данные livecraft.json → настройки. path — только для ConfigError."""
+    return _ConfigParser(path).parse_settings(raw)
+
+
+def parse_channels(raw: Any, path: Path) -> tuple[ChannelConfig, ...]:
+    """Уже прочитанные данные channels.json → каналы. path — только для ConfigError."""
+    return _ConfigParser(path).parse_channels(raw)
 
 
 def load_livecraft_config(config_file: Path, channels_file: Path) -> LivecraftConfig:
@@ -374,6 +434,16 @@ def save_channels_file(channels_file: Path, previous_file: Path, channels: Itera
     if channels_file.is_file():
         shutil.copyfile(channels_file, previous_file)
     write_text_atomically(channels_file, text, CONFIG_ENCODING)
+
+
+def render_settings_file(settings: LivecraftSettings) -> str:
+    """Текст livecraft.json: тот же вид, что у поставочного файла."""
+    return json.dumps(settings.to_data(), indent=SETTINGS_FILE_INDENT, ensure_ascii=False) + SETTINGS_FILE_END
+
+
+def save_settings_file(config_file: Path, settings: LivecraftSettings) -> None:
+    """Новый livecraft.json — атомарно; копии прежнего нет (§5 такого файла не называет). Сбой — OSError."""
+    write_text_atomically(config_file, render_settings_file(settings), CONFIG_ENCODING)
 
 
 def allowed_values(enum_type: type[Enum]) -> str:
@@ -428,14 +498,7 @@ def _is_language_code(value: Any) -> bool:
 
 
 def _channel_lines(channel: ChannelConfig) -> str:
-    values: dict[str, Any] = {
-        "platform": channel.platform.value,
-        "account_name": channel.account_name,
-        "handle": channel.handle,
-        "google_account": channel.google_account,
-        "languages": list(channel.languages),
-        "privacy": channel.privacy.value,
-    }
+    values: dict[str, Any] = channel.to_data()
     return CHANNEL_LINES.format(
         first=_channel_fields(values, CHANNEL_FIRST_LINE_KEYS),
         second=_channel_fields(values, CHANNEL_SECOND_LINE_KEYS),
