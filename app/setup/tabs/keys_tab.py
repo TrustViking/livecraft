@@ -4,9 +4,14 @@
 Ввод своего значения — поле со скрытыми символами; принято моделью — поле очищается, отказ — красная строка
 под полем, а введённое остаётся. Кнопка «Сохранить» отдаёт модели сейф этой установки (`VaultStore.open`).
 
-Значение сейфа в виджет не попадает: вкладка не вызывает раскрытие значения и берёт из модели только маску.
-В строке видно лишь то, что человек печатает сам, и то скрытыми символами. Буфер обмена не трогается.
-Действие «показать своё» (`RowAction.REVEAL`) в этой версии окна не рисуется (задача 2.3a).
+Значение сейфа в виджет по умолчанию не попадает: строка рисует маску из модели, а поле ввода — то, что
+человек печатает сам, и то скрытыми символами. Буфер обмена не трогается.
+
+«Показать своё» (`RowAction.REVEAL`, §14 решение 11): кнопка есть только у поля, которое человек ввёл сам.
+По явному нажатию значение просит у модели (`KeysPanel.own_value` — единственная точка раскрытия в
+настройщике) и кладёт только в подпись маски своей строки — ttk.Label, из которого текст не выделяется и не
+копируется; не в поле ввода, не в лог, не в диалог. Любое действие вкладки, её перерисовка и уход с
+вкладки снова прячут значение за маску.
 """
 from __future__ import annotations
 
@@ -49,6 +54,7 @@ class KeyRowView:
         position: int,
         on_accept: Callable[[SecretField], None],
         on_reset: Callable[[SecretField], None],
+        on_toggle_own_value: Callable[[SecretField], None],
     ) -> None:
         self.field: SecretField = field
         self.label: ttk.Label = ttk.Label(parent)
@@ -61,7 +67,12 @@ class KeyRowView:
         self.reset_button: ttk.Button = ttk.Button(
             parent, text=msg.SETUP_KEYS_BUTTON_RESET, command=lambda: on_reset(field)
         )
+        self.reveal_button: ttk.Button = ttk.Button(
+            parent, text=msg.SETUP_KEYS_BUTTON_REVEAL, command=lambda: on_toggle_own_value(field)
+        )
         self.problem: ProblemLine = ProblemLine(parent, {})
+        self.is_revealed: bool = False
+        self._mask: str = ""
         self._place(HEADER_ROWS + position * ROWS_PER_FIELD)
 
     @property
@@ -70,20 +81,37 @@ class KeyRowView:
         return self.entry.get()
 
     def show(self, row: KeyRow) -> None:
-        """Нарисовать строку модели: подписи, маска и только те кнопки, что разрешены действиями строки."""
+        """Нарисовать строку модели: подписи, маска и только те кнопки, что разрешены действиями строки.
+
+        Перерисовка всегда возвращает маску: показанное значение не переживает ни одного ответа модели.
+        """
         self.label.configure(text=row.label)
         self.origin.configure(text=row.origin_label)
-        self.display.configure(text=row.display)
+        self._mask = row.display
+        self.hide()
         can_input: bool = bool(row.actions & INPUT_ACTIONS)
         for widget in (self.entry, self.accept_button):
             if can_input:
                 widget.grid()
             else:
                 widget.grid_remove()
-        if RowAction.RESET in row.actions:
-            self.reset_button.grid()
-        else:
-            self.reset_button.grid_remove()
+        for button, action in ((self.reset_button, RowAction.RESET), (self.reveal_button, RowAction.REVEAL)):
+            if action in row.actions:
+                button.grid()
+            else:
+                button.grid_remove()
+
+    def show_value(self, value: str) -> None:
+        """Показать своё значение в подписи маски — только на экране, до следующего `hide`."""
+        self.display.configure(text=value)
+        self.reveal_button.configure(text=msg.SETUP_KEYS_BUTTON_HIDE)
+        self.is_revealed = True
+
+    def hide(self) -> None:
+        """Вернуть маску строки."""
+        self.display.configure(text=self._mask)
+        self.reveal_button.configure(text=msg.SETUP_KEYS_BUTTON_REVEAL)
+        self.is_revealed = False
 
     def accepted(self) -> None:
         """Модель приняла ввод: поле и строка проблемы очищаются."""
@@ -96,7 +124,8 @@ class KeyRowView:
 
     def _place(self, grid_row: int) -> None:
         widgets: tuple[ttk.Widget, ...] = (
-            self.label, self.origin, self.display, self.entry, self.accept_button, self.reset_button
+            self.label, self.origin, self.display, self.entry, self.accept_button, self.reset_button,
+            self.reveal_button,
         )
         for column, widget in enumerate(widgets):
             widget.grid(row=grid_row, column=column, sticky=tk.W, padx=PAD, pady=(PAD, 0))
@@ -121,7 +150,7 @@ class KeysTab:
         for column, header in enumerate(HEADERS):
             ttk.Label(self.rows_frame, text=header).grid(row=0, column=column, sticky=tk.W, padx=PAD)
         self.rows: dict[SecretField, KeyRowView] = {
-            field: KeyRowView(self.rows_frame, field, position, self.accept, self.reset)
+            field: KeyRowView(self.rows_frame, field, position, self.accept, self.reset, self.toggle_own_value)
             for position, field in enumerate(SecretField)
         }
         self.save_button: ttk.Button = ttk.Button(self.frame, text=msg.SETUP_BUTTON_SAVE, command=self.save)
@@ -140,6 +169,7 @@ class KeysTab:
         """«Сохранить значение»: введённое — модели; принято — строка перерисована и поле очищено."""
         if self.panel is None:
             return
+        self.hide_revealed()
         view: KeyRowView = self.rows[field]
         edit: KeysPanelEdit = self.panel.replace(field, view.raw)
         if not edit.is_applied:
@@ -153,6 +183,7 @@ class KeysTab:
         """«Сбросить к поставке»: модель убирает своё значение поля."""
         if self.panel is None:
             return
+        self.hide_revealed()
         self.panel = self.panel.reset(field)
         self.rows[field].problem.show_text(None)
         self._show()
@@ -161,6 +192,7 @@ class KeysTab:
         """«Сохранить»: модель пишет личный сейф. Отказ — диалог без значения и без пути к сейфу."""
         if self.panel is None:
             return
+        self.hide_revealed()
         try:
             self.panel = self.panel.save(VaultStore.open(self.paths))
         except DpapiUnavailable:
@@ -171,6 +203,25 @@ class KeysTab:
             return
         self._show()
         self._on_saved()
+
+    def toggle_own_value(self, field: SecretField) -> None:
+        """«Показать»/«скрыть» своё значение поля. Модель не отдала значение (поставка, поля нет) — ничего."""
+        view: KeyRowView = self.rows[field]
+        if view.is_revealed:
+            view.hide()
+            return
+        if self.panel is None:
+            return
+        value: str | None = self.panel.own_value(field)
+        if value is None:
+            return
+        view.show_value(value)
+
+    def hide_revealed(self) -> None:
+        """Спрятать за маску всё показанное: перед любым действием вкладки и при уходе с неё."""
+        for view in self.rows.values():
+            if view.is_revealed:
+                view.hide()
 
     def _load(self) -> None:
         """Прочитать оба файла сейфа в модель; файл чужого формата — причина вместо строк."""

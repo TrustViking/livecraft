@@ -278,6 +278,9 @@ SETUP_KEYS_HEADER_VALUE: Final[str] = "Значение"
 SETUP_KEYS_HEADER_INPUT: Final[str] = "Своё значение"
 SETUP_KEYS_BUTTON_ACCEPT: Final[str] = "Сохранить значение"
 SETUP_KEYS_BUTTON_RESET: Final[str] = "Сбросить к поставке"
+# «Показать своё» (§14 решение 11): только значение, которое пользователь ввёл сам, только на экран.
+SETUP_KEYS_BUTTON_REVEAL: Final[str] = "показать"
+SETUP_KEYS_BUTTON_HIDE: Final[str] = "скрыть"
 SETUP_KEYS_SAVE_FAILED_OS: Final[str] = (
     "Не удалось записать файл ваших значений. Проверьте, не занят ли он другой программой "
     "(антивирус, синхронизация), и нажмите «Сохранить» ещё раз."

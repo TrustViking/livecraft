@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
@@ -355,3 +356,71 @@ def test_the_supplied_and_own_layers_come_from_the_store(store: VaultStore, read
     panel: KeysPanel = KeysPanel.from_store(VaultStore.open(ready_paths))
     assert tuple(panel.supplied.entries) == (SecretField.SHEETS_RANGE,)
     assert _row(panel, SecretField.OPENAI_API_KEY).actions == ENTER_ONLY
+
+
+# --- «показать своё» (задача 2.3a, §14 решение 11): единственная точка раскрытия значения в настройщике
+
+
+def _count_reveals(monkeypatch: pytest.MonkeyPatch) -> list[SecretField]:
+    """Считает раскрытия значения, не меняя их: проверка, что поставочное не раскрывается даже внутри модели."""
+    calls: list[SecretField] = []
+    original = SecretValue.reveal
+
+    def _counting(self: SecretValue) -> str:
+        calls.append(self.field)
+        return original(self)
+
+    monkeypatch.setattr(SecretValue, "reveal", _counting)
+    return calls
+
+
+def test_own_value_of_an_own_field_is_the_entered_value(store: VaultStore) -> None:
+    panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY))
+    assert panel.own_value(SecretField.OPENAI_API_KEY) == OWN_OPENAI_KEY
+
+
+def test_own_value_of_a_saved_own_field_is_read_back(store: VaultStore) -> None:
+    edited: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY))
+    assert edited.save(store).own_value(SecretField.OPENAI_API_KEY) == OWN_OPENAI_KEY
+
+
+def test_own_value_of_a_supplied_field_is_none_and_nothing_is_revealed(
+    store: VaultStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[SecretField] = _count_reveals(monkeypatch)
+    panel: KeysPanel = KeysPanel.from_store(store)
+    for field in SecretField:
+        assert panel.own_value(field) is None
+    assert calls == []
+
+
+def test_own_value_of_an_absent_field_is_none(bare_store: VaultStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[SecretField] = _count_reveals(monkeypatch)
+    panel: KeysPanel = KeysPanel.from_store(bare_store)
+    assert all(panel.own_value(field) is None for field in SecretField)
+    assert calls == []
+
+
+def test_own_value_after_reset_over_the_supply_is_none(store: VaultStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    edited: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY))
+    reset: KeysPanel = edited.reset(SecretField.OPENAI_API_KEY)
+    calls: list[SecretField] = _count_reveals(monkeypatch)
+    assert reset.own_value(SecretField.OPENAI_API_KEY) is None
+    assert calls == []
+
+
+def test_own_value_reveals_only_its_own_field(store: VaultStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY))
+    calls: list[SecretField] = _count_reveals(monkeypatch)
+    panel.own_value(SecretField.OPENAI_API_KEY)
+    panel.own_value(SecretField.SHEETS_ID)
+    assert calls == [SecretField.OPENAI_API_KEY]
+
+
+def test_own_value_writes_nothing_to_the_log(store: VaultStore, caplog: pytest.LogCaptureFixture) -> None:
+    panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY))
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="livecraft"):
+        for field in SecretField:
+            panel.own_value(field)
+    assert caplog.records == []

@@ -3,8 +3,9 @@
 `SetupApp` — запуск окна: осведомлённость о DPI до создания Tk (иначе шрифт на HiDPI мыльный, §8.1),
 окно и цикл событий. `SetupWindow` — само окно: три вкладки поверх моделей, строка готовности внизу и
 вопрос при закрытии с несохранённым. Правил у окна нет: что годно, что писать и готова ли программа к
-запуску, решают модели вкладок и `Readiness`. Значений сейфа окно не показывает и не раскрывает (§7.4),
-буфер обмена не трогает; строка готовности — только проблемы `Readiness`, в них значений нет.
+запуску, решают модели вкладок и `Readiness`. Значения сейфа окно показывает только масками; исключение —
+своё значение по кнопке «показать» на вкладке «Ключи и ссылки» (§14 решение 11), которое прячется при уходе
+с вкладки. Буфер обмена окно не трогает; строка готовности — только проблемы `Readiness`, в них значений нет.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from app.version import APP_VERSION
 PROCESS_SYSTEM_DPI_AWARE: Final[int] = 1   # SetProcessDpiAwareness: осведомлённость о DPI системы
 CLOSE_PROTOCOL: Final[str] = "WM_DELETE_WINDOW"
 READINESS_JOINER: Final[str] = "\n"
+TAB_CHANGED_EVENT: Final[str] = "<<NotebookTabChanged>>"
 
 
 class SetupWindow:
@@ -43,6 +45,8 @@ class SetupWindow:
         self.notebook.add(self.keys_tab.frame, text=msg.SETUP_TAB_KEYS)
         self.notebook.add(self.channels_tab.frame, text=msg.SETUP_TAB_CHANNELS)
         self.notebook.add(self.settings_tab.frame, text=msg.SETUP_TAB_SETTINGS)
+        # Уход с вкладки «Ключи и ссылки» прячет показанное своё значение (§14 решение 11).
+        self.notebook.bind(TAB_CHANGED_EVENT, lambda _event: self.keys_tab.hide_revealed())
         self.readiness_line: ttk.Label = ttk.Label(self.root, wraplength=TEXT_WRAP_PIXELS, justify=tk.LEFT)
         self.readiness_line.pack(fill=tk.X, padx=PAD, pady=PAD)
         self.root.protocol(CLOSE_PROTOCOL, self.request_close)

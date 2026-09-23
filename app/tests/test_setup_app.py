@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import logging
 import tkinter as tk
 from collections.abc import Iterator
 from tkinter import messagebox, ttk
@@ -13,7 +14,7 @@ import pytest
 
 from app.config.loader import load_channels, load_settings
 from app.paths import LivecraftPaths
-from app.secretsafe.value import SecretField
+from app.secretsafe.value import SecretField, SecretValue
 from app.setup.app import SetupWindow
 from app.setup.panels.keys_panel import KeysPanel
 from app.setup.readiness import Readiness
@@ -363,3 +364,128 @@ def test_a_broken_vault_file_is_named_on_the_keys_tab(
         assert ready_paths.vault_local_file.name in tab.notice.cget("text")
         assert tab.save_button.instate(["disabled"])
         assert not tab.is_dirty
+
+
+# --- «показать своё» (задача 2.3a, §14 решение 11)
+
+OWN_RANGE: str = "A:G"
+
+
+def _accept(window: SetupWindow, field: SecretField, value: str) -> KeyRowView:
+    view: KeyRowView = _row(window.keys_tab, field)
+    _type(view.entry, value)
+    view.accept_button.invoke()
+    assert view.problem.text == ""
+    return view
+
+
+def _revealed_key(window: SetupWindow) -> KeyRowView:
+    """Своё значение ключа OpenAI принято и показано по кнопке."""
+    view: KeyRowView = _accept(window, SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY)
+    view.reveal_button.invoke()
+    assert view.is_revealed
+    assert view.display.cget("text") == OWN_OPENAI_KEY
+    return view
+
+
+def _own_mask() -> str:
+    return SecretValue(field=SecretField.OPENAI_API_KEY, value=OWN_OPENAI_KEY).masked
+
+
+def _assert_masked(view: KeyRowView, mask: str) -> None:
+    assert not view.is_revealed
+    assert view.display.cget("text") == mask
+    assert view.reveal_button.cget("text") == msg.SETUP_KEYS_BUTTON_REVEAL
+
+
+def test_supplied_fields_have_no_reveal_button(window: SetupWindow) -> None:
+    window.root.update_idletasks()
+    for view in window.keys_tab.rows.values():
+        assert view.reveal_button.grid_info() == {}
+        assert not view.reveal_button.winfo_ismapped()
+
+
+def test_the_reveal_button_of_a_supplied_field_reveals_nothing(window: SetupWindow) -> None:
+    """Даже вызванная в обход окна, кнопка поставочного поля ничего не показывает."""
+    view: KeyRowView = _row(window.keys_tab, SecretField.OPENAI_API_KEY)
+    mask: str = view.display.cget("text")
+    view.reveal_button.invoke()
+    _assert_masked(view, mask)
+
+
+def test_an_own_field_gets_the_button_and_toggles_value_and_mask(window: SetupWindow) -> None:
+    view: KeyRowView = _accept(window, SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY)
+    assert view.reveal_button.grid_info() != {}
+    _assert_masked(view, _own_mask())
+    view.reveal_button.invoke()
+    assert view.display.cget("text") == OWN_OPENAI_KEY
+    assert view.reveal_button.cget("text") == msg.SETUP_KEYS_BUTTON_HIDE
+    view.reveal_button.invoke()
+    _assert_masked(view, _own_mask())
+    for other in SecretField:
+        if other is not SecretField.OPENAI_API_KEY:
+            assert _row(window.keys_tab, other).reveal_button.grid_info() == {}
+
+
+def test_accepting_another_field_hides_the_value(window: SetupWindow) -> None:
+    view: KeyRowView = _revealed_key(window)
+    _accept(window, SecretField.SHEETS_RANGE, OWN_RANGE)
+    _assert_masked(view, _own_mask())
+
+
+def test_a_refused_input_in_another_field_hides_the_value(window: SetupWindow) -> None:
+    view: KeyRowView = _revealed_key(window)
+    other: KeyRowView = _row(window.keys_tab, SecretField.SHEETS_RANGE)
+    _type(other.entry, "не диапазон")
+    other.accept_button.invoke()
+    assert other.problem.text != ""
+    _assert_masked(view, _own_mask())
+
+
+def test_reset_hides_the_value(window: SetupWindow) -> None:
+    view: KeyRowView = _revealed_key(window)
+    panel: KeysPanel | None = window.keys_tab.panel
+    assert panel is not None
+    supplied: SecretValue | None = panel.supplied.get(SecretField.OPENAI_API_KEY)
+    assert supplied is not None
+    supplied_mask: str = supplied.masked
+    view.reset_button.invoke()
+    _assert_masked(view, supplied_mask)
+    assert view.reveal_button.grid_info() == {}
+
+
+def test_save_hides_the_value(window: SetupWindow) -> None:
+    view: KeyRowView = _revealed_key(window)
+    window.keys_tab.save_button.invoke()
+    _assert_masked(view, _own_mask())
+    assert view.reveal_button.grid_info() != {}      # после записи поле по-прежнему своё
+
+
+def test_leaving_the_keys_tab_hides_the_value(window: SetupWindow) -> None:
+    view: KeyRowView = _revealed_key(window)
+    window.notebook.select(window.channels_tab.frame)
+    window.notebook.event_generate("<<NotebookTabChanged>>")
+    window.root.update()
+    _assert_masked(view, _own_mask())
+
+
+def test_the_revealed_value_goes_only_to_its_own_label(
+    window: SetupWindow, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Показанное значение — только в подписи своей строки: не в полях ввода, не в строке готовности, не в логе."""
+    with caplog.at_level(logging.DEBUG):
+        view: KeyRowView = _revealed_key(window)
+        window.keys_tab.save_button.invoke()
+        view.reveal_button.invoke()
+    holders: list[tk.Misc] = []
+    for widget in _widgets(window.root):
+        if isinstance(widget, (ttk.Entry, tk.Entry)):     # ttk.Combobox — тоже Entry
+            assert OWN_OPENAI_KEY not in widget.get()
+        elif isinstance(widget, (ttk.Label, ttk.Button, ttk.Checkbutton)) and OWN_OPENAI_KEY in str(
+            widget.cget("text")
+        ):
+            holders.append(widget)
+    assert holders == [view.display]
+    assert OWN_OPENAI_KEY not in window.readiness_line.cget("text")
+    assert OWN_OPENAI_KEY not in window.root.title()
+    assert not any(OWN_OPENAI_KEY in record.getMessage() for record in caplog.records)
