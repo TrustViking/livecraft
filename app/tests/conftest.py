@@ -14,9 +14,19 @@ from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx2
+import openai
 import pytest
 
-from app.config.loader import LivecraftSettings, ShippedSettings, load_settings, save_settings_file
+from app.config.loader import (
+    LivecraftSettings,
+    LlmSettings,
+    ReasoningEffort,
+    ServiceTier,
+    ShippedSettings,
+    load_settings,
+    save_settings_file,
+)
 from app.paths import LivecraftPaths, build_paths, ensure_dirs
 from app.secretsafe.crypto import FORMAT_VERSION, VAULT_KEY_BYTES, EncryptedField, VaultCrypto, VaultFile
 from app.secretsafe.dpapi import Dpapi
@@ -210,3 +220,106 @@ def set_form_url(paths: LivecraftPaths, url: str) -> None:
     """Ссылка на форму в livecraft.json — тем же загрузчиком, что пишет настройщик."""
     settings: LivecraftSettings = load_settings(paths.config_file)
     save_settings_file(paths.config_file, dataclasses.replace(settings, form=dataclasses.replace(settings.form, url=url)))
+
+
+# --- нейросеть без сети: подделка SDK openai (app\llm\client.py), ответы и отказы OpenAI
+
+OPENAI_URL: str = "https://api.openai.com/v1/responses"
+LLM_SETTINGS: LlmSettings = LlmSettings(
+    model="gpt-5.6-sol",
+    fallback_model="gpt-5.4",
+    reasoning_effort=ReasoningEffort.MEDIUM,
+    service_tier=ServiceTier.FLEX,
+    timeout_sec=900,
+    max_output_tokens=8000,
+)
+_STATUS_ERRORS: dict[int, type[openai.APIStatusError]] = {
+    400: openai.BadRequestError,
+    401: openai.AuthenticationError,
+    403: openai.PermissionDeniedError,
+    404: openai.NotFoundError,
+    422: openai.UnprocessableEntityError,
+    429: openai.RateLimitError,
+    500: openai.InternalServerError,
+}
+
+
+class FakeRawResponse:
+    """Сырой ответ SDK (`with_raw_response`): заголовки и `parse()` — сам ответ словарём."""
+
+    def __init__(self, response: dict[str, object], headers: dict[str, str]) -> None:
+        self.response: dict[str, object] = response
+        self.headers: dict[str, str] = headers
+
+    def parse(self) -> dict[str, object]:
+        return self.response
+
+
+class FakeLlmSdk:
+    """Подделка `openai.OpenAI`: сама себе фабрика и клиент. Ответы и отказы — по очереди из `outcomes`.
+
+    `created` — с чем создавали клиента (там ключ: тест сверяет, что он дошёл до SDK и никуда больше);
+    `calls` — аргументы каждого `responses.with_raw_response.create`.
+    """
+
+    def __init__(self, *outcomes: FakeRawResponse | Exception) -> None:
+        self.outcomes: list[FakeRawResponse | Exception] = list(outcomes)
+        self.created: list[dict[str, object]] = []
+        self.calls: list[dict[str, object]] = []
+        self.responses: object = self
+        self.with_raw_response: object = self
+
+    def __call__(self, **options: object) -> FakeLlmSdk:
+        self.created.append(options)
+        return self
+
+    def create(self, **kwargs: object) -> FakeRawResponse:
+        self.calls.append(kwargs)
+        outcome: FakeRawResponse | Exception = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def llm_answer(
+    text: str = "OK",
+    model: str = "gpt-5.6-sol-2026-08-01",
+    service_tier: str = "flex",
+    input_tokens: int = 1000,
+    cached_tokens: int = 200,
+    output_tokens: int = 100,
+    reasoning_tokens: int = 40,
+    incomplete: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> FakeRawResponse:
+    """Ответ Responses API так, как его отдаёт SDK: текст, модель, тариф, расход, причина обрыва."""
+    response: dict[str, object] = {
+        "id": "resp_test",
+        "model": model,
+        "service_tier": service_tier,
+        "output_text": text,
+        "incomplete_details": {"reason": incomplete} if incomplete is not None else None,
+        "usage": {
+            "input_tokens": input_tokens,
+            "input_tokens_details": {"cached_tokens": cached_tokens},
+            "output_tokens": output_tokens,
+            "output_tokens_details": {"reasoning_tokens": reasoning_tokens},
+            "total_tokens": input_tokens + output_tokens,
+        },
+    }
+    return FakeRawResponse(response, headers if headers is not None else {})
+
+
+def api_error(status: int, message: str, code: str | None = None, param: str | None = None) -> openai.APIStatusError:
+    """Отказ OpenAI с кодом ответа — тем классом SDK, которым его бросает openai."""
+    body: dict[str, object] = {"message": message, "code": code, "param": param}
+    response: httpx2.Response = httpx2.Response(status, request=httpx2.Request("POST", OPENAI_URL), json={"error": body})
+    return _STATUS_ERRORS.get(status, openai.APIStatusError)(message, response=response, body=body)
+
+
+def timeout_error() -> openai.APITimeoutError:
+    return openai.APITimeoutError(request=httpx2.Request("POST", OPENAI_URL))
+
+
+def connection_error() -> openai.APIConnectionError:
+    return openai.APIConnectionError(request=httpx2.Request("POST", OPENAI_URL))
