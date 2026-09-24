@@ -1,7 +1,11 @@
 """Пробник чтения таблицы плана: вход оператора → чтение диапазона → разбор рядов (CLAUDE.md §5 tools\\).
 
-Запуск из корня репо: `python -m app.tools.sheets_probe`. В поставку не идёт. Сети в тестах нет —
-читатель подменяется; боевой прогон делает Артур.
+Запуск из корня репо: `python -m app.tools.sheets_probe [--relogin]`. В поставку не идёт. Сети в тестах
+нет — читатель подменяется; боевой прогон делает Артур.
+
+`--relogin` — вход в браузере заново, без чтения прежнего токена: так исправляется вход не тем аккаунтом.
+Новый токен заменяет прежний только после успешного входа (это правило `GoogleLogin`). Отказ в доступе к
+таблице пробник сопровождает подсказкой про `--relogin`.
 
 Печатает только то, что не секретно: заголовки распознанных колонок, сколько рядов прочитано, допущено
 и отсеяно по каждой причине, проблему плана. Ни id таблицы, ни диапазона, ни ссылок рядов (§7.4).
@@ -10,6 +14,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from collections import Counter
 from collections.abc import Callable
@@ -19,11 +24,12 @@ from enum import IntEnum
 from typing import Final
 
 from app.config.loader import ConfigError, LivecraftSettings, load_settings
-from app.google.auth import GoogleLogin
+from app.google.auth import AuthError, GoogleLogin
 from app.observability.logging_setup import close_logging, get_logger, install_secret_filter, setup_logging
 from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
 from app.secretsafe.crypto import VaultFormatError
 from app.secretsafe.store import VaultLoad, VaultStore
+from app.secretsafe.value import SecretField
 from app.sheets.client import SheetsReader, SheetsReadError, SheetsReadReason, SheetsTarget
 from app.sheets.plan import SheetColumns, SheetPlan
 from app.sheets.rows import PlanRow, RowSkipReason
@@ -31,6 +37,7 @@ from app.ui import messages_ru as msg
 
 LOGGER_NAME: Final[str] = "tools.sheets_probe"
 LOGGER = get_logger(LOGGER_NAME)
+RELOGIN_FLAG: Final[str] = "--relogin"
 
 
 class ProbeExit(IntEnum):
@@ -80,11 +87,15 @@ class SheetsProbeReport:
 
 @dataclass(frozen=True)
 class SheetsProbe:
-    """Один прогон пробника на корне `paths`; `now` и вывод `say` — параметрами, в тестах свои."""
+    """Один прогон пробника на корне `paths`; `now` и вывод `say` — параметрами, в тестах свои.
+
+    `relogin` — войти в браузере заново до чтения таблицы (ключ `--relogin`).
+    """
 
     paths: LivecraftPaths
     now: datetime
     say: Callable[[str], None]
+    relogin: bool = False
 
     def run(self) -> int:
         self.say(msg.SHEETS_PROBE_TITLE)
@@ -109,10 +120,27 @@ class SheetsProbe:
         return int(ProbeExit.OK)
 
     def _read(self, loaded: VaultLoad) -> SheetPlan:
-        reader: SheetsReader = SheetsReader.open(
-            GoogleLogin.operator(self.paths), on_login=lambda: self.say(msg.SHEETS_PROBE_LOGIN)
-        )
+        login: GoogleLogin = GoogleLogin.operator(self.paths)
+        if self.relogin:
+            self._log_in_again(login)
+        reader: SheetsReader = SheetsReader.open(login, on_login=self._announce_login)
         return reader.read_plan(loaded.vault)
+
+    def _log_in_again(self, login: GoogleLogin) -> None:
+        """Вход в браузере без чтения прежнего токена; новый токен пишет сам вход, только после успеха.
+
+        Отказ входа — та же ошибка чтения, что отдал бы `SheetsReader.open`: ярлык таблицы и причина входа.
+        """
+        try:
+            login.credentials(force_reauth=True, on_login=self._announce_login)
+        except AuthError as error:
+            LOGGER.warning("sheets_probe_relogin_failed reason=%s detail=%s", error.reason.value, error.detail)
+            raise SheetsReadError(
+                SheetsReadReason.AUTH, SecretField.SHEETS_ID.log_label, detail=error.human
+            ) from error
+
+    def _announce_login(self) -> None:
+        self.say(msg.SHEETS_PROBE_LOGIN)
 
     def _fail(self, error: SheetsReadError) -> int:
         """Не настроено — код 2 и совет про настройщик; прочее — код 1."""
@@ -120,6 +148,8 @@ class SheetsProbe:
         if error.reason is SheetsReadReason.NOT_CONFIGURED:
             return self._refuse(error.human)
         self.say(error.human)
+        if error.reason is SheetsReadReason.NO_ACCESS:
+            self.say(msg.SHEETS_PROBE_RELOGIN_HINT)
         return int(ProbeExit.ERRORS)
 
     def _refuse(self, text: str) -> int:
@@ -132,13 +162,20 @@ def _say(text: str) -> None:
     print(text, flush=True)
 
 
-def main() -> int:
-    """Точка входа пробника: корень, папки, логи; дальше — `SheetsProbe`."""
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(prog="python -m app.tools.sheets_probe")
+    parser.add_argument(RELOGIN_FLAG, action="store_true", help=msg.SHEETS_PROBE_RELOGIN_HELP)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Точка входа пробника: ключи, корень, папки, логи; дальше — `SheetsProbe`."""
+    relogin: bool = bool(_parse_args(argv).relogin)
     paths: LivecraftPaths = build_paths(resolve_root())
     ensure_dirs(paths)
     setup_logging(paths.logs_dir, debug=False)
     try:
-        return SheetsProbe(paths=paths, now=datetime.now(timezone.utc), say=_say).run()
+        return SheetsProbe(paths=paths, now=datetime.now(timezone.utc), say=_say, relogin=relogin).run()
     finally:
         close_logging()
 

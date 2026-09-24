@@ -18,6 +18,18 @@ from app.secretsafe.value import SecretField, SecretValue
 from app.setup.app import SELECTED, TAB_STYLE, THEME, SetupWindow
 from app.setup.panels.keys_panel import KeysPanel
 from app.setup.readiness import Readiness
+from app.setup.tabs import (
+    BREAK,
+    COPY_EVENT,
+    CUT_EVENT,
+    KEYCODE_A,
+    KEYCODE_C,
+    KEYCODE_V,
+    KEYCODE_X,
+    PASTE_EVENT,
+    EditShortcut,
+    EditShortcuts,
+)
 from app.setup.tabs.channels_tab import ChannelsTab
 from app.setup.tabs.keys_tab import SECRET_ECHO, KeyRowView, KeysTab
 from app.setup.tabs.settings_tab import SettingsTab
@@ -579,3 +591,182 @@ def test_no_vault_field_name_contains_the_supplied_values() -> None:
     for field in SecretField:
         for value in SUPPLIED_VALUES.values():
             assert value not in field.human_label
+
+
+
+# --- правка полей в любой раскладке (задача 2.3d)
+#
+# На Windows keysym события Tk вычисляет по коду клавиши и раскладке уже при разборе привязок, а ключ
+# `-keysym` у `event generate` служит только для поиска кода и отвергает буквы, которых нет в текущей
+# раскладке. Поэтому настоящие нажатия в тестах — по коду клавиши (в латинской раскладке их берёт штатная
+# привязка Tk, в чужой — EditShortcuts: вставка в обоих случаях одна), а ветки «латинская буква» и «чужая
+# раскладка» проверяются ещё и через тот же обработчик событием, где keysym задан явно.
+
+CLIPBOARD_TEXT: str = "@Pasted.Handle"
+CHANNEL_TEXT: str = "Osvald.X"
+
+
+class _KeyEvent(tk.Event):  # type: ignore[type-arg]
+    """Событие клавиши, собранное тестом: виджет, код клавиши и keysym любой раскладки."""
+
+    def __init__(self, widget: tk.Misc, keycode: int, keysym: str) -> None:
+        self.widget = widget
+        self.keycode = keycode
+        self.keysym = keysym
+
+
+def _focus(window: SetupWindow, tab: ttk.Frame, entry: ttk.Entry) -> None:
+    """Окно за краем экрана, вкладка выбрана, фокус в поле: нажатие Tk доставляет только в поле с фокусом."""
+    window.root.geometry("+-10000+-10000")
+    window.root.deiconify()
+    window.notebook.select(tab)
+    window.root.update()
+    entry.focus_force()
+    window.root.update()
+    assert window.root.focus_get() is entry
+
+
+def _press(window: SetupWindow, entry: ttk.Entry, keycode: int) -> None:
+    entry.event_generate("<Control-KeyPress>", keycode=keycode)
+    window.root.update()
+
+
+def _put_in_clipboard(window: SetupWindow, text: str) -> None:
+    window.root.clipboard_clear()
+    window.root.clipboard_append(text)
+    window.root.update()
+
+
+def _channel_entry(window: SetupWindow) -> ttk.Entry:
+    return window.channels_tab.inputs["handle"]
+
+
+def _key_entry(window: SetupWindow) -> ttk.Entry:
+    return _row(window.keys_tab, SecretField.OPENAI_API_KEY).entry
+
+
+def test_ctrl_v_pastes_into_a_channel_field_exactly_once(window: SetupWindow) -> None:
+    entry: ttk.Entry = _channel_entry(window)
+    _type(entry, "")
+    _put_in_clipboard(window, CLIPBOARD_TEXT)
+    _focus(window, window.channels_tab.frame, entry)
+    _press(window, entry, KEYCODE_V)
+    assert entry.get() == CLIPBOARD_TEXT
+
+
+def test_ctrl_a_selects_the_whole_field(window: SetupWindow) -> None:
+    entry: ttk.Entry = _channel_entry(window)
+    _type(entry, CHANNEL_TEXT)
+    entry.selection_clear()
+    _focus(window, window.channels_tab.frame, entry)
+    _press(window, entry, KEYCODE_A)
+    assert entry.selection_present()
+    assert (entry.index(tk.SEL_FIRST), entry.index(tk.SEL_LAST)) == (0, len(CHANNEL_TEXT))
+
+
+def test_a_cyrillic_keysym_pastes_through_the_shortcut_once(window: SetupWindow) -> None:
+    entry: ttk.Entry = _channel_entry(window)
+    _type(entry, "")
+    _put_in_clipboard(window, CLIPBOARD_TEXT)
+    answer: str | None = window.edit_shortcuts.handle(_KeyEvent(entry, KEYCODE_V, "Cyrillic_em"))
+    window.root.update()
+    assert answer == BREAK
+    assert entry.get() == CLIPBOARD_TEXT
+
+
+@pytest.mark.parametrize("keysym", ["v", "V"])
+def test_a_latin_keysym_is_left_to_the_standard_binding(window: SetupWindow, keysym: str) -> None:
+    """Латинскую букву Tk уже связал с <<Paste>>: обработчик не вмешивается, иначе вставка была бы двойной."""
+    entry: ttk.Entry = _channel_entry(window)
+    _type(entry, "")
+    _put_in_clipboard(window, CLIPBOARD_TEXT)
+    assert window.edit_shortcuts.handle(_KeyEvent(entry, KEYCODE_V, keysym)) is None
+    window.root.update()
+    assert entry.get() == ""
+
+
+def test_every_shortcut_letter_is_bound_by_tk_to_its_event(window: SetupWindow) -> None:
+    """Предпосылка правила «латинскую букву берёт Tk»: штатная связь есть у каждой из четырёх букв."""
+    shortcuts: EditShortcuts = window.edit_shortcuts
+    assert {shortcut.keycode for shortcut in shortcuts.shortcuts} == {KEYCODE_V, KEYCODE_A, KEYCODE_X, KEYCODE_C}
+    for shortcut in shortcuts.shortcuts:
+        assert f"<Control-Key-{shortcut.letter}>" in window.root.event_info(shortcut.virtual_event)
+
+
+def test_the_shortcuts_leave_non_input_widgets_alone(window: SetupWindow) -> None:
+    button: ttk.Button = window.keys_tab.save_button
+    assert window.edit_shortcuts.handle(_KeyEvent(button, KEYCODE_V, "Cyrillic_em")) is None
+
+
+def test_a_shortcut_matches_only_its_key_outside_the_latin_letter(window: SetupWindow) -> None:
+    shortcut: EditShortcut = EditShortcut(KEYCODE_V, "v", PASTE_EVENT)
+    entry: ttk.Entry = _channel_entry(window)
+    assert shortcut.matches(_KeyEvent(entry, KEYCODE_V, "Cyrillic_em"))
+    assert shortcut.matches(_KeyEvent(entry, KEYCODE_V, "??"))
+    assert not shortcut.matches(_KeyEvent(entry, KEYCODE_V, "v"))
+    assert not shortcut.matches(_KeyEvent(entry, KEYCODE_V, "V"))
+    assert not shortcut.matches(_KeyEvent(entry, KEYCODE_C, "Cyrillic_es"))
+
+
+def test_ctrl_v_and_ctrl_a_work_in_a_key_field(window: SetupWindow) -> None:
+    entry: ttk.Entry = _key_entry(window)
+    _put_in_clipboard(window, OWN_OPENAI_KEY)
+    _focus(window, window.keys_tab.frame, entry)
+    _press(window, entry, KEYCODE_V)
+    assert entry.get() == OWN_OPENAI_KEY
+    _press(window, entry, KEYCODE_A)
+    assert entry.selection_present()
+
+
+def test_ctrl_c_in_a_key_field_leaves_the_clipboard_alone(window: SetupWindow) -> None:
+    entry: ttk.Entry = _key_entry(window)
+    _type(entry, OWN_OPENAI_KEY)
+    _put_in_clipboard(window, CLIPBOARD_TEXT)
+    _focus(window, window.keys_tab.frame, entry)
+    entry.selection_range(0, tk.END)
+    _press(window, entry, KEYCODE_C)
+    entry.event_generate(COPY_EVENT)
+    window.root.update()
+    assert window.root.clipboard_get() == CLIPBOARD_TEXT
+
+
+def test_ctrl_x_in_a_key_field_cuts_nothing(window: SetupWindow) -> None:
+    entry: ttk.Entry = _key_entry(window)
+    _type(entry, OWN_OPENAI_KEY)
+    _put_in_clipboard(window, CLIPBOARD_TEXT)
+    _focus(window, window.keys_tab.frame, entry)
+    entry.selection_range(0, tk.END)
+    _press(window, entry, KEYCODE_X)
+    entry.event_generate(CUT_EVENT)
+    window.root.update()
+    assert entry.get() == OWN_OPENAI_KEY
+    assert window.root.clipboard_get() == CLIPBOARD_TEXT
+
+
+def test_ctrl_x_still_cuts_in_a_channel_field(window: SetupWindow) -> None:
+    """Запрет — только у полей ключей: остальные поля вырезают как обычно."""
+    entry: ttk.Entry = _channel_entry(window)
+    _type(entry, CHANNEL_TEXT)
+    _focus(window, window.channels_tab.frame, entry)
+    entry.selection_range(0, tk.END)
+    _press(window, entry, KEYCODE_X)
+    assert entry.get() == ""
+    assert window.root.clipboard_get() == CHANNEL_TEXT
+
+
+# --- подпись кнопки сброса своего значения
+
+
+def test_the_reset_button_over_the_supply_returns_the_program_value(window: SetupWindow) -> None:
+    view: KeyRowView = _accept(window, SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY)
+    assert view.reset_button.cget("text") == msg.SETUP_KEYS_BUTTON_RESET_TO_SUPPLIED
+
+
+def test_the_reset_button_without_supply_deletes_the_own_value(bare_window: SetupWindow) -> None:
+    view: KeyRowView = _accept(bare_window, SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY)
+    assert view.reset_button.grid_info() != {}
+    assert view.reset_button.cget("text") == msg.SETUP_KEYS_BUTTON_DELETE_OWN
+
+
+def test_the_keys_notice_says_own_values_stay_on_this_computer(window: SetupWindow) -> None:
+    assert "Свои значения и их сброс касаются только этого компьютера." in str(window.keys_tab.notice.cget("text"))

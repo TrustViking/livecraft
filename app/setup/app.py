@@ -6,6 +6,7 @@
 запуску, решают модели вкладок и `Readiness`. Значения сейфа окно показывает только масками; исключение —
 своё значение по кнопке «показать» на вкладке «Ключи и ссылки» (§14 решение 11), которое прячется при уходе
 с вкладки. Буфер обмена окно не трогает; строка готовности — только проблемы `Readiness`, в них значений нет.
+Вставка, выделение, вырезание и копирование в полях работают в любой раскладке (`EditShortcuts`).
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from typing import Final
 
 from app.paths import LivecraftPaths
 from app.setup.readiness import Readiness
-from app.setup.tabs import PAD, TEXT_WRAP_PIXELS
+from app.setup.tabs import PAD, TEXT_WRAP_PIXELS, EditShortcuts
 from app.setup.tabs.channels_tab import ChannelsTab
 from app.setup.tabs.keys_tab import KeysTab
 from app.setup.tabs.settings_tab import SettingsTab
@@ -49,6 +50,7 @@ class SetupWindow:
         self.root: tk.Tk = tk.Tk()
         self.root.title(msg.SETUP_WINDOW_TITLE.format(version=APP_VERSION))
         self.is_closed: bool = False
+        self.edit_shortcuts: EditShortcuts = EditShortcuts.install(self.root)
         self.style: ttk.Style = ttk.Style(self.root)
         self.selected_tab_font: font.Font = font.nametofont(DEFAULT_FONT, root=self.root).copy()
         self._tab_gap_image: tk.PhotoImage = tk.PhotoImage(master=self.root, width=1, height=1)

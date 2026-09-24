@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from app.google.auth import GoogleLogin
+from app.google.auth import AuthError, AuthErrorReason, GoogleLogin
 from app.paths import LivecraftPaths, ROOT_ENV_VAR
 from app.secretsafe.value import SecretField
 from app.secretsafe.vault import Vault
@@ -55,10 +55,24 @@ def patch_open(monkeypatch: pytest.MonkeyPatch, reader: _FakeReader) -> list[Goo
     return logins
 
 
-def run_probe(paths: LivecraftPaths, now: datetime = FIXED_NOW) -> tuple[int, list[str]]:
+def run_probe(paths: LivecraftPaths, now: datetime = FIXED_NOW, relogin: bool = False) -> tuple[int, list[str]]:
     lines: list[str] = []
-    code: int = SheetsProbe(paths=paths, now=now, say=lines.append).run()
+    code: int = SheetsProbe(paths=paths, now=now, say=lines.append, relogin=relogin).run()
     return code, lines
+
+
+def patch_credentials(monkeypatch: pytest.MonkeyPatch, error: AuthError | None = None) -> list[dict[str, Any]]:
+    """Вход без браузера: запоминает, с какими ключами его позвали, и при `error` отказывает."""
+    calls: list[dict[str, Any]] = []
+
+    def _credentials(self: GoogleLogin, **options: Any) -> object:
+        calls.append(options)
+        if error is not None:
+            raise error
+        return object()
+
+    monkeypatch.setattr(GoogleLogin, "credentials", _credentials)
+    return calls
 
 
 def assert_no_vault_values(lines: list[str]) -> None:
@@ -122,8 +136,57 @@ def test_probe_read_error_is_code_1(ready_paths: LivecraftPaths, monkeypatch: py
     patch_open(monkeypatch, _FakeReader(error=error))
     code, lines = run_probe(ready_paths)
     assert code == ProbeExit.ERRORS == 1
-    assert lines[-1] == error.human
+    assert lines[-2:] == [error.human, msg.SHEETS_PROBE_RELOGIN_HINT]
     assert_no_vault_values(lines)
+
+
+def test_other_read_errors_give_no_relogin_hint(ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch) -> None:
+    error: SheetsReadError = SheetsReadError(SheetsReadReason.NOT_FOUND, "sheets-plan(abcd)", status=404)
+    patch_open(monkeypatch, _FakeReader(error=error))
+    code, lines = run_probe(ready_paths)
+    assert code == ProbeExit.ERRORS
+    assert lines[-1] == error.human
+    assert msg.SHEETS_PROBE_RELOGIN_HINT not in lines
+
+
+def test_relogin_logs_in_again_before_reading(ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader: _FakeReader = _FakeReader(values=VALUES)
+    logins: list[GoogleLogin] = patch_open(monkeypatch, reader)
+    calls: list[dict[str, Any]] = patch_credentials(monkeypatch)
+    code, _lines = run_probe(ready_paths, relogin=True)
+    assert code == ProbeExit.OK
+    assert len(calls) == 1 and calls[0]["force_reauth"] is True
+    assert logins == [GoogleLogin.operator(ready_paths)]
+    assert len(reader.vaults) == 1
+
+
+def test_without_relogin_the_token_is_not_forced(ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch) -> None:
+    patch_open(monkeypatch, _FakeReader(values=VALUES))
+    calls: list[dict[str, Any]] = patch_credentials(monkeypatch)
+    code, _lines = run_probe(ready_paths)
+    assert code == ProbeExit.OK
+    assert calls == []
+
+
+def test_a_failed_relogin_is_code_1_and_reads_nothing(
+    ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader: _FakeReader = _FakeReader(values=VALUES)
+    logins: list[GoogleLogin] = patch_open(monkeypatch, reader)
+    patch_credentials(monkeypatch, AuthError(AuthErrorReason.LOGIN_TIMEOUT, "no answer"))
+    code, lines = run_probe(ready_paths, relogin=True)
+    assert code == ProbeExit.ERRORS
+    assert logins == [] and reader.vaults == []
+    assert AuthErrorReason.LOGIN_TIMEOUT.human in lines[-1]
+    assert_no_vault_values(lines)
+
+
+def test_main_passes_the_relogin_flag(ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(ROOT_ENV_VAR, str(ready_paths.root))
+    patch_open(monkeypatch, _FakeReader(values=VALUES))
+    calls: list[dict[str, Any]] = patch_credentials(monkeypatch)
+    assert sheets_probe.main([sheets_probe.RELOGIN_FLAG]) == ProbeExit.OK
+    assert [call["force_reauth"] for call in calls] == [True]
 
 
 def test_probe_main_runs_on_the_root_from_the_environment(
@@ -131,7 +194,7 @@ def test_probe_main_runs_on_the_root_from_the_environment(
 ) -> None:
     monkeypatch.setenv(ROOT_ENV_VAR, str(ready_paths.root))
     patch_open(monkeypatch, _FakeReader(values=VALUES))
-    assert sheets_probe.main() == ProbeExit.OK
+    assert sheets_probe.main([]) == ProbeExit.OK
     out: str = capsys.readouterr().out
     assert msg.SHEETS_PROBE_TITLE in out
     assert_no_vault_values([out])

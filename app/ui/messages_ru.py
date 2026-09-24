@@ -234,7 +234,7 @@ SETUP_INPUT_OWN_UNAVAILABLE: Final[str] = (
 SETUP_KEYS_NOTICE_PROTECTION: Final[str] = (
     "Значения, пришедшие вместе с программой, защищены от копирования и визуального отображения, но не от "
     "специалиста. Свои значения, введённые здесь, действуют только на этом компьютере под вашей учётной записью "
-    "Windows."
+    "Windows. Свои значения и их сброс касаются только этого компьютера."
 )
 SETUP_KEYS_NOTICE_NO_OWN: Final[str] = (
     "На этом компьютере свои значения сохранить нельзя: программа работает на значениях, пришедших вместе с ней."
@@ -280,7 +280,10 @@ SETUP_KEYS_HEADER_ORIGIN: Final[str] = "Откуда"
 SETUP_KEYS_HEADER_VALUE: Final[str] = "Значение"
 SETUP_KEYS_HEADER_INPUT: Final[str] = "Своё значение"
 SETUP_KEYS_BUTTON_ACCEPT: Final[str] = "Сохранить значение"
-SETUP_KEYS_BUTTON_RESET: Final[str] = "Сбросить к поставке"
+# Сброс своего значения называется по итогу (KeyRow.reset_label): под своим есть значение программы — оно
+# вернётся; нет — поле останется пустым.
+SETUP_KEYS_BUTTON_RESET_TO_SUPPLIED: Final[str] = "Вернуть значение программы"
+SETUP_KEYS_BUTTON_DELETE_OWN: Final[str] = "Удалить своё значение"
 # «Показать своё» (§14 решение 11): только значение, которое пользователь ввёл сам, только на экран.
 SETUP_KEYS_BUTTON_REVEAL: Final[str] = "показать"
 SETUP_KEYS_BUTTON_HIDE: Final[str] = "скрыть"
@@ -394,6 +397,10 @@ SHEETS_PROBE_COLUMNS: Final[str] = "Колонки: ссылка — {link}, д�
 SHEETS_PROBE_COLUMN: Final[str] = "«{name}» ({number}-я в диапазоне)"
 SHEETS_PROBE_ROWS: Final[str] = "Рядов прочитано: {rows}, допущено: {admitted}, отсеяно: {skipped}."
 SHEETS_PROBE_SKIP_LINE: Final[str] = "  {reason}: {count}"
+SHEETS_PROBE_RELOGIN_HELP: Final[str] = "войти в Google заново в браузере и выбрать другой аккаунт"
+SHEETS_PROBE_RELOGIN_HINT: Final[str] = (
+    "Вошли не тем аккаунтом? Запустите с --relogin и выберите аккаунт, у которого есть доступ к таблице."
+)
 
 # --- источники (app\sources\): данные видео через yt-dlp и обложка. Ключи словарей — значения
 # SourceFailureReason и PreviewProblem; ссылки на видео YouTube — не секрет, их можно показывать.

@@ -183,6 +183,36 @@ def test_reset_of_a_saved_own_field_shows_the_supplied_one_under_it(store: Vault
     assert _row(reset, SecretField.SHEETS_ID).display == supplied.masked
 
 
+
+# --- подпись кнопки сброса
+
+
+def test_reset_label_of_an_own_field_over_the_supply_returns_the_program_value(store: VaultStore) -> None:
+    panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.KEY_FORM_URL, OWN_FORM_URL))
+    assert _row(panel, SecretField.KEY_FORM_URL).reset_label == msg.SETUP_KEYS_BUTTON_RESET_TO_SUPPLIED
+
+
+def test_reset_label_of_an_own_field_without_supply_deletes_it(bare_store: VaultStore) -> None:
+    panel: KeysPanel = _applied(KeysPanel.from_store(bare_store).replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY))
+    assert _row(panel, SecretField.OPENAI_API_KEY).reset_label == msg.SETUP_KEYS_BUTTON_DELETE_OWN
+
+
+def test_reset_label_of_a_saved_own_field_over_the_supply_returns_the_program_value(store: VaultStore) -> None:
+    saved: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID)).save(store)
+    assert _row(saved, SecretField.SHEETS_ID).reset_label == msg.SETUP_KEYS_BUTTON_RESET_TO_SUPPLIED
+
+
+def test_supplied_and_empty_fields_have_no_reset_label(store: VaultStore, bare_store: VaultStore) -> None:
+    for panel in (KeysPanel.from_store(store), KeysPanel.from_store(bare_store)):
+        for row in panel.rows:
+            assert RowAction.RESET not in row.actions
+            assert row.reset_label is None
+
+
+def test_reset_label_follows_the_reset_action_only() -> None:
+    assert KeyRow.of(SecretField.SHEETS_ID, None, can_save_own=True, has_supplied=True).reset_label is None
+
+
 # --- несохранённые изменения
 
 

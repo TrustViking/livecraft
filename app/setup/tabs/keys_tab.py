@@ -5,7 +5,10 @@
 под полем, а введённое остаётся. Кнопка «Сохранить» отдаёт модели сейф этой установки (`VaultStore.open`).
 
 Значение сейфа в виджет по умолчанию не попадает: строка рисует маску из модели, а поле ввода — то, что
-человек печатает сам, и то скрытыми символами. Буфер обмена не трогается.
+человек печатает сам, и то скрытыми символами. Буфер обмена не трогается: в поле ввода вставлять и выделять
+можно, а копировать и вырезать — нет (привязка на самом поле гасит `<<Copy>>` и `<<Cut>>` в любой раскладке).
+
+Кнопка сброса своего значения подписана тем, что она сделает (`KeyRow.reset_label`).
 
 «Показать своё» (`RowAction.REVEAL`, §14 решение 11): кнопка есть только у поля, которое человек ввёл сам.
 По явному нажатию значение просит у модели (`KeysPanel.own_value` — единственная точка раскрытия в
@@ -26,7 +29,7 @@ from app.secretsafe.dpapi import DpapiUnavailable
 from app.secretsafe.store import VaultStore
 from app.secretsafe.value import SecretField
 from app.setup.panels.keys_panel import KeyRow, KeysPanel, KeysPanelEdit, RowAction
-from app.setup.tabs import NOTICE_JOINER, PAD, TEXT_WRAP_PIXELS, ProblemLine
+from app.setup.tabs import BREAK, COPY_EVENT, CUT_EVENT, NOTICE_JOINER, PAD, TEXT_WRAP_PIXELS, ProblemLine
 from app.ui import messages_ru as msg
 
 SECRET_ECHO: Final[str] = "•"             # символ вместо каждого введённого: значение не видно через плечо
@@ -42,6 +45,8 @@ HEADERS: Final[tuple[str, ...]] = (
 )
 PROBLEM_COLUMN: Final[int] = 3
 PROBLEM_COLUMN_SPAN: Final[int] = 3
+# Из поля ключа введённое не уходит: ни копированием, ни вырезанием.
+BLOCKED_ENTRY_EVENTS: Final[tuple[str, ...]] = (COPY_EVENT, CUT_EVENT)
 
 
 class KeyRowView:
@@ -61,12 +66,12 @@ class KeyRowView:
         self.origin: ttk.Label = ttk.Label(parent)
         self.display: ttk.Label = ttk.Label(parent)
         self.entry: ttk.Entry = ttk.Entry(parent, show=SECRET_ECHO, width=ENTRY_WIDTH_CHARS)
+        for blocked in BLOCKED_ENTRY_EVENTS:
+            self.entry.bind(blocked, lambda _event: BREAK)
         self.accept_button: ttk.Button = ttk.Button(
             parent, text=msg.SETUP_KEYS_BUTTON_ACCEPT, command=lambda: on_accept(field)
         )
-        self.reset_button: ttk.Button = ttk.Button(
-            parent, text=msg.SETUP_KEYS_BUTTON_RESET, command=lambda: on_reset(field)
-        )
+        self.reset_button: ttk.Button = ttk.Button(parent, command=lambda: on_reset(field))
         self.reveal_button: ttk.Button = ttk.Button(
             parent, text=msg.SETUP_KEYS_BUTTON_REVEAL, command=lambda: on_toggle_own_value(field)
         )
@@ -87,6 +92,7 @@ class KeyRowView:
         """
         self.label.configure(text=row.label)
         self.origin.configure(text=row.origin_label)
+        self.reset_button.configure(text=row.reset_label or "")
         self._mask = row.display
         self.hide()
         can_input: bool = bool(row.actions & INPUT_ACTIONS)
@@ -180,7 +186,7 @@ class KeysTab:
         self._show()
 
     def reset(self, field: SecretField) -> None:
-        """«Сбросить к поставке»: модель убирает своё значение поля."""
+        """Сброс своего значения: модель убирает его — вернётся поставочное, а если его нет, поле опустеет."""
         if self.panel is None:
             return
         self.hide_revealed()

@@ -32,7 +32,7 @@ class RowAction(str, Enum):
 
     ENTER = "enter"      # ввести: поля нет ни в поставке, ни своего
     REPLACE = "replace"  # заменить своим
-    RESET = "reset"      # сбросить к поставке: убрать своё значение
+    RESET = "reset"      # убрать своё значение: вернётся поставочное, а если его нет — поле опустеет
     REVEAL = "show_own"  # показать своё: окно открывает значение, которое пользователь ввёл сам
 
 
@@ -48,17 +48,23 @@ _OWN_WRITING_ACTIONS: Final[frozenset[RowAction]] = frozenset({RowAction.ENTER, 
 
 @dataclass(frozen=True)
 class KeyRow:
-    """Строка вкладки для одного поля: название, происхождение, маска и доступные действия."""
+    """Строка вкладки для одного поля: название, происхождение, маска, доступные действия и подпись сброса.
+
+    `reset_label` называет, что сделает сброс своего значения: под своим есть поставочное — «вернуть значение
+    программы», нет — «удалить своё значение». None — сброса у строки нет.
+    """
 
     field: SecretField
     label: str
     origin_label: str
     display: str
     actions: frozenset[RowAction]
+    reset_label: str | None
 
     @classmethod
-    def of(cls, field: SecretField, entry: VaultEntry | None, can_save_own: bool) -> KeyRow:
-        """Строка поля по его записи в сейфе: действия решает происхождение и то, можно ли писать своё."""
+    def of(cls, field: SecretField, entry: VaultEntry | None, can_save_own: bool, has_supplied: bool) -> KeyRow:
+        """Строка поля по его записи в сейфе: действия решает происхождение и то, можно ли писать своё;
+        подпись сброса — есть ли под своим поставочное значение (`has_supplied`)."""
         origin: VaultOrigin | None = None if entry is None else entry.origin
         actions: frozenset[RowAction] = _ACTIONS_BY_ORIGIN[origin]
         if not can_save_own:
@@ -69,7 +75,14 @@ class KeyRow:
             origin_label=msg.READINESS_FIELD_ABSENT if origin is None else origin.human_label,
             display=msg.READINESS_FIELD_ABSENT if entry is None else entry.masked,
             actions=actions,
+            reset_label=cls._reset_label(actions, has_supplied),
         )
+
+    @staticmethod
+    def _reset_label(actions: frozenset[RowAction], has_supplied: bool) -> str | None:
+        if RowAction.RESET not in actions:
+            return None
+        return msg.SETUP_KEYS_BUTTON_RESET_TO_SUPPLIED if has_supplied else msg.SETUP_KEYS_BUTTON_DELETE_OWN
 
 
 @dataclass(frozen=True)
@@ -122,8 +135,16 @@ class KeysPanel:
     @property
     def rows(self) -> tuple[KeyRow, ...]:
         """По строке на поле сейфа в порядке SecretField."""
-        vault: Vault = self.vault
-        return tuple(KeyRow.of(field, vault.entries.get(field), self.can_save_own) for field in SecretField)
+        return tuple(self.row(field) for field in SecretField)
+
+    def row(self, field: SecretField) -> KeyRow:
+        """Строка одного поля: запись итогового сейфа и то, есть ли под ней поставочное значение."""
+        return KeyRow.of(
+            field,
+            self.vault.entries.get(field),
+            self.can_save_own,
+            has_supplied=self.supplied.get(field) is not None,
+        )
 
     @property
     def notices(self) -> tuple[str, ...]:
@@ -149,7 +170,7 @@ class KeysPanel:
         значение и отсутствующее поле — None, и раскрытия не происходит. Ничего не пишет в лог: значение
         уходит только на экран, окну, которое его попросило.
         """
-        if RowAction.REVEAL not in KeyRow.of(field, self.vault.entries.get(field), self.can_save_own).actions:
+        if RowAction.REVEAL not in self.row(field).actions:
             return None
         secret: SecretValue | None = self.own.get(field)
         if secret is None:
