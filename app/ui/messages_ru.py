@@ -357,6 +357,44 @@ SHEET_PLAN_HEADER_UNKNOWN: Final[str] = (
 )
 SHEET_PLAN_HEADER_NONE: Final[str] = "нет ни одного"
 
+# --- вход в Google (app\google\auth.py): строка в консоли — формат библиотеки, плейсхолдер {url};
+# страница в браузере после входа. Ключи AUTH_REASON_TEXT — значения AuthErrorReason, {minutes} — время ожидания.
+AUTH_OPEN_LINK: Final[str] = "Если браузер не открылся — откройте ссылку: {url}"
+AUTH_BROWSER_DONE: Final[str] = "Вход выполнен. Вернитесь в окно Livecraft."
+AUTH_REASON_TEXT: Final[dict[str, str]] = {
+    "client_secret_missing": "нет файла client_secret.json рядом с программой",
+    "token_unreadable": "файл входа в Google не читается; удалите его и войдите заново",
+    "flow_failed": "браузер не вернул разрешение",
+    "refresh_failed": "не удалось обновить вход (нет связи с Google)",
+    "login_required": "нужен вход в Google: входа ещё не было или он отозван",
+    "login_timeout": (
+        "вход не завершён за {minutes} минут — браузер закрыт или аккаунт не выбран; "
+        "при следующем запуске программа снова предложит вход"
+    ),
+}
+
+# --- чтение таблицы плана (app\sheets\client.py): {label} — ярлык таблицы с отпечатком, не её адрес (§7.4).
+# Ключи SHEETS_READ_REASON_TEXT — значения SheetsReadReason; {detail} — подробность без значений.
+SHEETS_READ_FAILED: Final[str] = "Таблица плана {label} не прочиталась: {reason}."
+SHEETS_READ_FAILED_STATUS: Final[str] = "Таблица плана {label} не прочиталась: {reason} (код ответа {status})."
+SHEETS_READ_REASON_TEXT: Final[dict[str, str]] = {
+    "not_configured": "не заполнено: {detail}; запустите livecraft.bat --setup",
+    "auth": "не удалось войти в Google — {detail}",
+    "no_access": "нет доступа — откройте таблицу аккаунту Google, под которым вошли",
+    "not_found": "такой таблицы нет — проверьте ссылку на таблицу в настройках",
+    "bad_range": "Google не принял колонки таблицы — проверьте их в настройках",
+    "rejected": "Google отказал в чтении",
+    "unavailable": "Google не ответил и после повторов — проверьте связь и запустите ещё раз",
+}
+
+# --- пробник чтения таблицы (app\tools\sheets_probe.py): только счётчики, ни адреса таблицы, ни ссылок рядов
+SHEETS_PROBE_TITLE: Final[str] = "Проверка чтения таблицы плана"
+SHEETS_PROBE_LOGIN: Final[str] = "Нужен вход в Google, чтобы читать таблицу плана, — сейчас откроется браузер."
+SHEETS_PROBE_COLUMNS: Final[str] = "Колонки: ссылка — {link}, дата — {date}, время — {time}."
+SHEETS_PROBE_COLUMN: Final[str] = "«{name}» ({number}-я в диапазоне)"
+SHEETS_PROBE_ROWS: Final[str] = "Рядов прочитано: {rows}, допущено: {admitted}, отсеяно: {skipped}."
+SHEETS_PROBE_SKIP_LINE: Final[str] = "  {reason}: {count}"
+
 # --- обрыв и падение запуска (app\main.py::run_cli)
 RUN_INTERRUPTED: Final[str] = (
     "Запуск прерван. Что уже сделано на YouTube, найдёт и учтёт следующий запуск."
