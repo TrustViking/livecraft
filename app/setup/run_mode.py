@@ -6,13 +6,38 @@
 
 Часть знает только себя: своё имя для людей, реализована ли она в этой версии и на каком этапе появится.
 Что нужно части для готовности, решает Readiness — там лежат прочитанные сейф и конфиги.
+
+Здесь же коды выхода (§10): их выбирают и main, и прогон режима (app\\slots\\intake.py), а прогон main не
+импортирует. Появится runner.decide_exit → RunExit — переедут туда, как в planers.
 """
 from __future__ import annotations
 
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Final
 
 from app.ui import messages_ru as msg
+
+
+class ExitCode(IntEnum):
+    """Коды выхода (CLAUDE.md §10)."""
+
+    OK = 0                 # сделано всё, что можно
+    ERRORS = 1             # есть ошибки
+    CONFIG = 2             # ошибка конфигурации, сейфа или авторизации — ничего не делалось
+    NO_FUTURE_SLOTS = 3    # в таблице нет будущих слотов — к каналам не обращались
+
+    def combined(self, other: ExitCode) -> ExitCode:
+        """Общий код двух итогов одного запуска: 2 важнее 3, 3 важнее 1, 1 важнее 0 (§10)."""
+        return max(self, other, key=lambda code: EXIT_CODE_WEIGHT[code])
+
+
+# Порядок важности кодов при сведении: конфигурация > нет будущих слотов > ошибки > всё сделано.
+EXIT_CODE_WEIGHT: Final[dict[ExitCode, int]] = {
+    ExitCode.OK: 0,
+    ExitCode.ERRORS: 1,
+    ExitCode.NO_FUTURE_SLOTS: 2,
+    ExitCode.CONFIG: 3,
+}
 
 
 class RunPart(str, Enum):
@@ -39,11 +64,15 @@ class RunPart(str, Enum):
         """Одна строка о нереализованной части: когда появится. Реализованная — None."""
         if self.is_built:
             return None
-        return msg.RUN_PART_NOT_BUILT.format(part=self.human_label, stage=msg.RUN_PART_STAGES[self.value])
+        template: str = msg.RUN_PART_NOT_BUILT_TEXTS.get(self.value, msg.RUN_PART_NOT_BUILT)
+        return template.format(part=self.human_label, stage=msg.RUN_PART_STAGES[self.value])
 
 
 # Части, которых в этой версии ещё нет: их неготовность — не ошибка настройки, а «появится позже».
-NOT_BUILT_PARTS: Final[frozenset[RunPart]] = frozenset({RunPart.ANNOUNCE, RunPart.PACKAGES_IN})
+# Без нейросети режим А идёт как с --no-llm: тексты слотов — из видео (SlotTexts.from_sources).
+NOT_BUILT_PARTS: Final[frozenset[RunPart]] = frozenset(
+    {RunPart.MERGE, RunPart.ANNOUNCE, RunPart.BROADCAST, RunPart.PACKAGES_IN}
+)
 
 
 class RunMode(str, Enum):

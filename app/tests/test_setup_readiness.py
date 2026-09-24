@@ -384,39 +384,41 @@ def test_a_fully_configured_root_has_every_built_part_ready(ready_paths: Livecra
         assert (state.action is None) is part.is_built
 
 
-def test_without_channels_the_table_merge_and_package_are_ready(ready_paths: LivecraftPaths) -> None:
+def test_without_channels_the_table_and_package_are_ready(ready_paths: LivecraftPaths) -> None:
+    """Эфиров в этой версии нет: нехватка каналов — не «не готово», а та же строка «появится позже»."""
     _set_form_url(ready_paths, FORM_URL)
     ready_paths.channels_file.unlink()
     readiness: Readiness = Readiness.check(ready_paths)
     assert readiness.part(RunPart.PLAN).is_ready
-    assert readiness.part(RunPart.MERGE).is_ready
     assert readiness.part(RunPart.PACKAGE).is_ready
     broadcast: PartReadiness = readiness.part(RunPart.BROADCAST)
-    assert broadcast.is_blocked
-    action: str = _gaps_text(broadcast)
-    assert msg.READINESS_GAP_CHANNELS_MISSING in action and msg.SETUP_TAB_CHANNELS in action
-    assert action.startswith(msg.RUN_PART_BLOCKED.split("{", 1)[0])
-    assert RunPart.BROADCAST.human_label in action
+    assert not broadcast.is_blocked and not broadcast.is_built
+    assert broadcast.action == RunPart.BROADCAST.not_built_line
+    assert msg.READINESS_GAP_CHANNELS_MISSING not in _gaps_text(broadcast)
 
 
-def test_without_the_openai_key_merge_waits_and_no_llm_does_not_need_it(ready_paths: LivecraftPaths) -> None:
+def test_the_all_mode_without_the_openai_key_blocks_nothing(ready_paths: LivecraftPaths) -> None:
+    """Нейросети в этой версии нет: режим «всё» без --no-llm ключа OpenAI не требует и «эфиры» готовыми не
+    показывает; с --no-llm строки о нейросети нет вовсе."""
     _set_form_url(ready_paths, FORM_URL)
     write_supplied_vault(ready_paths, {k: v for k, v in SUPPLIED_VALUES.items() if k is not SecretField.OPENAI_API_KEY})
     readiness: Readiness = Readiness.check(ready_paths)
     merge: PartReadiness = readiness.part(RunPart.MERGE)
-    assert merge.is_blocked
-    assert SecretField.OPENAI_API_KEY.human_label in _gaps_text(merge) and msg.SETUP_TAB_KEYS in _gaps_text(merge)
-    assert readiness.for_mode(RunMode.ALL, no_llm=False).blocked == (merge,)
-    assert readiness.for_mode(RunMode.ALL, no_llm=True).blocked == ()
+    assert not merge.is_blocked and not merge.is_built and merge.action == RunPart.MERGE.not_built_line
+    with_llm: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=False)
+    assert with_llm.blocked == ()
+    assert RunPart.BROADCAST not in [part.part for part in with_llm.ready]
+    assert with_llm.lines.count(RunPart.MERGE.not_built_line) == 1
+    without_llm: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=True)
+    assert without_llm.blocked == () and RunPart.MERGE.not_built_line not in without_llm.lines
 
 
-def test_without_the_form_the_package_and_broadcasts_wait(ready_paths: LivecraftPaths) -> None:
+def test_without_the_form_the_package_waits(ready_paths: LivecraftPaths) -> None:
     readiness: Readiness = Readiness.check(ready_paths)       # поставочная ссылка на форму пуста
-    for part in (RunPart.PACKAGE, RunPart.BROADCAST):
-        state: PartReadiness = readiness.part(part)
-        assert state.is_blocked
-        assert msg.READINESS_GAP_FORM in _gaps_text(state) and msg.SETUP_TAB_SETTINGS in _gaps_text(state)
-    assert readiness.part(RunPart.PLAN).is_ready and readiness.part(RunPart.MERGE).is_ready
+    state: PartReadiness = readiness.part(RunPart.PACKAGE)
+    assert state.is_blocked
+    assert msg.READINESS_GAP_FORM in _gaps_text(state) and msg.SETUP_TAB_SETTINGS in _gaps_text(state)
+    assert readiness.part(RunPart.PLAN).is_ready
 
 
 def test_without_client_secret_the_table_waits(ready_paths: LivecraftPaths) -> None:
@@ -441,16 +443,15 @@ def test_a_broken_settings_file_blocks_the_parts_that_need_it_with_the_key(ready
     data["keep_days"] = 0
     ready_paths.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     readiness: Readiness = Readiness.check(ready_paths)
-    for part in (RunPart.PLAN, RunPart.PACKAGE, RunPart.BROADCAST):
+    for part in (RunPart.PLAN, RunPart.PACKAGE):
         action: str = _gaps_text(readiness.part(part))
         assert "keep_days" in action and msg.SETUP_TAB_SETTINGS in action
-    assert readiness.part(RunPart.MERGE).is_ready            # нейросети нужен только ключ
 
 
-def test_announce_and_packages_in_are_not_built_not_blocked(ready_paths: LivecraftPaths) -> None:
+def test_parts_not_built_are_not_blocked(ready_paths: LivecraftPaths) -> None:
     """Частей, которых нет в этой версии, настройкой не починить: строка «появится позже», а не «не готово»."""
     readiness: Readiness = Readiness.check(ready_paths)
-    for part in (RunPart.ANNOUNCE, RunPart.PACKAGES_IN):
+    for part in (RunPart.MERGE, RunPart.ANNOUNCE, RunPart.BROADCAST, RunPart.PACKAGES_IN):
         state: PartReadiness = readiness.part(part)
         assert not state.is_built and not state.is_blocked and not state.is_ready
         assert state.action == part.not_built_line
@@ -458,24 +459,29 @@ def test_announce_and_packages_in_are_not_built_not_blocked(ready_paths: Livecra
 
 def test_the_announce_mode_with_everything_set_blocks_nothing(ready_paths: LivecraftPaths) -> None:
     mode: ModeReadiness = _configured(ready_paths).for_mode(RunMode.ANNOUNCE, no_llm=False)
-    assert [part.part for part in mode.ready] == [RunPart.PLAN, RunPart.MERGE, RunPart.PACKAGE]
+    assert [part.part for part in mode.ready] == [RunPart.PLAN, RunPart.PACKAGE]
     assert mode.blocked == ()
-    assert [part.part for part in mode.not_built] == [RunPart.ANNOUNCE]
-    assert mode.lines == (RunPart.ANNOUNCE.not_built_line,)
+    assert [part.part for part in mode.not_built] == [RunPart.MERGE, RunPart.ANNOUNCE]
+    assert mode.lines == (RunPart.MERGE.not_built_line, RunPart.ANNOUNCE.not_built_line)
     assert not mode.is_nothing_ready
-    assert mode.log_line == "mode=announce ready=plan,merge,package blocked=- not_built=announce"
+    assert mode.is_part_ready(RunPart.PLAN) and not mode.is_part_ready(RunPart.MERGE)
+    assert mode.log_line == "mode=announce ready=plan,package blocked=- not_built=merge,announce"
 
 
 def test_the_from_package_mode_needs_no_table_and_no_key(ready_paths: LivecraftPaths) -> None:
+    """Режим Б этой версии — одни «пока нет»: это не «не готово ничего», окно для него не открывается."""
     ready_paths.vault_file.unlink()
     ready_paths.client_secret_file.unlink()
     mode: ModeReadiness = _configured(ready_paths).for_mode(RunMode.FROM_PACKAGE, no_llm=False)
-    assert [part.part for part in mode.ready] == [RunPart.BROADCAST]
-    assert mode.blocked == () and not mode.is_nothing_ready
+    assert mode.ready == () and mode.blocked == ()
+    assert [part.part for part in mode.not_built] == [RunPart.PACKAGES_IN, RunPart.BROADCAST]
+    assert not mode.is_nothing_ready
 
 
 def test_a_clean_root_has_nothing_ready(livecraft_paths: LivecraftPaths) -> None:
     for mode in RunMode:
+        if not mode.is_from_table:
+            continue
         state: ModeReadiness = Readiness.check(livecraft_paths).for_mode(mode, no_llm=False)
         assert state.is_nothing_ready and state.is_fixable_in_setup
 
@@ -484,8 +490,8 @@ def test_the_mode_lines_come_one_per_part_in_work_order(ready_paths: LivecraftPa
     ready_paths.channels_file.unlink()
     mode: ModeReadiness = Readiness.check(ready_paths).for_mode(RunMode.ALL, no_llm=False)
     parts: list[RunPart] = [part.part for part in mode.parts if part.action is not None]
-    assert parts == [RunPart.PACKAGE, RunPart.ANNOUNCE, RunPart.BROADCAST]
-    assert len(mode.lines) == 3
+    assert parts == [RunPart.MERGE, RunPart.PACKAGE, RunPart.ANNOUNCE, RunPart.BROADCAST]
+    assert len(mode.lines) == 4
 
 
 def test_a_broken_vault_file_blocks_the_table_and_is_not_fixable_in_the_window(ready_paths: LivecraftPaths) -> None:

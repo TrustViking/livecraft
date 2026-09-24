@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.setup.run_mode import NOT_BUILT_PARTS, RunMode, RunPart
+from app.setup.run_mode import NOT_BUILT_PARTS, ExitCode, RunMode, RunPart
 from app.ui import messages_ru as msg
 
 TABLE_PARTS: tuple[RunPart, ...] = (RunPart.PLAN, RunPart.MERGE, RunPart.PACKAGE)
@@ -44,8 +44,8 @@ def test_only_the_package_mode_skips_the_table() -> None:
     assert [mode for mode in RunMode if not mode.is_from_table] == [RunMode.FROM_PACKAGE]
 
 
-def test_announce_and_package_reading_are_not_built_yet() -> None:
-    assert NOT_BUILT_PARTS == {RunPart.ANNOUNCE, RunPart.PACKAGES_IN}
+def test_merge_announce_broadcast_and_package_reading_are_not_built_yet() -> None:
+    assert NOT_BUILT_PARTS == {RunPart.MERGE, RunPart.ANNOUNCE, RunPart.BROADCAST, RunPart.PACKAGES_IN}
     for part in RunPart:
         assert part.is_built is (part not in NOT_BUILT_PARTS)
 
@@ -57,7 +57,37 @@ def test_every_part_has_a_label_and_every_missing_part_a_stage() -> None:
         if part.is_built:
             assert line is None
             continue
-        assert line == msg.RUN_PART_NOT_BUILT.format(part=part.human_label, stage=msg.RUN_PART_STAGES[part.value])
+        template: str = msg.RUN_PART_NOT_BUILT_TEXTS.get(part.value, msg.RUN_PART_NOT_BUILT)
+        assert line == template.format(part=part.human_label, stage=msg.RUN_PART_STAGES[part.value])
+
+
+def test_the_merge_line_says_the_texts_come_from_the_videos() -> None:
+    """Без нейросети запуск идёт на текстах видео — строка говорит именно это, а не «не выполняется»."""
+    line: str | None = RunPart.MERGE.not_built_line
+    assert line is not None and "из видео" in line and msg.RUN_PART_STAGES["merge"] in line
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "combined"),
+    [
+        (ExitCode.OK, ExitCode.OK, ExitCode.OK),
+        (ExitCode.OK, ExitCode.ERRORS, ExitCode.ERRORS),
+        (ExitCode.ERRORS, ExitCode.NO_FUTURE_SLOTS, ExitCode.NO_FUTURE_SLOTS),
+        (ExitCode.NO_FUTURE_SLOTS, ExitCode.CONFIG, ExitCode.CONFIG),
+        (ExitCode.CONFIG, ExitCode.ERRORS, ExitCode.CONFIG),
+        (ExitCode.NO_FUTURE_SLOTS, ExitCode.OK, ExitCode.NO_FUTURE_SLOTS),
+    ],
+)
+def test_exit_codes_combine_by_importance(first: ExitCode, second: ExitCode, combined: ExitCode) -> None:
+    """2 важнее 3, 3 важнее 1, 1 важнее 0 (§10) — в любом порядке."""
+    assert first.combined(second) is combined
+    assert second.combined(first) is combined
+
+
+def test_main_reexports_the_exit_codes() -> None:
+    from app import main
+
+    assert main.ExitCode is ExitCode
 
 
 def test_the_log_identifiers_are_ascii() -> None:

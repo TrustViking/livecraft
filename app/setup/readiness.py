@@ -98,9 +98,20 @@ class ModeReadiness:
 
     @property
     def is_nothing_ready(self) -> bool:
-        """Ни одна реализованная часть не готова, либо не готова основа режима."""
+        """Есть реализованные части, и ни одна не готова, либо не готова основа режима.
+
+        Режим, в котором реализованных частей ещё нет (режим Б этой версии), настройкой не лечится: окно
+        для него не открывается, строки «пока нет» говорят сами за себя.
+        """
         base: PartReadiness | None = self.parts[0] if self.parts else None
-        return not self.ready or (base is not None and base.is_blocked)
+        if base is not None and base.is_blocked:
+            return True
+        has_built: bool = any(part.is_built for part in self.parts)
+        return has_built and not self.ready
+
+    def is_part_ready(self, part: RunPart) -> bool:
+        """Часть есть в режиме, реализована и готова."""
+        return any(ready.part is part for ready in self.ready)
 
     @property
     def lines(self) -> tuple[str, ...]:

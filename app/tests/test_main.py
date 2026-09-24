@@ -8,7 +8,10 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -28,12 +31,63 @@ from app.secretsafe.crypto import KEY_WRAPPED
 from app.secretsafe.store import VAULT_FILE_ENCODING, VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
+from app.packages.package import PackageResult
 from app.setup.run_mode import RunMode, RunPart
-from app.tests.conftest import FORM_URL, REPO_ROOT, SUPPLIED_VALUES, set_form_url, write_supplied_vault
+from app.sheets.plan import SheetRow
+from app.sheets.rows import PlanRow
+from app.slots.builder import SlotBuild, SlotBuilder
+from app.slots.intake import IntakeRequest, IntakeResult, IntakeStage, PlanIntake
+from app.sources.video import SourceVideo
+from app.tests.conftest import (
+    FORM_URL,
+    REPO_ROOT,
+    SUPPLIED_VALUES,
+    ready_source,
+    set_form_url,
+    write_supplied_vault,
+)
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
 
 LOG_GLOB: str = "*_livecraft.log"
+INTAKE_LINK: str = "https://youtu.be/dQw4w9WgXcQ"
+INTAKE_START: datetime = datetime(2026, 10, 16, 19, 0, tzinfo=timezone(timedelta(hours=3)))
+INTAKE_TITLE: str = "Название видео для прогона"
+
+
+def _ok_intake_result() -> IntakeResult:
+    """Итог прогона «всё сделано»: один ряд, годный источник, один слот, записанный пакет."""
+    row: PlanRow = PlanRow.admitted(SheetRow(2, INTAKE_LINK, "16.10.2026", "19:00"), INTAKE_START, INTAKE_LINK)
+    video: SourceVideo = ready_source(row, INTAKE_TITLE, "Описание видео", "uk")
+    build: SlotBuild = SlotBuilder(ZoneInfo("Europe/Kyiv")).build((video,))
+    package: PackageResult = PackageResult(
+        path=Path("bcast") / "plan.bcast", problem=None, slots=1, previews=0, size_bytes=1
+    )
+    return IntakeResult(
+        rows=(row,), videos=(video,), build=build, package=package, sheets_error=None, plan_problem=None,
+        stopped_at=None,
+    )
+
+
+@dataclass
+class _IntakeStub:
+    """Подменённый прогон контура A: к Google и yt-dlp тесты запуска не ходят. Итог задаёт тест."""
+
+    result: IntakeResult = field(default_factory=_ok_intake_result)
+    requests: list[IntakeRequest] = field(default_factory=list)
+
+
+@pytest.fixture(autouse=True)
+def intake(monkeypatch: pytest.MonkeyPatch) -> _IntakeStub:
+    """Прогон режима А в тестах запуска подменён: запрос записывается, итог — из заглушки."""
+    stub: _IntakeStub = _IntakeStub()
+
+    def _run(self: PlanIntake) -> IntakeResult:
+        stub.requests.append(self.request)
+        return stub.result
+
+    monkeypatch.setattr(PlanIntake, "run", _run)
+    return stub
 
 
 @pytest.fixture(autouse=True)
@@ -472,7 +526,8 @@ def test_config_errors_land_in_the_log(livecraft_root: Path) -> None:
     close_logging()
     [log_file] = list((livecraft_root / "logs").glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
-    assert "config_error path=" in text and "kind=file_missing" in text
+    assert "config_missing path=" in text                   # нет файла — не ошибка, а «ещё не настроено»
+    assert "kind=file_missing" not in text
     assert "readiness settings=ok channels=- " in text      # настройки прочитаны и без каналов
 
 
@@ -605,22 +660,24 @@ def _line_of(part: RunPart, out: str) -> str:
     return line
 
 
-def test_without_channels_the_settings_are_read_and_only_broadcasts_wait(
+def test_without_channels_the_settings_are_read_and_the_table_run_goes_on(
     ready_root: LivecraftPaths,
     capsys: pytest.CaptureFixture[str],
     window_calls: list[LivecraftPaths],
+    intake: _IntakeStub,
 ) -> None:
-    """Боевой случай 24-09-2026: нет channels.json — настройки всё равно прочитаны, сводка есть, строка о каналах
-    с точным действием, шаблона каналов в консоли нет; «всё» — код 1, окно не открывается."""
+    """Боевой случай 24-09-2026: нет channels.json — настройки всё равно прочитаны, сводка есть, шаблона каналов
+    в консоли нет; эфиров в этой версии нет — строка «пока нет», прогон таблицы идёт, окно не открывается."""
     ready_root.channels_file.unlink()
-    assert run_cli([]) == int(ExitCode.ERRORS)
+    assert run_cli([]) == int(ExitCode.OK)
     out: str = capsys.readouterr().out
     assert msg.READINESS_SUMMARY_TITLE in out
-    line: str = _line_of(RunPart.BROADCAST, out)
-    assert msg.READINESS_GAP_CHANNELS_MISSING in line and msg.SETUP_TAB_CHANNELS in line
+    assert _line_of(RunPart.BROADCAST, out) == RunPart.BROADCAST.not_built_line
+    assert msg.READINESS_GAP_CHANNELS_MISSING not in out
     assert msg.CONFIG_CHANNELS_TEMPLATE not in out
     assert msg.SETUP_REQUIRED not in out and msg.SETUP_OPENING not in out
     assert window_calls == []
+    assert len(intake.requests) == 1
 
 
 def test_without_channels_the_announce_mode_is_code_0(
@@ -635,26 +692,33 @@ def test_without_channels_the_announce_mode_is_code_0(
     assert RunPart.BROADCAST.human_label not in out
 
 
-def test_without_channels_the_broadcast_mode_is_code_1(
+def test_the_broadcast_mode_says_broadcasts_come_later_and_runs_the_table(
     ready_root: LivecraftPaths,
     capsys: pytest.CaptureFixture[str],
+    intake: _IntakeStub,
 ) -> None:
     ready_root.channels_file.unlink()
-    assert run_cli(["--broadcast"]) == int(ExitCode.ERRORS)
-    assert msg.READINESS_GAP_CHANNELS_MISSING in _line_of(RunPart.BROADCAST, capsys.readouterr().out)
+    assert run_cli(["--broadcast"]) == int(ExitCode.OK)
+    out: str = capsys.readouterr().out
+    assert _line_of(RunPart.BROADCAST, out) == RunPart.BROADCAST.not_built_line
+    assert len(intake.requests) == 1
 
 
 def test_the_from_package_mode_says_its_reading_comes_later(
     ready_root: LivecraftPaths,
     capsys: pytest.CaptureFixture[str],
     window_calls: list[LivecraftPaths],
+    intake: _IntakeStub,
 ) -> None:
-    """Режим Б: чтения пакетов в этой версии нет — строка «появится позже», код 0; таблица и ключ OpenAI не нужны."""
+    """Режим Б: чтения пакетов и эфиров в этой версии нет — строки «появится позже», код 0; таблица и ключ
+    OpenAI не нужны, окно не открывается, прогона таблицы нет."""
     _drop_supplied_vault(ready_root)
     assert run_cli(["--from-package"]) == int(ExitCode.OK)
     out: str = capsys.readouterr().out
     assert RunPart.PACKAGES_IN.not_built_line in out
+    assert RunPart.BROADCAST.not_built_line in out
     assert window_calls == []
+    assert intake.requests == []
 
 
 def _drop_supplied_vault(paths: LivecraftPaths) -> None:
@@ -665,24 +729,84 @@ def _drop_supplied_vault(paths: LivecraftPaths) -> None:
 def test_a_fully_configured_root_runs_every_built_part(
     ready_root: LivecraftPaths,
     capsys: pytest.CaptureFixture[str],
+    intake: _IntakeStub,
 ) -> None:
-    """Всё настроено: строк «не готово» нет, только «появится позже» об объявлениях; код 0."""
+    """Всё настроено: режим «всё» печатает сводку, одну строку «нейросети пока нет», строки «появится позже»
+    и строки прогона; код — код прогона."""
     assert run_cli([]) == int(ExitCode.OK)
     out: str = capsys.readouterr().out
-    assert RunPart.ANNOUNCE.not_built_line in out
+    lines: list[str] = out.splitlines()
+    assert msg.READINESS_SUMMARY_TITLE in out
+    assert lines.count(RunPart.MERGE.not_built_line) == 1
+    assert RunPart.ANNOUNCE.not_built_line in out and RunPart.BROADCAST.not_built_line in out
+    for line in intake.result.console_lines:
+        assert line in lines
+    assert lines.index(RunPart.BROADCAST.not_built_line) < lines.index(intake.result.console_lines[0])
     assert "Не готово" not in out
+    assert INTAKE_TITLE not in out and FORM_URL not in out
 
 
-def test_no_llm_does_not_need_the_openai_key(
+@pytest.mark.parametrize(
+    ("result", "code"),
+    [
+        (IntakeResult.stopped((), IntakeStage.TABLE), ExitCode.NO_FUTURE_SLOTS),
+        (IntakeResult.plan_failed("шапка не распознана"), ExitCode.ERRORS),
+    ],
+)
+def test_the_run_code_is_the_code_of_the_table_run(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+    intake: _IntakeStub,
+    result: IntakeResult,
+    code: ExitCode,
+) -> None:
+    intake.result = result
+    assert run_cli([]) == int(code)
+    out: str = capsys.readouterr().out
+    for line in result.console_lines:
+        assert line in out
+
+
+def test_a_blocked_part_and_no_future_rows_give_code_3(
+    unformed_root: LivecraftPaths,
+    intake: _IntakeStub,
+) -> None:
+    """Пакет не готов (нет формы) — это 1, но будущих рядов нет — 3 важнее (§10)."""
+    intake.result = IntakeResult.stopped((), IntakeStage.TABLE)
+    assert run_cli([]) == int(ExitCode.NO_FUTURE_SLOTS)
+
+
+def test_a_blocked_part_and_a_clean_run_give_code_1(unformed_root: LivecraftPaths) -> None:
+    """Прогон прошёл чисто, но пакет не готов (нет формы) — код 1."""
+    assert run_cli([]) == int(ExitCode.ERRORS)
+
+
+def test_the_run_request_carries_an_aware_now_in_the_program_zone_and_a_new_package_id(
+    ready_root: LivecraftPaths,
+    intake: _IntakeStub,
+) -> None:
+    assert run_cli(["--dry-run"]) == int(ExitCode.OK)
+    assert run_cli([]) == int(ExitCode.OK)
+    first, second = intake.requests
+    assert first.now.utcoffset() is not None
+    assert str(first.now.tzinfo) == load_settings(ready_root.config_file).timezone
+    assert first.package_id != second.package_id
+    assert first.paths.root == ready_root.root
+
+
+def test_without_the_openai_key_the_run_goes_on_with_the_video_texts(
     ready_root: LivecraftPaths,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """--no-llm: нейросети нет — и ключ OpenAI не нужен; без флага его нехватка — строка и код 1."""
+    """Нейросети в этой версии нет: ключ OpenAI не нужен ни с --no-llm, ни без него; без флага — одна строка
+    «нейросети пока нет», с флагом — ни одной."""
     write_supplied_vault(ready_root, {k: v for k, v in SUPPLIED_VALUES.items() if k is not SecretField.OPENAI_API_KEY})
     assert run_cli(["--no-llm"]) == int(ExitCode.OK)
-    assert RunPart.MERGE.human_label not in capsys.readouterr().out
-    assert run_cli([]) == int(ExitCode.ERRORS)
-    assert SecretField.OPENAI_API_KEY.human_label in _line_of(RunPart.MERGE, capsys.readouterr().out)
+    assert RunPart.MERGE.not_built_line not in capsys.readouterr().out
+    assert run_cli([]) == int(ExitCode.OK)
+    out: str = capsys.readouterr().out
+    assert out.splitlines().count(RunPart.MERGE.not_built_line) == 1
+    assert "Не готово" not in out
 
 
 def test_without_the_table_nothing_is_ready_and_the_window_opens(
@@ -701,9 +825,9 @@ def test_without_the_table_nothing_is_ready_and_the_window_opens(
 
 def test_the_mode_readiness_lands_in_the_log(ready_root: LivecraftPaths) -> None:
     ready_root.channels_file.unlink()
-    assert run_cli([]) == int(ExitCode.ERRORS)
+    assert run_cli([]) == int(ExitCode.OK)
     close_logging()
     [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
-    assert "mode_readiness mode=all ready=plan,merge,package blocked=broadcast not_built=announce" in text
+    assert "mode_readiness mode=all ready=plan,package blocked=- not_built=merge,announce,broadcast" in text
     assert "run_started version=" in text and "mode=all " in text

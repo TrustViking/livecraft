@@ -56,11 +56,17 @@ RUN_PART_LABELS: Final[dict[str, str]] = {
 }
 # На каком этапе появится часть, которой в этой версии нет (§13).
 RUN_PART_STAGES: Final[dict[str, str]] = {
+    "merge": "Перенос нейросети",
     "announce": "Публикация",
+    "broadcast": "Эфиры",
     "packages_in": "Эфиры",
 }
 RUN_PART_BLOCKED: Final[str] = "Не готово — {part}: {gaps}."
 RUN_PART_NOT_BUILT: Final[str] = "Пока нет — {part}: будет на этапе «{stage}», в этой версии не выполняется."
+# Свои строки нереализованных частей, где общей мало: без нейросети запуск идёт дальше на текстах видео.
+RUN_PART_NOT_BUILT_TEXTS: Final[dict[str, str]] = {
+    "merge": "Нейросети пока нет — тексты эфиров из видео как есть; нейросеть будет на этапе «{stage}».",
+}
 # Что задать и где: {what} — чего не хватает, {tab} — вкладка настройщика (SETUP_TAB_*).
 READINESS_GAP_IN_SETUP: Final[str] = "{what} — «Livecraft — настройка», вкладка «{tab}»"
 READINESS_GAP_SETTINGS: Final[str] = "настройки запуска ({key} — {problem})"
@@ -462,9 +468,12 @@ SHEETS_READ_REASON_TEXT: Final[dict[str, str]] = {
     "unavailable": "Google не ответил и после повторов — проверьте связь и запустите ещё раз",
 }
 
+# Первый вход оператора (нет токена): перед тем как откроется браузер — и в прогоне режима А, и в пробнике.
+SHEETS_LOGIN_BROWSER: Final[str] = "Нужен вход в Google, чтобы читать таблицу плана, — сейчас откроется браузер."
+
 # --- пробник чтения таблицы (app\tools\sheets_probe.py): только счётчики, ни адреса таблицы, ни ссылок рядов
 SHEETS_PROBE_TITLE: Final[str] = "Проверка чтения таблицы плана"
-SHEETS_PROBE_LOGIN: Final[str] = "Нужен вход в Google, чтобы читать таблицу плана, — сейчас откроется браузер."
+SHEETS_PROBE_LOGIN: Final[str] = SHEETS_LOGIN_BROWSER
 SHEETS_PROBE_COLUMNS: Final[str] = "Колонки: ссылка — {link}, дата — {date}, время — {time}."
 SHEETS_PROBE_COLUMN: Final[str] = "«{name}» ({number}-я в диапазоне)"
 SHEETS_PROBE_ROWS: Final[str] = "Рядов прочитано: {rows}, допущено: {admitted}, отсеяно: {skipped}."
@@ -512,6 +521,21 @@ PACKAGE_PROBLEMS: Final[dict[str, str]] = {
 }
 PACKAGE_WRITTEN: Final[str] = "Пакет записан: {path} (слотов: {slots}, обложек: {previews})."
 PACKAGE_NOT_WRITTEN: Final[str] = "Пакет не записан: {reason}."
+
+# --- прогон режима А (app\slots\intake.py, §3 шаги 2.3–2.6): по строке на шаг, только счётчики и причины.
+# Ни значений сейфа, ни ссылки на форму, ни названий и описаний видео (§7.4).
+INTAKE_TABLE_LINE: Final[str] = "Таблица плана: рядов {rows}, допущено {admitted}, отсеяно {skipped}{reasons}."
+INTAKE_TABLE_REASONS: Final[str] = " — {items}"
+INTAKE_COUNT_ITEM: Final[str] = "{name}: {count}"
+INTAKE_ITEM_JOINER: Final[str] = "; "
+INTAKE_LANGUAGE_JOINER: Final[str] = ", "
+INTAKE_NO_FUTURE_ROWS: Final[str] = "Будущих эфиров в таблице нет — слоты и пакет в этом запуске не собираются."
+INTAKE_SOURCES_LINE: Final[str] = "Видео: годных {ready} из {total}, без обложки {no_preview}{failures}."
+INTAKE_SOURCES_FAILURES: Final[str] = "; не годны — {items}"
+INTAKE_SLOTS_LINE: Final[str] = "Слоты эфиров: {count}{languages}{refused}."
+INTAKE_SLOTS_LANGUAGES: Final[str] = " ({items})"
+INTAKE_SLOTS_REFUSED: Final[str] = ", отказано: {count} — причины в логе"
+INTAKE_NO_SLOTS: Final[str] = "Годных слотов нет — пакет не записан."
 
 # --- пробник источников (app\tools\source_probe.py): {…} — данные видео, их можно показывать
 SOURCE_PROBE_TITLE: Final[str] = "Проверка источников через yt-dlp"

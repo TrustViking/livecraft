@@ -15,7 +15,11 @@
 Готовность считается по частям режима (app\\setup\\run_mode.py): не готова часть — одна строка с точным
 действием и код 1; не готово ничего — программа сама открывает окно настройки и после него отдаёт код 2 (§8.2).
 Шаблоны файлов в консоль не печатаются: файлы правит настройщик. --setup открывает окно при любом состоянии
-(app\\setup\\app.py); --check, --auth и --status пока требуют полной настройки. Сам прогон частей — задача 3.9.
+(app\\setup\\app.py); --check, --auth и --status пока требуют полной настройки.
+
+Готова основа режима А (таблица плана) — main собирает запрос прогона и отдаёт его app\\slots\\intake.py:
+таблица → источники → слоты → пакет в bcast\\. Код запуска сводит код готовности частей и код прогона (§10).
+--dry-run прогон не меняет: контур A ничего снаружи не создаёт, пакет пишется всегда (§10).
 """
 from __future__ import annotations
 
@@ -25,18 +29,19 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import IntEnum
 from pathlib import Path
 from typing import Final
+from uuid import uuid4
 
-from app.config.loader import ShippedSettings
+from app.config.loader import ConfigProblem, ShippedSettings
 from app.core.dates import format_datetime_text
 from app.observability.logging_setup import close_logging, get_logger, install_secret_filter, setup_logging
 from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
 from app.runtime.single_instance import AnotherInstanceRunning, InstanceLock, LockOwner
 from app.setup.migration import FormUrlMigration, FormUrlMigrationResult
 from app.setup.readiness import ModeReadiness, Readiness
-from app.setup.run_mode import RunMode
+from app.setup.run_mode import ExitCode, RunMode, RunPart
+from app.slots.intake import IntakeRequest, IntakeResult, PlanIntake
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
 
@@ -45,13 +50,7 @@ LOGGER = get_logger("main")
 PROGRAM_NAME: Final[str] = "livecraft"
 
 
-class ExitCode(IntEnum):
-    """Коды выхода (CLAUDE.md §10). Появится runner.decide_exit → RunExit — переедут туда, как в planers."""
-
-    OK = 0                 # сделано всё, что можно
-    ERRORS = 1             # есть ошибки
-    CONFIG = 2             # ошибка конфигурации, сейфа или авторизации — ничего не делалось
-    NO_FUTURE_SLOTS = 3    # в таблице нет будущих слотов — к каналам не обращались
+__all__ = ["PROGRAM_NAME", "ExitCode", "RunRequest", "build_parser", "run_cli"]   # ExitCode — из run_mode
 
 
 @dataclass(frozen=True)
@@ -205,7 +204,7 @@ def _run_mode(request: RunRequest, paths: LivecraftPaths, readiness: Readiness) 
     """Режим по частям (§10): не готово ничего — окно настройки и код 2; не готова часть — строка и код 1.
 
     Файл ключей и ссылок повреждён — окно его не починит (правка там выключена): только строки и код 2.
-    Прогона частей пока нет (задача 3.9): после проверки программа ничего не делает.
+    Готова таблица плана — прогон контура A; код запуска — сведённый код готовности и прогона.
     """
     mode: ModeReadiness = readiness.for_mode(request.mode, no_llm=request.no_llm)
     LOGGER.info("mode_readiness %s", mode.log_line)
@@ -219,7 +218,32 @@ def _run_mode(request: RunRequest, paths: LivecraftPaths, readiness: Readiness) 
         return int(ExitCode.CONFIG)
     _say_lines(readiness.summary_lines)
     _say_lines(mode.lines)
-    return int(ExitCode.ERRORS) if mode.blocked else int(ExitCode.OK)
+    code: ExitCode = ExitCode.ERRORS if mode.blocked else ExitCode.OK
+    if not mode.is_part_ready(RunPart.PLAN):
+        return int(code)
+    result: IntakeResult | None = _run_intake(paths, readiness)
+    if result is None:
+        return int(code)
+    _say_lines(result.console_lines)
+    return int(code.combined(result.exit_code))
+
+
+def _run_intake(paths: LivecraftPaths, readiness: Readiness) -> IntakeResult | None:
+    """Прогон контура A: «сейчас» — в зоне программы, id пакета — новый на каждый запуск.
+
+    Готовая таблица плана значит, что настройки и сейф прочитаны; без них прогона нет (None).
+    Первый вход оператора открывает браузер — перед этим строка в консоль.
+    """
+    if readiness.settings is None or readiness.vault is None:
+        return None
+    request: IntakeRequest = IntakeRequest(
+        paths=paths,
+        settings=readiness.settings,
+        vault=readiness.vault,
+        now=datetime.now(readiness.settings.zone),
+        package_id=uuid4().hex,
+    )
+    return PlanIntake.of(request, on_login=lambda: _say(msg.SHEETS_LOGIN_BROWSER)).run()
 
 
 def _install_settings(paths: LivecraftPaths) -> None:
@@ -269,6 +293,9 @@ def _log_readiness(readiness: Readiness) -> None:
     """Строка готовности и причины отказа — в лог; значений сейфа здесь нет ни в одной строке."""
     LOGGER.info("readiness %s ready=%s", readiness.log_line, readiness.is_ready)
     for error in readiness.config_errors:
+        if error.kind is ConfigProblem.FILE_MISSING:        # нет файла — ещё не настроено, а не сломано
+            LOGGER.info("config_missing path=%s", error.config_path)
+            continue
         LOGGER.error(
             "config_error path=%s key=%s kind=%s problem=%s",
             error.config_path,
