@@ -339,6 +339,24 @@ SETUP_SETTINGS_FIELD_HINTS: Final[dict[str, str]] = {
 }
 SETUP_SETTINGS_SAVE_FAILED: Final[str] = "Не удалось записать secrets\\livecraft.json: {error}"
 
+# --- план из таблицы (app\sheets\): причины отсева ряда и проблемы плана. Ключи словаря — значения
+# RowSkipReason; заголовки шапки — текст оператора, значений ключей и ссылок настроек здесь нет (§7.4).
+SHEET_ROW_SKIP_REASONS: Final[dict[str, str]] = {
+    "empty_link": "нет ссылки на видео",
+    "missing_date_time": "не заполнена дата или время",
+    "bad_date_time": "дата или время не разобрались",
+    "nonexistent_time": "такого времени нет: в эту ночь часы переводят вперёд на летнее время",
+    "in_past": "время эфира уже прошло",
+    "bad_link": "в ссылке не найдено видео YouTube",
+    "duplicate": "повтор: та же ссылка на то же время уже есть в таблице выше",
+}
+SHEET_PLAN_EMPTY: Final[str] = "Таблица плана пуста: в выбранных колонках нет ни шапки, ни рядов."
+SHEET_PLAN_HEADER_UNKNOWN: Final[str] = (
+    "Шапка таблицы плана не распознана: нужны колонки ссылки, даты и времени (например, «Links», «Date», "
+    "«Time» или «Ссылка», «Дата», «Время»). Найдены заголовки: {headers}."
+)
+SHEET_PLAN_HEADER_NONE: Final[str] = "нет ни одного"
+
 # --- обрыв и падение запуска (app\main.py::run_cli)
 RUN_INTERRUPTED: Final[str] = (
     "Запуск прерван. Что уже сделано на YouTube, найдёт и учтёт следующий запуск."
