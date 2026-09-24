@@ -5,6 +5,7 @@ import gettext
 import pycountry
 import pytest
 
+from app.config.loader import SettingProblem
 from app.setup.fields.language_choice import (
     TRANSLATION_DOMAIN,
     TRANSLATION_LOCALE,
@@ -130,23 +131,66 @@ def test_including_adds_unknown_codes_once_at_the_end(catalog: LanguageCatalog) 
     assert catalog.including(["uk"]) is catalog
 
 
+# --- подпись в поле выбора и обратно (один язык на канал)
+
+
+@pytest.mark.parametrize("code", ["uk", "hu", "de"])
+def test_label_and_code_go_both_ways(catalog: LanguageCatalog, code: str) -> None:
+    label: str = catalog.label_of(code)
+    assert catalog.code_of(label) == code
+
+
+def test_a_form_language_label_carries_the_mark(catalog: LanguageCatalog) -> None:
+    assert catalog.label_of("uk") == msg.SETUP_LANGUAGE_OPTION_IN_FORM.format(name="украинский", code="uk")
+    assert catalog.label_of("de") == msg.SETUP_LANGUAGE_OPTION.format(name="немецкий", code="de")
+
+
+def test_a_language_without_a_russian_name_goes_both_ways(catalog: LanguageCatalog) -> None:
+    option: LanguageOption = next(item for item in catalog.options if not item.is_translated)
+    assert catalog.code_of(catalog.label_of(option.code)) == option.code
+
+
+def test_an_unknown_code_gets_a_label_with_the_code(catalog: LanguageCatalog) -> None:
+    assert catalog.label_of("xx") == msg.SETUP_LANGUAGE_OPTION.format(name="xx", code="xx")
+    assert catalog.code_of(catalog.label_of("xx")) is None                  # в каталоге его нет
+    wider: LanguageCatalog = catalog.including(["xx"])
+    assert wider.code_of(wider.label_of("xx")) == "xx"
+
+
+@pytest.mark.parametrize("text", ["укр", "uk", "украинский", "украинский (uk)", " " + "украинский (uk) — есть в форме"])
+def test_code_of_anything_but_an_exact_label_is_none(catalog: LanguageCatalog, text: str) -> None:
+    assert catalog.code_of(text) is None
+
+
+def test_labels_keep_the_given_order(catalog: LanguageCatalog) -> None:
+    found: tuple[LanguageOption, ...] = catalog.search("укр")
+    assert catalog.labels(found) == tuple(option.label for option in found)
+    assert catalog.labels(catalog.options)[: len(FORM_CODES)] == tuple(catalog.label_of(code) for code in FORM_CODES)
+
+
+def test_text_problem_only_for_text_that_is_not_a_label(catalog: LanguageCatalog) -> None:
+    assert catalog.text_problem(catalog.label_of("uk")) is None
+    assert catalog.text_problem("") is None and catalog.text_problem("   ") is None
+    problem: SettingProblem | None = catalog.text_problem("укр")
+    assert problem is not None
+    assert (problem.key, problem.text) == ("languages", msg.SETUP_LANGUAGE_PICK_FROM_LIST)
+
+
 # --- выбор
 
 
-def test_selection_from_draft_text_and_back() -> None:
+def test_selection_from_draft_text_keeps_the_first_code() -> None:
     selection: LanguageSelection = LanguageSelection.from_text("ru, en  ru")
     assert selection.codes == ("ru", "en")
-    assert selection.text == "ru, en"
-    assert LanguageSelection.from_text("").codes == ()
+    assert selection.first == "ru"
+    assert selection.extra_codes == ("en",)
+    assert selection.text == "ru"                    # в черновик уходит один код
+    empty: LanguageSelection = LanguageSelection.from_text("")
+    assert empty.codes == () and empty.first is None and empty.extra_codes == () and empty.text == ""
 
 
-def test_a_filtered_click_keeps_hidden_codes_and_appends_new_ones() -> None:
-    selection: LanguageSelection = LanguageSelection(codes=("uk", "hu"))
-    after: LanguageSelection = selection.with_visible(visible=("hu", "de"), chosen=("de",))
-    assert after.codes == ("uk", "de")
-
-
-def test_a_click_keeps_the_order_of_earlier_choices() -> None:
-    selection: LanguageSelection = LanguageSelection(codes=("ru", "uk"))
-    after: LanguageSelection = selection.with_visible(visible=("uk", "ru", "en"), chosen=("uk", "ru", "en"))
-    assert after.codes == ("ru", "uk", "en")
+def test_single_is_exactly_one_language() -> None:
+    selection: LanguageSelection = LanguageSelection.single("hu")
+    assert selection.codes == ("hu",)
+    assert selection.extra_codes == ()
+    assert selection.text == "hu"

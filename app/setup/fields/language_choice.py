@@ -1,10 +1,13 @@
-"""Выбор языков канала на вкладке «Каналы YouTube» (CLAUDE.md §8.2 п.2, §6 инвариант 2).
+"""Выбор языка канала на вкладке «Каналы YouTube» (CLAUDE.md §8.2 п.2, §6 инвариант 2).
 
 Человек выбирает язык по названию, а не по коду ISO (Предназначение, п. 4): `LanguageCatalog` — все языки
 справочника pycountry с двухбуквенным кодом, названия — русские из его каталога переводов `iso639-3`,
 а где перевода нет — английские. Языки формы ключей идут первыми и помечены: в форму уходят только её
-варианты, и эфир на языке не из формы допущен не будет. `LanguageSelection` — выбранные коды в порядке
-выбора; фильтр поиска выбор не сбрасывает. Tk здесь нет: окно только рисует эти объекты.
+варианты, и эфир на языке не из формы допущен не будет. У канала ровно один язык (решение Артура
+24-09-2026): поле выбора показывает подписи каталога (`label_of`), выбранная подпись переводится обратно в
+код (`code_of`), любой другой текст — проблема поля. `LanguageSelection` — коды канала; в channels.json
+`languages` остаётся списком, и у канала, записанного раньше с несколькими языками, остаётся первый.
+Tk здесь нет: окно только рисует эти объекты.
 """
 from __future__ import annotations
 
@@ -15,6 +18,7 @@ from typing import Final
 
 import pycountry
 
+from app.config.loader import SettingProblem
 from app.setup.fields.channel_draft import LANGUAGES_DISPLAY_JOINER, LANGUAGES_SEPARATOR
 from app.ui import messages_ru as msg
 
@@ -22,6 +26,7 @@ TRANSLATION_DOMAIN: Final[str] = "iso639-3"
 TRANSLATION_LOCALE: Final[str] = "ru"
 ALPHA_2: Final[str] = "alpha_2"
 SORT_REPLACEMENTS: Final[dict[str, str]] = {"ё": "е"}     # «ё» в кодовой таблице стоит после «я»
+LANGUAGES_KEY: Final[str] = "languages"     # поле черновика канала: по нему окно подписывает проблему
 
 
 @dataclass(frozen=True)
@@ -106,6 +111,26 @@ class LanguageCatalog:
     def option(self, code: str) -> LanguageOption | None:
         return next((option for option in self.options if option.code == code), None)
 
+    def label_of(self, code: str) -> str:
+        """Подпись языка в поле выбора; незнакомый каталогу код — подписью с кодом вместо названия."""
+        option: LanguageOption | None = self.option(code)
+        return (self._unknown(code) if option is None else option).label
+
+    def code_of(self, label: str) -> str | None:
+        """Код по точной подписи из поля выбора; любой другой текст — None."""
+        return next((option.code for option in self.options if option.label == label), None)
+
+    def labels(self, options: Iterable[LanguageOption]) -> tuple[str, ...]:
+        """Подписи для значений поля выбора — в том порядке, в каком даны языки."""
+        return tuple(option.label for option in options)
+
+    def text_problem(self, text: str) -> SettingProblem | None:
+        """Текст поля выбора, который не подпись языка, — проблема поля языка; пусто — не проблема выбора
+        (что язык обязателен, скажет загрузчик)."""
+        if not text.strip() or self.code_of(text) is not None:
+            return None
+        return SettingProblem(key=LANGUAGES_KEY, text=msg.SETUP_LANGUAGE_PICK_FROM_LIST)
+
     def name(self, code: str) -> str:
         """Название языка для человека; незнакомый код — сам код."""
         option: LanguageOption | None = self.option(code)
@@ -125,9 +150,14 @@ class LanguageCatalog:
 
 @dataclass(frozen=True)
 class LanguageSelection:
-    """Выбранные языки канала — коды в порядке выбора."""
+    """Языки канала — коды в порядке записи. Выбирается ровно один; лишние — только у канала из старого файла."""
 
     codes: tuple[str, ...]
+
+    @classmethod
+    def single(cls, code: str) -> LanguageSelection:
+        """Выбор в поле: ровно один язык."""
+        return cls(codes=(code,))
 
     @classmethod
     def from_text(cls, text: str) -> LanguageSelection:
@@ -135,17 +165,16 @@ class LanguageSelection:
         return cls(codes=tuple(dict.fromkeys(code for code in LANGUAGES_SEPARATOR.split(text) if code)))
 
     @property
+    def first(self) -> str | None:
+        """Язык, который остаётся у канала; языков нет — None."""
+        return self.codes[0] if self.codes else None
+
+    @property
+    def extra_codes(self) -> tuple[str, ...]:
+        """Коды сверх первого — у канала, записанного с несколькими языками; при сохранении они уйдут."""
+        return self.codes[1:]
+
+    @property
     def text(self) -> str:
-        """Текст поля языков черновика канала — в том виде, в каком его показывает черновик."""
-        return LANGUAGES_DISPLAY_JOINER.join(self.codes)
-
-    def with_visible(self, visible: Sequence[str], chosen: Iterable[str]) -> LanguageSelection:
-        """Выбор после щелчка в отфильтрованном списке: видимые коды — как отмечено в списке, скрытые — как были.
-
-        Прежний порядок сохраняется, новые коды — в конце.
-        """
-        shown: set[str] = set(visible)
-        picked: set[str] = set(chosen)
-        kept: list[str] = [code for code in self.codes if code not in shown or code in picked]
-        added: list[str] = [code for code in visible if code in picked and code not in kept]
-        return LanguageSelection(codes=(*kept, *added))
+        """Текст поля языков черновика канала: один код — тот, что остаётся у канала."""
+        return self.first or ""

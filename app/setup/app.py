@@ -59,7 +59,7 @@ class SetupWindow:
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=PAD, pady=PAD)
         self.keys_tab: KeysTab = KeysTab(self.notebook, paths, self.refresh_readiness)
         self.channels_tab: ChannelsTab = ChannelsTab(self.notebook, paths, self.refresh_readiness)
-        self.settings_tab: SettingsTab = SettingsTab(self.notebook, paths, self.refresh_readiness)
+        self.settings_tab: SettingsTab = SettingsTab(self.notebook, paths, self.settings_saved)
         self.notebook.add(self.keys_tab.frame, text=msg.SETUP_TAB_KEYS)
         self.notebook.add(self.channels_tab.frame, text=msg.SETUP_TAB_CHANNELS)
         self.notebook.add(self.settings_tab.frame, text=msg.SETUP_TAB_SETTINGS)
@@ -80,6 +80,11 @@ class SetupWindow:
         readiness: Readiness = Readiness.check(self.paths)
         text: str = msg.SETUP_READY if readiness.is_ready else READINESS_JOINER.join(readiness.problems)
         self.readiness_line.configure(text=text)
+
+    def settings_saved(self) -> None:
+        """Настройки записаны: строка готовности и пометки языков формы на вкладке каналов — без перезапуска окна."""
+        self.refresh_readiness()
+        self.channels_tab.refresh_form_languages()
 
     def request_close(self) -> None:
         """Закрытие окна: есть несохранённое — спросить; «нет» — окно остаётся открытым."""

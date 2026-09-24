@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import tkinter as tk
 from collections.abc import Iterator
@@ -12,7 +13,7 @@ from tkinter import font, messagebox, ttk
 
 import pytest
 
-from app.config.loader import load_channels, load_settings
+from app.config.loader import FormSettings, LivecraftSettings, load_channels, load_settings
 from app.paths import LivecraftPaths
 from app.secretsafe.store import VaultStore
 from app.secretsafe.value import SecretField, SecretValue
@@ -112,21 +113,24 @@ def _type(entry: ttk.Entry, text: str) -> None:
     entry.insert(0, text)
 
 
-def _pick_languages(tab: ChannelsTab, *codes: str) -> None:
-    """Выбор языков так, как это делает человек: поиск по коду и щелчок по строке списка."""
-    for code in codes:
-        tab.language_search.set(code)
-        (position,) = [index for index, option in enumerate(tab.visible_languages) if option.code == code]
-        tab.language_list.selection_set(position)
-        tab.pick_languages()
-    tab.language_search.set("")
+def _box_values(tab: ChannelsTab) -> tuple[str, ...]:
+    """Значения выпадающего поля языка — как их покажет список поля."""
+    return tuple(tab.frame.tk.splitlist(tab.language_box.cget("values")))
+
+
+def _pick_language(tab: ChannelsTab, code: str) -> None:
+    """Выбор языка так, как это делает человек: печать кода в поле сужает список, затем выбор строки списка."""
+    tab.language_box.set(code)
+    [label] = [label for label in _box_values(tab) if tab.catalog.code_of(label) == code]
+    tab.language_box.set(label)
+    tab.language_box.event_generate("<<ComboboxSelected>>")
 
 
 def _fill_channel(tab: ChannelsTab, **values: str) -> None:
-    """Поля канала; языки — строкой кодов через запятую, они выбираются в списке."""
+    """Поля канала; язык — кодом, он выбирается в выпадающем поле."""
     for name, value in values.items():
         if name == "languages":
-            _pick_languages(tab, *(code.strip() for code in value.split(",")))
+            _pick_language(tab, value)
             continue
         widget: ttk.Entry = tab.inputs[name]
         if isinstance(widget, ttk.Combobox):
@@ -291,9 +295,9 @@ def test_a_channel_without_languages_shows_the_problem_with_the_field_label(wind
 
 def test_selecting_a_row_fills_the_form(window: SetupWindow) -> None:
     tab: ChannelsTab = window.channels_tab
-    tab.tree.selection_set("1")
+    tab.tree.selection_set("0")
     tab.fill_from_selection()
-    assert tab.form_draft == tab.panel.drafts[1]
+    assert tab.form_draft == tab.panel.drafts[0]
 
 
 def test_update_without_a_selection_says_so(window: SetupWindow) -> None:
@@ -892,53 +896,111 @@ def test_the_save_buttons_live_in_the_centred_rows(window: SetupWindow) -> None:
     assert window.channels_tab.buttons["save"].master is window.channels_tab.buttons_frame
 
 
-# --- языки канала из списка (задача 3.7a)
+# --- язык канала: одно выпадающее поле с поиском (задачи 3.7a, 3.7b)
 
 
-def test_two_languages_picked_in_the_list_go_to_the_draft_as_codes(window: SetupWindow) -> None:
+def test_the_language_field_is_a_combobox_next_to_privacy_of_the_same_width(window: SetupWindow) -> None:
     tab: ChannelsTab = window.channels_tab
-    _pick_languages(tab, "uk", "hu")
-    assert tab.form_draft.languages == "uk, hu"
-    assert tab.form_draft.language_codes == ["uk", "hu"]
-    assert tab.language_selected.cget("text") == msg.SETUP_LANGUAGE_SELECTED.format(names="украинский, венгерский")
+    box: ttk.Combobox = tab.language_box
+    privacy: ttk.Entry = tab.inputs["privacy"]
+    assert isinstance(box, ttk.Combobox) and isinstance(privacy, ttk.Combobox)
+    assert tab.inputs["languages"] is box
+    assert str(box.cget("width")) == str(privacy.cget("width"))
+    assert box.master.grid_info()["column"] == privacy.grid_info()["column"]
+    assert str(box.cget("state")) != "readonly"           # в поле можно печатать — это поиск
+    assert not any(isinstance(widget, tk.Listbox) for widget in _widgets(tab.frame))
 
 
-def test_the_search_filter_keeps_the_selection(window: SetupWindow) -> None:
+def test_picking_a_language_gives_the_draft_one_code(window: SetupWindow) -> None:
     tab: ChannelsTab = window.channels_tab
-    _pick_languages(tab, "uk")
-    tab.language_search.set("венг")
-    assert [option.code for option in tab.visible_languages] == ["hu"]
-    tab.language_list.selection_set(0)
-    tab.pick_languages()
-    assert tab.selection.codes == ("uk", "hu")
-    tab.language_search.set("")
-    selected: list[str] = [tab.visible_languages[index].code for index in tab.language_list.curselection()]
-    assert selected == ["uk", "hu"]
+    _pick_language(tab, "hu")
+    assert tab.form_draft.languages == "hu"
+    assert tab.form_draft.language_codes == ["hu"]
+    _pick_language(tab, "uk")
+    assert tab.form_draft.language_codes == ["uk"]          # второй выбор заменяет первый, а не добавляется
+    assert tab.language_text.get() == tab.catalog.label_of("uk")
 
 
-def test_unselecting_a_visible_language_keeps_the_hidden_ones(window: SetupWindow) -> None:
+def test_typing_narrows_the_values_to_matching_languages(window: SetupWindow) -> None:
     tab: ChannelsTab = window.channels_tab
-    _pick_languages(tab, "uk", "hu")
-    tab.language_search.set("hu")
-    tab.language_list.selection_clear(0, tk.END)
-    tab.pick_languages()
-    assert tab.selection.codes == ("uk",)
+    tab.language_box.set("укр")
+    assert [tab.catalog.code_of(label) for label in _box_values(tab)] == ["uk"]
+    tab.language_box.set("")
+    assert len(_box_values(tab)) == len(tab.catalog.options)
+
+
+def test_typing_does_not_change_the_draft_and_unknown_text_is_a_field_problem(window: SetupWindow) -> None:
+    tab: ChannelsTab = window.channels_tab
+    _pick_language(tab, "hu")
+    _fill_channel(tab, account_name="Канал HU", handle="@kanal_hu", google_account="owner@gmail.com")
+    tab.language_box.set("венгерский язык")
+    assert tab.form_draft.languages == "hu"                  # набранный текст в черновик не уходит
+    tab.buttons["add"].invoke()
+    assert tab.edit_problem.text == msg.SETUP_PROBLEM_LINE.format(
+        label=msg.SETUP_CHANNEL_FIELD_LABELS["languages"], text=msg.SETUP_LANGUAGE_PICK_FROM_LIST
+    )
+    assert len(tab.tree.get_children()) == 2
+
+
+def test_escape_brings_back_the_chosen_language(window: SetupWindow) -> None:
+    tab: ChannelsTab = window.channels_tab
+    _pick_language(tab, "hu")
+    tab.language_box.set("нем")
+    tab.restore_language()
+    assert tab.language_text.get() == tab.catalog.label_of("hu")
+    assert tab.language_problem is None
+
+
+def test_escape_is_bound_to_the_language_field(window: SetupWindow) -> None:
+    assert window.channels_tab.language_box.bind("<Escape>")
+
+
+def test_selecting_a_row_shows_the_channel_language(window: SetupWindow) -> None:
+    tab: ChannelsTab = window.channels_tab
+    tab.tree.selection_set("0")
+    tab.fill_from_selection()
+    assert tab.language_text.get() == tab.catalog.label_of("uk")
+    assert tab.form_draft.language_codes == ["uk"]
+    assert tab.language_note.text == ""
+
+
+def test_a_channel_with_two_languages_keeps_the_first_on_save(window: SetupWindow, ready_paths: LivecraftPaths) -> None:
+    """Канал примера записан с двумя языками: показан первый, строка о лишних; после сохранения в файле один код."""
+    tab: ChannelsTab = window.channels_tab
+    tab.tree.selection_set("1")
+    tab.fill_from_selection()
+    assert tab.language_text.get() == tab.catalog.label_of("ru")
+    assert tab.language_note.text == msg.SETUP_LANGUAGE_SEVERAL.format(name="русский")
+    tab.buttons["update"].invoke()
+    tab.buttons["save"].invoke()
+    assert tab.edit_problem.text == ""
+    assert load_channels(ready_paths.channels_file)[1].languages == ("ru",)
+
+
+def test_picking_another_language_clears_the_several_languages_line(window: SetupWindow) -> None:
+    tab: ChannelsTab = window.channels_tab
+    tab.tree.selection_set("1")
+    tab.fill_from_selection()
+    _pick_language(tab, "en")
+    assert tab.language_note.text == ""
+    assert tab.form_draft.language_codes == ["en"]
 
 
 def test_the_form_languages_come_first_and_marked(window: SetupWindow) -> None:
     tab: ChannelsTab = window.channels_tab
     form_codes: tuple[str, ...] = tuple(load_settings(window.paths.config_file).form.values["language"])
-    labels: tuple[str, ...] = tab.language_list.get(0, len(form_codes) - 1)
-    assert [option.code for option in tab.visible_languages[: len(form_codes)]] == list(form_codes)
-    assert all(label.endswith("— есть в форме") for label in labels)
-    assert tab.language_list.size() == len(tab.catalog.options)
+    values: tuple[str, ...] = _box_values(tab)
+    assert [tab.catalog.code_of(label) for label in values[: len(form_codes)]] == list(form_codes)
+    assert all(label.endswith("— есть в форме") for label in values[: len(form_codes)])
+    assert not values[len(form_codes)].endswith("— есть в форме")
+    assert len(values) == len(tab.catalog.options)
 
 
 def test_a_language_not_in_the_form_is_named_at_once(window: SetupWindow) -> None:
     tab: ChannelsTab = window.channels_tab
-    _pick_languages(tab, "uk")
+    _pick_language(tab, "uk")
     assert tab.language_warning.text == ""
-    _pick_languages(tab, "de")
+    _pick_language(tab, "de")
     assert tab.language_warning.text == msg.SETUP_LANGUAGE_NOT_IN_FORM.format(names="немецкий")
 
 
@@ -958,13 +1020,31 @@ def test_the_table_shows_language_names(window: SetupWindow) -> None:
     assert tab.tree.item("1", "values")[column] == "русский, английский"
 
 
-def test_selecting_a_row_marks_its_languages_in_the_list(window: SetupWindow) -> None:
+def _save_form_languages(window: SetupWindow, languages: dict[str, str]) -> None:
+    """Варианты языка формы сменились (контракт формы на вкладке не правится — он приходит с настройками):
+    модель вкладки настроек получает новые варианты, и человек жмёт «Сохранить» — боевой путь записи."""
+    tab: SettingsTab = window.settings_tab
+    settings: LivecraftSettings = tab.panel.settings
+    values: dict[str, dict[str, str]] = {**settings.form.values, "language": languages}
+    form: FormSettings = dataclasses.replace(settings.form, values=values)
+    tab.panel = dataclasses.replace(tab.panel, settings=dataclasses.replace(settings, form=form))
+    tab.save_button.invoke()
+    assert tab.problem.text == ""
+    assert load_settings(window.paths.config_file).form.values["language"] == languages
+
+
+def test_saving_new_form_languages_updates_the_marks_without_reopening(window: SetupWindow) -> None:
+    """Долг 3.7a: форма сменилась на вкладке настроек — пометки и предупреждение на вкладке каналов сразу новые."""
     tab: ChannelsTab = window.channels_tab
-    tab.tree.selection_set("1")
-    tab.fill_from_selection()
-    assert tab.selection.codes == ("ru", "en")
-    selected: list[str] = [tab.visible_languages[index].code for index in tab.language_list.curselection()]
-    assert sorted(selected) == ["en", "ru"]
+    _pick_language(tab, "de")
+    assert tab.language_warning.text != ""
+    _save_form_languages(window, {"de": "Немецкий (German)", "uk": "Украинский ( Ukranian)"})
+    assert tab.catalog.label_of("de") == msg.SETUP_LANGUAGE_OPTION_IN_FORM.format(name="немецкий", code="de")
+    assert tab.catalog.label_of("ru") == msg.SETUP_LANGUAGE_OPTION.format(name="русский", code="ru")
+    assert tab.language_text.get() == tab.catalog.label_of("de")
+    assert tab.language_warning.text == ""
+    assert tab.form_draft.language_codes == ["de"]
+    assert [tab.catalog.code_of(label) for label in _box_values(tab)[:2]] == ["de", "uk"]
 
 
 def test_without_readable_settings_the_list_is_full_and_unmarked(
@@ -974,6 +1054,6 @@ def test_without_readable_settings_the_list_is_full_and_unmarked(
     for window in _open(ready_paths, capsys):
         tab: ChannelsTab = window.channels_tab
         assert not tab.catalog.has_form
-        assert tab.language_list.size() == len(LanguageCatalog.load(()).options)
-        _pick_languages(tab, "de")
+        assert len(_box_values(tab)) == len(LanguageCatalog.load(()).options)
+        _pick_language(tab, "de")
         assert tab.language_warning.text == ""

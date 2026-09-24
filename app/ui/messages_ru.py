@@ -353,7 +353,7 @@ SETUP_CHANNEL_FIELD_LABELS: Final[dict[str, str]] = {
     "account_name": "название канала",
     "handle": "ник",
     "google_account": "аккаунт Google",
-    "languages": "языки",
+    "languages": "язык",
     "privacy": "видимость",
     "platform": "площадка",
     "channels": "список каналов",
@@ -363,15 +363,13 @@ SETUP_CHANNELS_BUTTON_UPDATE: Final[str] = "Изменить выбранный"
 SETUP_CHANNELS_BUTTON_REMOVE: Final[str] = "Удалить выбранный"
 SETUP_CHANNELS_NOTHING_SELECTED: Final[str] = "Сначала выберите канал в таблице."
 SETUP_CHANNELS_SAVE_FAILED: Final[str] = "Не удалось записать secrets\\channels.json: {error}"
-# Языки канала — выбор из списка по названию (app\setup\fields\language_choice.py); языки формы — первыми.
+# Язык канала — один, выбор в выпадающем поле по названию (app\setup\fields\language_choice.py); языки формы — первыми.
 SETUP_LANGUAGE_OPTION: Final[str] = "{name} ({code})"
 SETUP_LANGUAGE_OPTION_IN_FORM: Final[str] = "{name} ({code}) — есть в форме"
-SETUP_LANGUAGE_SEARCH_LABEL: Final[str] = "поиск:"
-SETUP_LANGUAGE_LIST_HINT: Final[str] = (
-    "Щёлкните язык, чтобы выбрать его или снять выбор; можно выбрать несколько. Поиск выбор не сбрасывает."
-)
-SETUP_LANGUAGE_SELECTED: Final[str] = "выбрано: {names}"
-SETUP_LANGUAGE_SELECTED_NONE: Final[str] = "выбрано: ничего"
+# Текст в поле, который не совпадает ни с одной строкой списка: в черновик канала он не уходит.
+SETUP_LANGUAGE_PICK_FROM_LIST: Final[str] = "выберите язык из списка"
+# Канал, записанный раньше с несколькими языками: у канала теперь один язык (решение Артура 24-09-2026).
+SETUP_LANGUAGE_SEVERAL: Final[str] = "у канала несколько языков — при сохранении останется {name}"
 SETUP_LANGUAGE_NOT_IN_FORM: Final[str] = (
     "язык {names} нет среди вариантов Google-формы — эфиры на нём не будут допущены"
 )
