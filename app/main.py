@@ -7,7 +7,8 @@
 это единственный перехват Exception во всей программе (§11).
 
 Каждый запуск, кроме --version, начинается с проверки готовности (app\\setup\\readiness.py): сейф и оба
-конфига прочитаны, всего хватает. Фильтр секретов в логах встаёт сразу после чтения сейфа (§7.4). Не готово —
+конфига прочитаны, всего хватает. Фильтр секретов в логах встаёт сразу после чтения сейфа (§7.4). Ссылка на форму,
+оставшаяся в сейфе, один раз сама переносится в livecraft.json (app\\setup\\migration.py). Не готово —
 обычный запуск не начинается: что не так, шаблон сломанного конфига, строка про --setup и код 2 (§8.2).
 --setup проверка не останавливает: настройщик и есть способ всё починить — открывается окно (app\\setup\\app.py).
 Готово — сводка без значений; после неё этап 3 поставит конвейер.
@@ -29,6 +30,7 @@ from app.core.dates import format_datetime_text
 from app.observability.logging_setup import close_logging, get_logger, install_secret_filter, setup_logging
 from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
 from app.runtime.single_instance import AnotherInstanceRunning, InstanceLock, LockOwner
+from app.setup.migration import FormUrlMigration, FormUrlMigrationResult
 from app.setup.readiness import Readiness
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
@@ -166,6 +168,7 @@ def _run(request: RunRequest, paths: LivecraftPaths) -> int:
     readiness: Readiness = Readiness.check(paths)
     if readiness.vault is not None:
         install_secret_filter(readiness.vault)      # сразу после чтения сейфа, до любых строк лога (§7.4)
+    readiness = _migrate_form_url(paths, readiness)
     _log_readiness(readiness)
     _say_lines(readiness.warnings)
     if request.setup:
@@ -176,6 +179,23 @@ def _run(request: RunRequest, paths: LivecraftPaths) -> int:
         return int(ExitCode.CONFIG)
     _say_lines(readiness.summary_lines)
     return int(ExitCode.OK)
+
+
+def _migrate_form_url(paths: LivecraftPaths, readiness: Readiness) -> Readiness:
+    """Ссылка на форму из сейфа — один раз в livecraft.json (§14 решение 15); перенесено — готовность заново.
+
+    Фильтр секретов уже стоит на всех значениях сейфа и повторно не ставится: перечитанный сейф — подмножество.
+    """
+    migration: FormUrlMigration | None = FormUrlMigration.plan(paths, readiness)
+    if migration is None:
+        return readiness
+    result: FormUrlMigrationResult = migration.run()
+    _say(result.console_line)
+    if not result.moved:
+        LOGGER.warning("form_url_not_migrated %s", result.log_line)
+        return readiness
+    LOGGER.info("form_url_migrated %s", result.log_line)
+    return Readiness.check(paths)
 
 
 def _run_setup(paths: LivecraftPaths) -> int:

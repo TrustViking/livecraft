@@ -35,8 +35,9 @@ SUPPLIED_VALUES: dict[SecretField, str] = {
     SecretField.OPENAI_API_KEY: "sk-proj-supplied-Ab3dEfGhIjKlMnOpQrStUvWxYz0123456789",
     SecretField.SHEETS_ID: "1supplied-B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ-abcdefg",
     SecretField.SHEETS_RANGE: "A:F",
-    SecretField.KEY_FORM_URL: "https://docs.google.com/forms/d/e/1FAIpQLSf-supplied/viewform",
 }
+# Ссылка на форму в сейфе — так её хранили до §14 решения 15; нужна тестам переноса в livecraft.json.
+LEGACY_FORM_URL: str = "https://docs.google.com/forms/d/e/1FAIpQLSf-supplied/viewform"
 
 
 def write_supplied_vault(paths: LivecraftPaths, values: dict[SecretField, str]) -> None:
@@ -169,7 +170,7 @@ def live_foreign_process() -> Iterator[subprocess.Popen[bytes]]:
 
 @pytest.fixture
 def ready_paths(livecraft_paths: LivecraftPaths) -> LivecraftPaths:
-    """Корень, готовый к запуску: настройки из поставки репо, каналы из примера, поставочный сейф на все поля."""
+    """Корень, готовый к запуску: настройки из поставки репо, каналы из примера, поставочный сейф на все нужные поля."""
     shutil.copyfile(REPO_SETTINGS_FILE, livecraft_paths.config_file)
     shutil.copyfile(REPO_CHANNELS_EXAMPLE, livecraft_paths.channels_file)
     write_supplied_vault(livecraft_paths, SUPPLIED_VALUES)

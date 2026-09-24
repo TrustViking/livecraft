@@ -11,7 +11,6 @@ OPENAI_KEY: str = "sk-proj-own-Ab3dEfGhIjKlMnOpQrStUvWxYz0123456789"
 SHEET_ID: str = "1own-B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ_own"
 SHEET_URL: str = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}"
 FORM_LONG: str = "https://docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform"
-FORM_SHORT: str = "https://forms.gle/AbCdEf123456"
 
 
 def _input(field: SecretField, raw: str) -> SecretInput:
@@ -36,7 +35,7 @@ def _assert_invalid(entered: SecretInput) -> None:
 # --- общее для всех полей
 
 
-@pytest.mark.parametrize("field", list(SecretField))
+@pytest.mark.parametrize("field", SecretField.current())
 @pytest.mark.parametrize("raw", ["", "   ", "\t\n"])
 def test_empty_input_is_a_problem_in_every_field(field: SecretField, raw: str) -> None:
     entered: SecretInput = _input(field, raw)
@@ -50,7 +49,6 @@ def test_empty_input_is_a_problem_in_every_field(field: SecretField, raw: str) -
         (SecretField.OPENAI_API_KEY, OPENAI_KEY),
         (SecretField.SHEETS_ID, SHEET_ID),
         (SecretField.SHEETS_RANGE, "A:F"),
-        (SecretField.KEY_FORM_URL, FORM_LONG),
     ],
 )
 def test_spaces_around_the_input_are_trimmed(field: SecretField, value: str) -> None:
@@ -63,7 +61,6 @@ def test_spaces_around_the_input_are_trimmed(field: SecretField, value: str) -> 
         (SecretField.OPENAI_API_KEY, "sk-short"),
         (SecretField.SHEETS_ID, "short"),
         (SecretField.SHEETS_RANGE, "Тайный лист без границ"),
-        (SecretField.KEY_FORM_URL, "http://forms.gle/secret-code-xyz"),
     ],
 )
 def test_the_problem_never_carries_the_input(field: SecretField, raw: str) -> None:
@@ -86,7 +83,6 @@ def test_the_input_does_not_show_in_repr() -> None:
         (SecretField.OPENAI_API_KEY, OPENAI_KEY),
         (SecretField.SHEETS_ID, SHEET_ID),
         (SecretField.SHEETS_RANGE, "'План стримов'!A2:F"),
-        (SecretField.KEY_FORM_URL, FORM_LONG),
     ],
 )
 def test_the_secret_prints_as_a_mask(field: SecretField, value: str) -> None:
@@ -188,42 +184,15 @@ def test_a_bad_range_is_rejected(raw: str) -> None:
     assert entered.problem == msg.SETUP_INPUT_SHEETS_RANGE
 
 
-# --- форма ключей: длинный и короткий адрес
+# --- ссылка на форму: устаревшее поле сейфа (§14 решение 15), правило — в FormSettings.url_problem
 
 
-@pytest.mark.parametrize(
-    "raw",
-    [
-        FORM_LONG,
-        FORM_SHORT,
-        "https://docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform?usp=sf_link",
-        "HTTPS://DOCS.GOOGLE.COM/forms/d/e/1FAIpQLSf-own-form/viewform",
-    ],
-)
-def test_a_good_form_url_is_accepted_as_is(raw: str) -> None:
-    _assert_valid(_input(SecretField.KEY_FORM_URL, raw), raw)
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        "http://docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform",    # http
-        "http://forms.gle/AbCdEf123456",                                   # http
-        "https://example.com/forms/d/e/1FAIpQLSf-own-form/viewform",       # чужой хост
-        "https://docs.google.com.evil.example/forms/d/e/x/viewform",       # чужой хост с похожим началом
-        "https://docs.google.com@evil.example/forms/d/e/x/viewform",       # чужой хост за «@»
-        "https://docs.google.com:8443/forms/d/e/x/viewform",               # чужой порт
-        "https://docs.google.com/spreadsheets/d/1own/edit",                # docs.google.com без /forms/
-        "https://docs.google.com/",                                        # docs.google.com без пути
-        "https://forms.gle/",                                              # короткий адрес без кода
-        "https://docs.google.com/forms/d/e/1FAIpQLSf own/viewform",        # пробел внутри
-        "docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform",           # без схемы
-    ],
-)
-def test_a_bad_form_url_is_rejected(raw: str) -> None:
+@pytest.mark.parametrize("raw", ["", FORM_LONG, "http://forms.gle/secret-code-xyz"])
+def test_the_legacy_form_url_is_never_accepted(raw: str) -> None:
+    """Ссылку на форму на вкладке ключей больше не вводят: она задаётся в настройках запуска."""
     entered: SecretInput = _input(SecretField.KEY_FORM_URL, raw)
     _assert_invalid(entered)
-    assert entered.problem == msg.SETUP_INPUT_KEY_FORM_URL
+    assert entered.problem == msg.SETUP_INPUT_LEGACY_FIELD
 
 
 # --- чистые разборы validators.py

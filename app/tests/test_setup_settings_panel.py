@@ -20,6 +20,7 @@ from app.tests.conftest import REPO_SETTINGS_FILE
 from app.ui import messages_ru as msg
 
 BROKEN_JSON: bytes = b'{"min_lead_minutes": 60,'
+FORM_URL: str = "https://docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform"
 
 
 def _shipped() -> LivecraftSettings:
@@ -45,6 +46,7 @@ def _rejected(panel: SettingsPanel, **changes: Any) -> SettingsPanelEdit:
 def test_the_draft_shows_the_shipped_values(ready_paths: LivecraftPaths) -> None:
     panel: SettingsPanel = SettingsPanel.from_paths(ready_paths)
     assert panel.draft == SettingsDraft(
+        form_url="",
         min_lead_minutes="60",
         keep_days="30",
         auto_start=True,
@@ -143,6 +145,45 @@ def test_an_unknown_reasoning_effort_is_a_problem(ready_paths: LivecraftPaths) -
 def test_the_flags_are_applied(ready_paths: LivecraftPaths) -> None:
     changed: SettingsPanel = _applied(SettingsPanel.from_paths(ready_paths), auto_start=False, set_thumbnail=False)
     assert (changed.settings.auto_start, changed.settings.set_thumbnail) == (False, False)
+
+
+# --- ссылка на форму ключей (открытая настройка, §14 решение 15)
+
+
+def test_a_form_url_is_applied_with_spaces_trimmed(ready_paths: LivecraftPaths) -> None:
+    changed: SettingsPanel = _applied(SettingsPanel.from_paths(ready_paths), form_url=f"  {FORM_URL} ")
+    assert changed.settings.form.url == FORM_URL
+    assert changed.settings.form.is_configured
+    assert changed.is_dirty
+
+
+@pytest.mark.parametrize("text", ["http://forms.gle/AbCdEf123456", "https://example.com/forms/x", "не ссылка"])
+def test_a_bad_form_url_is_a_problem_of_the_field(ready_paths: LivecraftPaths, text: str) -> None:
+    edit: SettingsPanelEdit = _rejected(SettingsPanel.from_paths(ready_paths), form_url=text)
+    assert edit.problem is not None
+    assert edit.problem.key == "form.url"
+    assert edit.problem.text == msg.CONFIG_PROBLEM_FORM_URL
+
+
+def test_an_emptied_form_url_means_not_configured(ready_paths: LivecraftPaths) -> None:
+    panel: SettingsPanel = _applied(SettingsPanel.from_paths(ready_paths), form_url=FORM_URL)
+    cleared: SettingsPanel = _applied(panel, form_url="   ")
+    assert cleared.settings.form.url == ""
+    assert not cleared.settings.form.is_configured
+
+
+def test_save_writes_the_form_url_and_keeps_the_form_contract(ready_paths: LivecraftPaths) -> None:
+    before: dict[str, Any] = json.loads(ready_paths.config_file.read_text(encoding="utf-8"))
+    saved: SettingsPanel = _applied(SettingsPanel.from_paths(ready_paths), form_url=FORM_URL).save(ready_paths)
+    after: dict[str, Any] = json.loads(ready_paths.config_file.read_text(encoding="utf-8"))
+    assert after["form"]["url"] == FORM_URL
+    assert list(after["form"])[0] == "url"
+    assert {key: value for key, value in after["form"].items() if key != "url"} == {
+        key: value for key, value in before["form"].items() if key != "url"
+    }
+    assert {key for key in before if before[key] != after[key]} == {"form"}
+    assert load_settings(ready_paths.config_file).form.url == FORM_URL
+    assert saved.draft.form_url == FORM_URL and not saved.is_dirty
 
 
 # --- запись

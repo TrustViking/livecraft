@@ -157,7 +157,7 @@ class KeysTab:
             ttk.Label(self.rows_frame, text=header).grid(row=0, column=column, sticky=tk.W, padx=PAD)
         self.rows: dict[SecretField, KeyRowView] = {
             field: KeyRowView(self.rows_frame, field, position, self.accept, self.reset, self.toggle_own_value)
-            for position, field in enumerate(SecretField)
+            for position, field in enumerate(SecretField.current())
         }
         self.save_button: ttk.Button = ttk.Button(self.frame, text=msg.SETUP_BUTTON_SAVE, command=self.save)
         self.save_button.pack(anchor=tk.E, pady=PAD)

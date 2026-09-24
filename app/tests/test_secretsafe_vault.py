@@ -13,6 +13,8 @@ VALUES: dict[SecretField, str] = {
     SecretField.KEY_FORM_URL: "https://docs.google.com/forms/d/e/1FAIpQLSf-secret/viewform",
 }
 ALL_FIELDS: tuple[SecretField, ...] = tuple(SecretField)
+# Что программа требует для запуска: все поля, кроме устаревшей ссылки на форму (§14 решение 15).
+REQUIRED_FIELDS: tuple[SecretField, ...] = SecretField.current()
 
 
 def _secret(field: SecretField) -> SecretValue:
@@ -39,20 +41,43 @@ def test_an_empty_vault_is_not_ready_and_lists_every_field() -> None:
     """Порядок перечисления — порядок объявления SecretField, а не случайный порядок словаря."""
     empty: Vault = Vault.empty()
     assert not empty.is_ready
-    assert empty.missing == ALL_FIELDS
+    assert empty.missing == REQUIRED_FIELDS
     assert empty.entries == {}
 
 
-def test_a_vault_with_three_fields_names_exactly_the_absent_one() -> None:
-    vault: Vault = _vault(SecretField.OPENAI_API_KEY, SecretField.SHEETS_ID, SecretField.SHEETS_RANGE)
+def test_a_vault_with_two_fields_names_exactly_the_absent_one() -> None:
+    vault: Vault = _vault(SecretField.OPENAI_API_KEY, SecretField.SHEETS_ID)
     assert not vault.is_ready
-    assert vault.missing == (SecretField.KEY_FORM_URL,)
+    assert vault.missing == (SecretField.SHEETS_RANGE,)
 
 
-@pytest.mark.parametrize("absent", ALL_FIELDS, ids=lambda item: item.value)
+@pytest.mark.parametrize("absent", REQUIRED_FIELDS, ids=lambda item: item.value)
 def test_any_single_absent_field_keeps_the_vault_not_ready(absent: SecretField) -> None:
     vault: Vault = _vault(*(field for field in ALL_FIELDS if field is not absent))
     assert not vault.is_ready and vault.missing == (absent,)
+
+
+def test_the_form_url_is_legacy_and_the_only_one() -> None:
+    """Ссылка на форму — открытая настройка (§14 решение 15): поле сейфа устарело, остальные — нет."""
+    assert [field for field in SecretField if field.is_legacy] == [SecretField.KEY_FORM_URL]
+    assert REQUIRED_FIELDS == (SecretField.OPENAI_API_KEY, SecretField.SHEETS_ID, SecretField.SHEETS_RANGE)
+
+
+def test_a_vault_without_the_form_url_is_ready() -> None:
+    vault: Vault = _vault(*REQUIRED_FIELDS)
+    assert vault.is_ready and vault.missing == () and vault.admission_reason is None
+
+
+def test_a_vault_with_the_legacy_form_url_is_ready_and_still_hands_it_to_the_log_filter(full_vault: Vault) -> None:
+    """Устаревшее поле не мешает запуску, но пока лежит в сейфе, фильтр логов обязан его вычёркивать (§7.4)."""
+    assert full_vault.is_ready
+    assert SecretField.KEY_FORM_URL in [secret.field for secret in full_vault.secrets()]
+
+
+def test_the_absent_legacy_field_is_never_named_in_the_admission_reason() -> None:
+    reason: str | None = Vault.empty().admission_reason
+    assert reason is not None
+    assert msg.VAULT_FIELD_KEY_FORM_URL not in reason
 
 
 def test_a_full_vault_is_ready(full_vault: Vault) -> None:
@@ -71,25 +96,25 @@ def test_the_missing_order_follows_the_field_order() -> None:
 
 
 def test_the_admission_reason_names_the_absent_fields_in_russian() -> None:
-    vault: Vault = _vault(SecretField.OPENAI_API_KEY, SecretField.SHEETS_RANGE)
+    vault: Vault = _vault(SecretField.OPENAI_API_KEY)
     reason: str | None = vault.admission_reason
     assert reason == msg.VAULT_NOT_READY.format(
-        fields=f"{msg.VAULT_FIELD_SHEETS_ID}, {msg.VAULT_FIELD_KEY_FORM_URL}"
+        fields=f"{msg.VAULT_FIELD_SHEETS_ID}, {msg.VAULT_FIELD_SHEETS_RANGE}"
     )
     assert msg.VAULT_FIELD_OPENAI_API_KEY not in reason      # это поле на месте, о нём не говорим
     assert "--setup" not in reason      # что делать, говорит main один раз — SETUP_REQUIRED
 
 
-def test_the_admission_reason_of_an_empty_vault_lists_all_four_labels() -> None:
+def test_the_admission_reason_of_an_empty_vault_lists_every_required_label() -> None:
     reason: str | None = Vault.empty().admission_reason
     assert reason is not None
-    for field in ALL_FIELDS:
+    for field in REQUIRED_FIELDS:
         assert field.human_label in reason
 
 
 def test_the_admission_reason_carries_no_value(full_vault: Vault) -> None:
     """Причина рассказывает, чего нет; про то, что есть, она не проговаривается (§7.4)."""
-    vault: Vault = full_vault.without_field(SecretField.KEY_FORM_URL)
+    vault: Vault = full_vault.without_field(SecretField.SHEETS_ID)
     reason: str | None = vault.admission_reason
     assert reason is not None
     for value in VALUES.values():
@@ -146,7 +171,7 @@ def test_with_field_returns_a_new_vault_and_leaves_the_old_one_alone() -> None:
     assert after is not before
     assert before.get(SecretField.KEY_FORM_URL) is None
     assert after.get(SecretField.KEY_FORM_URL) is not None
-    assert before.missing == (SecretField.OPENAI_API_KEY, SecretField.SHEETS_RANGE, SecretField.KEY_FORM_URL)
+    assert before.missing == (SecretField.OPENAI_API_KEY, SecretField.SHEETS_RANGE)
 
 
 def test_with_field_replaces_a_field_it_already_has() -> None:

@@ -1,9 +1,9 @@
 """Секрет в памяти: обёртка, которая не вытекает ни в один вывод (CLAUDE.md §7.3, §7.4).
 
 Правило §7.4 дословно: расшифрованное значение живёт **только** в `SecretValue` и только в памяти.
-Получить его можно единственным методом доступа (он ниже, один во всём проекте), и зовут его ровно в трёх
-точках применения: заголовок `Authorization` клиента OpenAI, `spreadsheetId` клиента Sheets, базовый URL
-клиента формы. Поэтому имя этого метода встречается в пакете ровно один раз — там, где он объявлен;
+Получить его можно единственным методом доступа (он ниже, один во всём проекте), и зовут его только в точках
+применения, перечисленных в §7.4: заголовок `Authorization` клиента OpenAI, параметры клиента Sheets, адрес
+Bot API, кнопка «показать своё» настройщика и временный перенос ссылки формы из сейфа. Поэтому имя этого метода встречается в пакете ровно один раз — там, где он объявлен;
 поиск по нему показывает все точки применения и стережёт правило §7.4.
 
 Всё остальное, что делают с секретом, должно давать маску. Поэтому `__str__`, `__repr__` и `__format__`
@@ -48,7 +48,20 @@ class SecretField(str, Enum):
     OPENAI_API_KEY = "openai_api_key"
     SHEETS_ID = "sheets_id"
     SHEETS_RANGE = "sheets_range"
+    # Устаревшее поле (§14 решение 15): ссылка на форму теперь открытая настройка livecraft.json (form.url).
+    # Поле остаётся, чтобы старый файл сейфа читался и ссылку из него можно было один раз перенести
+    # (app\setup\migration.py); удаляется на этапе «Токен доступа» вместе с переносом.
     KEY_FORM_URL = "key_form_url"
+
+    @classmethod
+    def current(cls) -> tuple[SecretField, ...]:
+        """Поля, которые программа требует для запуска и показывает человеку: все, кроме устаревших."""
+        return tuple(field for field in cls if not field.is_legacy)
+
+    @property
+    def is_legacy(self) -> bool:
+        """Устаревшее поле: читается из старого сейфа и вычёркивается из логов, но не требуется и не показывается."""
+        return self in _LEGACY_FIELDS
 
     @property
     def log_label(self) -> str:
@@ -66,6 +79,7 @@ class SecretField(str, Enum):
         return MaskStyle.TAIL if self is SecretField.OPENAI_API_KEY else MaskStyle.FINGERPRINT
 
 
+_LEGACY_FIELDS: Final[frozenset[SecretField]] = frozenset({SecretField.KEY_FORM_URL})
 _LOG_LABELS: Final[dict[SecretField, str]] = {
     SecretField.OPENAI_API_KEY: "openai-key",
     SecretField.SHEETS_ID: "sheets-plan",

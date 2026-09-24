@@ -134,8 +134,8 @@ class KeysPanel:
 
     @property
     def rows(self) -> tuple[KeyRow, ...]:
-        """По строке на поле сейфа в порядке SecretField."""
-        return tuple(self.row(field) for field in SecretField)
+        """По строке на нужное поле сейфа в порядке SecretField; устаревшие поля вкладка не показывает."""
+        return tuple(self.row(field) for field in SecretField.current())
 
     def row(self, field: SecretField) -> KeyRow:
         """Строка одного поля: запись итогового сейфа и то, есть ли под ней поставочное значение."""

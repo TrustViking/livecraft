@@ -90,8 +90,8 @@ class Vault:
 
     @property
     def missing(self) -> tuple[SecretField, ...]:
-        """Каких полей не хватает для запуска — в порядке объявления SecretField."""
-        return tuple(field for field in SecretField if field not in self.entries)
+        """Каких полей не хватает для запуска — в порядке объявления SecretField; устаревшие не требуются."""
+        return tuple(field for field in SecretField.current() if field not in self.entries)
 
     @property
     def is_ready(self) -> bool:
@@ -112,7 +112,10 @@ class Vault:
         )
 
     def secrets(self) -> tuple[SecretValue, ...]:
-        """Объекты-секреты (не значения) для фильтра логов: порядок — как у полей."""
+        """Объекты-секреты (не значения) для фильтра логов: порядок — как у полей.
+
+        Устаревшие поля тоже: пока значение лежит в сейфе, фильтр логов обязан его вычёркивать (§7.4).
+        """
         return tuple(self.entries[field].secret for field in SecretField if field in self.entries)
 
     def with_field(self, field: SecretField, secret: SecretValue, origin: VaultOrigin) -> Vault:

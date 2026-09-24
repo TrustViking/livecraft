@@ -147,7 +147,7 @@ def test_without_both_files_the_vault_is_empty_and_not_ready(store: VaultStore) 
     vault: Vault = store.load().vault
     assert vault.entries == {}
     assert not vault.is_ready
-    assert vault.missing == ALL_FIELDS
+    assert vault.missing == SecretField.current()      # устаревшая ссылка на форму не требуется
     assert vault.admission_reason is not None
 
 

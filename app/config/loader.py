@@ -5,8 +5,9 @@
 LLM, контракт формы ключей (§6 инвариант 2), шаблон папки превью и часовой пояс. channels.json заполняет
 оператор или настройщик: шесть полей на канал, ключ канала — ник (§6 инвариант 5).
 
-Ссылок, ключей и id в конфигах нет вообще (§5): ключ OpenAI, id таблицы, диапазон таблицы и URL формы
-живут в сейфе (§7.5), и этот модуль сейфа не знает.
+Ключей и id в конфигах нет (§5): ключ OpenAI, id таблицы и диапазон таблицы живут в сейфе (§7.5), и этот
+модуль сейфа не знает. Ссылка на форму ключей — открытая настройка `form.url` (§14 решение 15): пустая строка —
+«не настроено», и это не ошибка файла.
 
 Файла нет или поля нет — ConfigError с точным ключом; шаблон файла печатает main. Каналы пишет только
 save_channels_file (текст — только render_channels_file); прежний файл уходит в channels.previous.json.
@@ -27,6 +28,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, ClassVar, Final
+from urllib.parse import SplitResult, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from app.paths import write_text_atomically
@@ -105,7 +107,8 @@ LLM_KEYS: Final[tuple[str, ...]] = (
     "timeout_sec",
     "max_output_tokens",
 )
-FORM_KEYS: Final[tuple[str, ...]] = ("fields", "values", "date_format")
+FORM_URL_KEY: Final[str] = "url"
+FORM_KEYS: Final[tuple[str, ...]] = (FORM_URL_KEY, "fields", "values", "date_format")
 CHANNELS_TOP_LEVEL_KEYS: Final[tuple[str, ...]] = (CHANNELS_KEY,)
 CHANNEL_KEYS: Final[tuple[str, ...]] = ("platform", "account_name", "handle", "google_account", "languages", "privacy")
 # Как render_channels_file раскладывает канал: первая строка — эти поля, вторая — остальные.
@@ -136,6 +139,12 @@ GOOGLE_ACCOUNT_SEPARATOR: Final[str] = "@"
 # Плейсхолдеры шаблона папки превью: папка image\{date}\{language} (§5).
 IMAGE_TEMPLATE_PLACEHOLDERS: Final[tuple[str, ...]] = ("date", "language")
 IMAGE_TEMPLATE_PROBE: Final[str] = "probe"
+# Ссылка на форму ключей: https, длинная (docs.google.com/forms/…) или короткая (forms.gle/<код>).
+FORM_URL_SCHEME: Final[str] = "https"
+FORM_LONG_HOST: Final[str] = "docs.google.com"
+FORM_LONG_PATH_PREFIX: Final[str] = "/forms/"
+FORM_SHORT_HOST: Final[str] = "forms.gle"
+URL_PATH_SEPARATOR: Final[str] = "/"
 
 
 class ConfigError(Exception):
@@ -233,10 +242,12 @@ class LlmSettings:
 
 @dataclass(frozen=True)
 class FormSettings:
-    """Контракт формы ключей (§6 инвариант 2): названия вопросов, тексты вариантов, формат даты.
+    """Форма ключей (§6 инвариант 2): ссылка, названия вопросов, тексты вариантов, формат даты.
 
-    Сама ссылка на форму — в сейфе. Живой разбор формы из этого объекта не строится (задача 4.2):
-    здесь форма только прочитана и проверена. Значение вопроса None — вопроса в форме нет, поле не уходит.
+    Ссылка — открытая настройка (§14 решение 15): уходит в пакет .bcast открытым текстом. Пустая ссылка —
+    форма не настроена (§5); это не ошибка файла, а неготовая часть режима. Живой разбор формы из этого
+    объекта не строится (задача 4.2): здесь форма только прочитана и проверена. Значение вопроса None —
+    вопроса в форме нет, поле не уходит.
     """
 
     FIELD_KEYS: ClassVar[tuple[str, ...]] = (
@@ -254,21 +265,52 @@ class FormSettings:
     DATE_DIRECTIVES: ClassVar[tuple[str, ...]] = ("%d", "%m", "%Y")
     PLATFORM_VALUES_KEY: ClassVar[str] = "platform"
 
+    url: str
     fields: dict[str, str | None]
     values: dict[str, dict[str, str]]
     date_format: str
 
     def to_data(self) -> dict[str, Any]:
-        """Раздел form файла livecraft.json: вопросы и варианты — как прочитаны, в том же порядке."""
+        """Раздел form файла livecraft.json: ссылка первой, вопросы и варианты — как прочитаны, в том же порядке."""
         return {
+            FORM_URL_KEY: self.url,
             "fields": dict(self.fields),
             "values": {key: dict(texts) for key, texts in self.values.items()},
             "date_format": self.date_format,
         }
 
     @property
+    def is_configured(self) -> bool:
+        """Ссылка на форму задана: без неё ключи отправлять некуда, а пакет .bcast не собрать."""
+        return bool(self.url)
+
+    @property
+    def url_problem(self) -> SettingProblem | None:
+        """Что не так со ссылкой: https, длинная (docs.google.com/forms/…) или короткая (forms.gle/<код>).
+
+        Пустая ссылка годна — это «не настроено». Хост сверяется со всем `netloc`, а не только с именем:
+        «docs.google.com@чужой.хост» и чужой порт не проходят. Пробелы не прощаются ни внутри, ни по краям:
+        в файле ссылка лежит ровно такой, какой уйдёт в пакет. Редирект и viewform разбирает сама форма
+        (задача 4.2), здесь — только чей это адрес.
+        """
+        if not self.url:
+            return None
+        if any(char.isspace() for char in self.url):
+            return SettingProblem(key=FORM_URL_KEY, text=msg.CONFIG_PROBLEM_FORM_URL)
+        parts: SplitResult = urlsplit(self.url)
+        host: str = parts.netloc.lower()
+        is_long: bool = host == FORM_LONG_HOST and parts.path.startswith(FORM_LONG_PATH_PREFIX)
+        is_short: bool = host == FORM_SHORT_HOST and bool(parts.path.strip(URL_PATH_SEPARATOR))
+        if parts.scheme.lower() != FORM_URL_SCHEME or not (is_long or is_short):
+            return SettingProblem(key=FORM_URL_KEY, text=msg.CONFIG_PROBLEM_FORM_URL)
+        return None
+
+    @property
     def problem(self) -> SettingProblem | None:
         """Что не так с формой по смыслу; состав ключей проверяет разбор по FIELD_KEYS и VALUE_KEYS."""
+        url_problem: SettingProblem | None = self.url_problem
+        if url_problem is not None:
+            return url_problem
         platforms: dict[str, str] = self.values.get(self.PLATFORM_VALUES_KEY, {})
         if Platform.YOUTUBE.value not in platforms:
             return SettingProblem(
@@ -607,6 +649,7 @@ class _ConfigParser:
             mapping["values"], key_path=f"{prefix}values", prefix=values_prefix, allowed=FormSettings.VALUE_KEYS
         )
         form: FormSettings = FormSettings(
+            url=self._string(mapping, FORM_URL_KEY, prefix=prefix),
             fields={key: self._nullable_text(fields_raw, key, prefix=fields_prefix) for key in FormSettings.FIELD_KEYS},
             values={key: self._text_mapping(values_raw, key, prefix=values_prefix) for key in FormSettings.VALUE_KEYS},
             date_format=self._text(mapping, "date_format", prefix=prefix),
@@ -648,6 +691,13 @@ class _ConfigParser:
         value: Any = mapping[key]
         if not isinstance(value, str) or not value.strip():
             raise self._error(f"{prefix}{key}", msg.CONFIG_PROBLEM_NON_EMPTY_STRING)
+        return value
+
+    def _string(self, mapping: dict[str, Any], key: str, *, prefix: str) -> str:
+        """Строка, которая может быть пустой: пустое значение открытой настройки — «не настроено» (§5)."""
+        value: Any = mapping[key]
+        if not isinstance(value, str):
+            raise self._error(f"{prefix}{key}", msg.CONFIG_PROBLEM_STRING)
         return value
 
     def _nullable_text(self, mapping: dict[str, Any], key: str, *, prefix: str) -> str | None:

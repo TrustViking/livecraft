@@ -3,7 +3,8 @@
 Черновик — поля вкладки текстом (флажки — bool) и одно правило: перевести введённое в данные livecraft.json
 (`to_data`). Своих проверок у черновика нет: годность настроек решает тот же загрузчик, что читает файл
 (§16, решения к задаче 2.2). Не переводится в число — уходит текстом, и ошибку с именем поля назовёт загрузчик.
-Контракт формы на вкладке не правится: раздел form переносится как есть.
+Из раздела form на вкладке правится только ссылка на форму (`form_url`, открытая настройка — §14 решение 15);
+контракт формы (вопросы, варианты, формат даты) переносится как есть.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Final
 
-from app.config.loader import FORM_KEY, LLM_KEY, FormSettings, LivecraftSettings
+from app.config.loader import FORM_KEY, FORM_URL_KEY, LLM_KEY, FormSettings, LivecraftSettings
 
 # Дробная часть паузы в окне пишется как удобно человеку: «0,5» и «0.5» — одно число.
 DECIMAL_COMMA: Final[str] = ","
@@ -20,8 +21,10 @@ DECIMAL_POINT: Final[str] = "."
 
 @dataclass(frozen=True)
 class SettingsDraft:
-    """Поля вкладки 3: сроки и паузы, настройки эфира, шаблон превью, часовой пояс, модель LLM."""
+    """Поля вкладки 3: ссылка на форму ключей, сроки и паузы, настройки эфира, шаблон превью, часовой пояс,
+    модель LLM."""
 
+    form_url: str
     min_lead_minutes: str
     keep_days: str
     auto_start: bool
@@ -41,6 +44,7 @@ class SettingsDraft:
     def of(cls, settings: LivecraftSettings) -> SettingsDraft:
         """Черновик годных настроек — то, что окно показывает в полях."""
         return cls(
+            form_url=settings.form.url,
             min_lead_minutes=str(settings.min_lead_minutes),
             keep_days=str(settings.keep_days),
             auto_start=settings.auto_start,
@@ -58,7 +62,10 @@ class SettingsDraft:
         )
 
     def to_data(self, form: FormSettings) -> dict[str, Any]:
-        """Данные livecraft.json из введённого; form — контракт формы, переносится без изменений."""
+        """Данные livecraft.json из введённого; form — контракт формы: переносится без изменений, кроме ссылки.
+
+        Ссылка — с обрезанными пробелами по краям, как остальные текстовые поля: пустая значит «не настроено».
+        """
         return {
             "min_lead_minutes": self._integer(self.min_lead_minutes),
             "keep_days": self._integer(self.keep_days),
@@ -76,7 +83,7 @@ class SettingsDraft:
                 "timeout_sec": self._integer(self.llm_timeout_sec),
                 "max_output_tokens": self._integer(self.llm_max_output_tokens),
             },
-            FORM_KEY: form.to_data(),
+            FORM_KEY: {**form.to_data(), FORM_URL_KEY: self.form_url.strip()},
         }
 
     @property

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from app import main as main_module
+from app.config.loader import load_settings
 from app.main import ExitCode, RunRequest, build_parser, run_cli
 from app.observability.logging_setup import close_logging
 from app.paths import ROOT_ENV_VAR, LivecraftPaths, build_paths, ensure_dirs
@@ -427,3 +428,48 @@ def test_the_readiness_line_in_the_log_carries_no_value(ready_root: LivecraftPat
     assert "readiness config=ok channels=2 local=absent vault=" in text
     for value in SUPPLIED_VALUES.values():
         assert value not in text
+
+
+# --- ссылка на форму из сейфа — один раз в livecraft.json (§14 решение 15)
+
+OWN_FORM_URL: str = "https://forms.gle/OwnFormCode12345"
+
+
+def _save_own_form_url(paths: LivecraftPaths, value: str) -> None:
+    own: Vault = Vault.empty().with_field(
+        SecretField.KEY_FORM_URL, SecretValue(field=SecretField.KEY_FORM_URL, value=value), VaultOrigin.OWN
+    )
+    VaultStore.open(paths).save_local(own)
+
+
+def test_the_form_url_moves_from_the_own_vault_to_the_settings(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _save_own_form_url(ready_root, OWN_FORM_URL)
+    assert run_cli([]) == int(ExitCode.OK)
+    out: str = capsys.readouterr().out
+    assert msg.FORM_URL_MIGRATED in out
+    assert out.index(msg.FORM_URL_MIGRATED) < out.index(msg.READINESS_SUMMARY_TITLE)
+    assert OWN_FORM_URL not in out
+    assert load_settings(ready_root.config_file).form.url == OWN_FORM_URL
+    assert VaultStore.open(ready_root).load().vault.get(SecretField.KEY_FORM_URL) is None
+    close_logging()
+    [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
+    text: str = log_file.read_text(encoding="utf-8")
+    assert "form_url_migrated outcome=moved source=own" in text
+    assert OWN_FORM_URL not in text
+    assert run_cli([]) == int(ExitCode.OK)                     # второй запуск — переносить уже нечего
+    assert msg.FORM_URL_MIGRATED not in capsys.readouterr().out
+
+
+def test_a_bad_form_url_in_the_vault_is_announced_and_the_run_goes_on(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _save_own_form_url(ready_root, "http://example.com/secret-form")
+    assert run_cli([]) == int(ExitCode.OK)
+    out: str = capsys.readouterr().out
+    assert msg.FORM_URL_MIGRATION_FAILED.format(reason=msg.CONFIG_PROBLEM_FORM_URL) in out
+    assert "http://example.com/secret-form" not in out
+    assert load_settings(ready_root.config_file).form.url == ""

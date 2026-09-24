@@ -91,8 +91,9 @@ def test_configs_without_a_vault_leave_only_the_vault_problem(livecraft_paths: L
     assert not readiness.is_ready
     assert readiness.config_error is None and readiness.vault_error is None
     assert readiness.problems == (Vault.empty().admission_reason,)
-    for field in SecretField:
+    for field in SecretField.current():
         assert field.human_label in readiness.problems[0]
+    assert SecretField.KEY_FORM_URL.human_label not in readiness.problems[0]      # не требуется (§14 решение 15)
     assert readiness.template_lines == ()
 
 
@@ -129,7 +130,7 @@ def test_a_supplied_vault_and_configs_are_ready(ready_paths: LivecraftPaths) -> 
 def test_the_summary_names_every_field_and_its_origin(ready_paths: LivecraftPaths) -> None:
     lines: tuple[str, ...] = Readiness.check(ready_paths).summary_lines
     assert lines[0] == msg.READINESS_SUMMARY_TITLE
-    for field in SecretField:
+    for field in SecretField.current():
         assert msg.READINESS_FIELD_LINE.format(label=field.human_label, origin=msg.VAULT_ORIGIN_SUPPLIED) in lines
     assert lines[-1] == msg.READINESS_CHANNELS_LINE.format(count=2, languages="en, ru, uk")
 
@@ -169,7 +170,7 @@ def test_an_unreadable_own_vault_warns_and_runs_on_supplied_values(ready_paths: 
     assert readiness.warnings == (msg.VAULT_LOCAL_UNREADABLE,)
     assert readiness.is_ready                                  # запуск идёт — на поставочных значениях
     assert readiness.vault is not None
-    assert all(readiness.vault.origin_of(field) is VaultOrigin.SUPPLIED for field in SecretField)
+    assert all(readiness.vault.origin_of(field) is VaultOrigin.SUPPLIED for field in SecretField.current())
     assert "local=unreadable" in readiness.log_line
 
 
@@ -243,13 +244,21 @@ def test_no_value_and_no_mask_leaves_readiness(ready_paths: LivecraftPaths, own:
 
 def test_no_value_leaves_readiness_when_things_are_broken(ready_paths: LivecraftPaths) -> None:
     """И при поломке: удалили одно поле поставки — причина и сводка говорят о поле, не о значениях."""
-    write_supplied_vault(ready_paths, {k: v for k, v in SUPPLIED_VALUES.items() if k is not SecretField.KEY_FORM_URL})
+    write_supplied_vault(ready_paths, {k: v for k, v in SUPPLIED_VALUES.items() if k is not SecretField.SHEETS_RANGE})
     readiness: Readiness = Readiness.check(ready_paths)
     assert not readiness.is_ready
     text: str = _every_text(readiness)
     for value in SUPPLIED_VALUES.values():
         assert value not in text
-    assert SecretField.KEY_FORM_URL.human_label in readiness.problems[0]
+    assert SecretField.SHEETS_RANGE.human_label in readiness.problems[0]
+
+
+def test_a_vault_without_the_form_url_is_ready(ready_paths: LivecraftPaths) -> None:
+    """Ссылки на форму в сейфе нет, form.url пуст — программа готова: форма — открытая настройка (§14 решение 15)."""
+    readiness: Readiness = Readiness.check(ready_paths)
+    assert readiness.vault is not None and readiness.vault.get(SecretField.KEY_FORM_URL) is None
+    assert readiness.config is not None and not readiness.config.settings.form.is_configured
+    assert readiness.is_ready
 
 
 def test_the_log_line_carries_labels_and_state_only(ready_paths: LivecraftPaths) -> None:

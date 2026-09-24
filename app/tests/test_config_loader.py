@@ -132,7 +132,7 @@ def test_the_channels_template_loads_with_the_same_loader(tmp_path: Path) -> Non
 
 
 def test_the_settings_file_carries_no_vault_field() -> None:
-    """Ключ OpenAI, id таблицы, диапазон и URL формы живут в сейфе — в livecraft.json их нет."""
+    """Ключ OpenAI, id таблицы и диапазон живут в сейфе — в livecraft.json их нет; ссылка на форму в поставке пуста."""
     data: dict[str, Any] = _settings_data()
     flat: str = json.dumps(data).lower()
     for field in SecretField:
@@ -437,6 +437,96 @@ def test_the_date_format_needs_day_month_and_full_year(tmp_path: Path, date_form
     data: dict[str, Any] = _settings_data()
     data["form"]["date_format"] = date_format
     assert _settings_error(tmp_path, data).key_path == "form.date_format"
+
+
+# --- ссылка на форму ключей: открытая настройка form.url (§14 решение 15)
+
+FORM_LONG: str = "https://docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform"
+FORM_SHORT: str = "https://forms.gle/AbCdEf123456"
+
+
+def _settings_with_form_url(tmp_path: Path, url: Any) -> Path:
+    data: dict[str, Any] = _settings_data()
+    data["form"]["url"] = url
+    return _write(tmp_path / "livecraft.json", data)
+
+
+def test_the_shipped_form_url_is_empty_and_not_configured() -> None:
+    """Поставка без чьих-либо данных (§14 решение 16): форма не настроена, и это не ошибка файла."""
+    form: FormSettings = load_settings(REPO_SETTINGS).form
+    assert form.url == ""
+    assert not form.is_configured
+    assert form.url_problem is None and form.problem is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        FORM_LONG,
+        FORM_SHORT,
+        "https://docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform?usp=sf_link",
+        "HTTPS://DOCS.GOOGLE.COM/forms/d/e/1FAIpQLSf-own-form/viewform",
+    ],
+)
+def test_a_good_form_url_is_read_as_is(tmp_path: Path, url: str) -> None:
+    form: FormSettings = load_settings(_settings_with_form_url(tmp_path, url)).form
+    assert form.url == url
+    assert form.is_configured
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform",    # http
+        "http://forms.gle/AbCdEf123456",                                   # http
+        "https://example.com/forms/d/e/1FAIpQLSf-own-form/viewform",       # чужой хост
+        "https://docs.google.com.evil.example/forms/d/e/x/viewform",       # чужой хост с похожим началом
+        "https://docs.google.com@evil.example/forms/d/e/x/viewform",       # чужой хост за «@»
+        "https://docs.google.com:8443/forms/d/e/x/viewform",               # чужой порт
+        "https://docs.google.com/spreadsheets/d/1own/edit",                # docs.google.com без /forms/
+        "https://docs.google.com/",                                        # docs.google.com без пути
+        "https://forms.gle/",                                              # короткий адрес без кода
+        "https://docs.google.com/forms/d/e/1FAIpQLSf own/viewform",        # пробел внутри
+        f" {FORM_SHORT}",                                                  # пробел по краю
+        "   ",                                                             # одни пробелы — не «пусто»
+        "docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform",           # без схемы
+    ],
+)
+def test_a_bad_form_url_is_an_error_at_form_url(tmp_path: Path, url: str) -> None:
+    with pytest.raises(ConfigError) as raised:
+        load_settings(_settings_with_form_url(tmp_path, url))
+    assert raised.value.key_path == "form.url"
+    assert raised.value.problem == msg.CONFIG_PROBLEM_FORM_URL
+    assert raised.value.kind is ConfigProblem.INVALID
+
+
+@pytest.mark.parametrize("value", [None, 5, [], {}, True])
+def test_the_form_url_must_be_a_string(tmp_path: Path, value: Any) -> None:
+    with pytest.raises(ConfigError) as raised:
+        load_settings(_settings_with_form_url(tmp_path, value))
+    assert raised.value.key_path == "form.url"
+    assert raised.value.problem == msg.CONFIG_PROBLEM_STRING
+
+
+def test_a_missing_form_url_key_is_a_missing_field(tmp_path: Path) -> None:
+    data: dict[str, Any] = _settings_data()
+    del data["form"]["url"]
+    error: ConfigError = _settings_error(tmp_path, data)
+    assert error.key_path == "form.url" and error.kind is ConfigProblem.FIELD_MISSING
+
+
+def test_the_form_url_is_written_first_and_reads_back(tmp_path: Path) -> None:
+    settings: LivecraftSettings = load_settings(_settings_with_form_url(tmp_path, FORM_SHORT))
+    data: dict[str, Any] = json.loads(render_settings_file(settings))
+    assert list(data["form"])[0] == "url"
+    assert data["form"]["url"] == FORM_SHORT
+    assert parse_settings(data, tmp_path / "livecraft.json") == settings
+
+
+def test_the_form_url_problem_is_checked_before_the_rest_of_the_form() -> None:
+    form: FormSettings = dataclasses.replace(load_settings(REPO_SETTINGS).form, url="http://forms.gle/x")
+    assert form.problem == form.url_problem
+    assert form.url_problem is not None and form.url_problem.key == "url"
 
 
 @pytest.mark.parametrize("value", ["", "   ", 5, [], {}])

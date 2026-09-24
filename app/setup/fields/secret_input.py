@@ -14,7 +14,6 @@ import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
-from urllib.parse import SplitResult, urlsplit
 
 from app.secretsafe.value import SecretField, SecretValue
 from app.setup.validators import extract_spreadsheet_id, is_a1_range
@@ -24,11 +23,6 @@ OPENAI_KEY_PREFIX: Final[str] = "sk-"
 OPENAI_KEY_MIN_LENGTH: Final[int] = 20
 SHEETS_ID_MIN_LENGTH: Final[int] = 20
 SHEETS_ID_EXTRA_CHARS: Final[frozenset[str]] = frozenset("-_")
-FORM_URL_SCHEME: Final[str] = "https"
-FORM_LONG_HOST: Final[str] = "docs.google.com"
-FORM_LONG_PATH_PREFIX: Final[str] = "/forms/"
-FORM_SHORT_HOST: Final[str] = "forms.gle"
-URL_PATH_SEPARATOR: Final[str] = "/"
 
 
 @dataclass(frozen=True)
@@ -53,6 +47,8 @@ class SecretInput:
     @property
     def problem(self) -> str | None:
         """Что не так с вводом — русской строкой без самого значения; всё в порядке — None."""
+        if self.field.is_legacy:
+            return msg.SETUP_INPUT_LEGACY_FIELD      # устаревшее поле не вводится: правила у него нет
         if not self.text:
             return msg.SETUP_INPUT_EMPTY
         rule: Callable[[SecretInput], str | None] = _FIELD_RULES[self.field]
@@ -95,27 +91,9 @@ class SecretInput:
         """Диапазон таблицы — нотация A1 с обеими границами."""
         return None if is_a1_range(self.text) else msg.SETUP_INPUT_SHEETS_RANGE
 
-    def _key_form_url_problem(self) -> str | None:
-        """Адрес формы: https, длинный (docs.google.com/forms/…) или короткий (forms.gle/<код>), без пробелов.
-
-        Хост сверяется со всем `netloc`, а не только с именем: «docs.google.com@чужой.хост» и чужой порт
-        не проходят. Редирект и viewform разбирает сама форма (задача 4.2), здесь — только чей это адрес.
-        """
-        text: str = self.text
-        if any(char.isspace() for char in text):
-            return msg.SETUP_INPUT_KEY_FORM_URL
-        parts: SplitResult = urlsplit(text)
-        if parts.scheme.lower() != FORM_URL_SCHEME:
-            return msg.SETUP_INPUT_KEY_FORM_URL
-        host: str = parts.netloc.lower()
-        is_long: bool = host == FORM_LONG_HOST and parts.path.startswith(FORM_LONG_PATH_PREFIX)
-        is_short: bool = host == FORM_SHORT_HOST and bool(parts.path.strip(URL_PATH_SEPARATOR))
-        return None if is_long or is_short else msg.SETUP_INPUT_KEY_FORM_URL
-
 
 _FIELD_RULES: Final[dict[SecretField, Callable[[SecretInput], str | None]]] = {
     SecretField.OPENAI_API_KEY: SecretInput._openai_key_problem,
     SecretField.SHEETS_ID: SecretInput._sheets_id_problem,
     SecretField.SHEETS_RANGE: SecretInput._sheets_range_problem,
-    SecretField.KEY_FORM_URL: SecretInput._key_form_url_problem,
 }

@@ -37,6 +37,13 @@ CONSOLE_TITLE: Final[str] = "Livecraft {version} — {generated_at}"
 # --- настройка программы (CLAUDE.md §8): без сейфа и конфига обычный запуск не начинается
 # Что именно не так, перечислено строками выше (сейф и конфиги называют свои причины сами) — здесь только что делать.
 SETUP_REQUIRED: Final[str] = "Запустите livecraft.bat --setup и заполните настройки."
+# Однократный перенос ссылки на форму из старого места в настройки (app\setup\migration.py, §14 решение 15).
+# Самой ссылки в строках нет: в консоль она не уходит.
+FORM_URL_MIGRATED: Final[str] = "Ссылка на форму ключей перенесена в настройки программы — вводить её заново не нужно."
+FORM_URL_MIGRATION_FAILED: Final[str] = (
+    "ВНИМАНИЕ: ссылку на форму ключей из прежних настроек перенести не удалось ({reason}). "
+    "Впишите её на вкладке «Настройки запуска»: livecraft.bat --setup."
+)
 
 # --- готовность к запуску (app\setup\readiness.py): сводка без значений — только откуда что взялось (§7.4)
 READINESS_SUMMARY_TITLE: Final[str] = "Настройки livecraft:"
@@ -99,6 +106,7 @@ CONFIG_SETTINGS_TEMPLATE: Final[str] = """{
     "max_output_tokens": 8000
   },
   "form": {
+    "url": "",
     "fields": {
       "language": "Язык стрима ( Language of stream)",
       "account_name": "Название канала ( Channel name)",
@@ -133,6 +141,12 @@ CONFIG_PROBLEM_MISSING_KEY: Final[str] = "обязательное поле от
 CONFIG_PROBLEM_UNKNOWN_KEY: Final[str] = "неизвестное поле"
 CONFIG_PROBLEM_DUPLICATE_KEY: Final[str] = "поле указано дважды"
 CONFIG_PROBLEM_NON_EMPTY_STRING: Final[str] = "нужна непустая строка в кавычках"
+CONFIG_PROBLEM_STRING: Final[str] = 'нужна строка в кавычках; пустая строка "" — не настроено'
+# Правило ссылки на форму (FormSettings.url_problem); перенесено со вкладки ключей (§14 решение 15).
+CONFIG_PROBLEM_FORM_URL: Final[str] = (
+    "нужна ссылка на Google-форму: https://docs.google.com/forms/… или https://forms.gle/…, без пробелов; "
+    "пустая строка — форма не настроена"
+)
 CONFIG_PROBLEM_TEXT_OR_NULL: Final[str] = "нужно название вопроса формы в кавычках или null, если такого вопроса в форме нет"
 CONFIG_PROBLEM_TEXT_MAPPING: Final[str] = (
     'нужен непустой объект «код — текст варианта», например {"uk": "Украинский ( Ukranian)"}'
@@ -222,8 +236,9 @@ SETUP_INPUT_SHEETS_RANGE: Final[str] = (
     "нужен диапазон вида B:H, B1:H200, План!B:H или 'План стримов'!B2:H: "
     "колонки — от 1 до 3 латинских букв, номер строки — по желанию"
 )
-SETUP_INPUT_KEY_FORM_URL: Final[str] = (
-    "нужна ссылка на Google-форму: https://docs.google.com/forms/… или https://forms.gle/…, без пробелов"
+# Устаревшее поле сейфа (ссылка на форму, §14 решение 15) на вкладке ключей не вводится.
+SETUP_INPUT_LEGACY_FIELD: Final[str] = (
+    "это значение здесь больше не вводится: оно задаётся на вкладке «Настройки запуска»"
 )
 # Тексты для человека без знания устройства программы: ни где лежат файлы, ни как шифруется (смотр окна 23-09-2026).
 SETUP_INPUT_OWN_UNAVAILABLE: Final[str] = (
@@ -316,6 +331,7 @@ SETUP_SETTINGS_FIELD_LABELS: Final[dict[str, str]] = {
     "youtube_pause_seconds": "пауза между обращениями к YouTube (секунд)",
     "image_dir_template": "папка для обложек",
     "timezone": "часовой пояс",
+    "form.url": "Google форма для ключей стрима (эфира)",
     "llm.model": "модель OpenAI",
     "llm.fallback_model": "запасная модель OpenAI",
     "llm.reasoning_effort": "глубина рассуждений модели",
@@ -339,6 +355,10 @@ SETUP_SETTINGS_FIELD_HINTS: Final[dict[str, str]] = {
     "llm.fallback_model": "если основная модель недоступна, например gpt-5.4",
     "llm.service_tier": "flex — дешевле и медленнее, default — обычный",
     "timezone": "Europe/Kyiv — киевское время",
+    "form.url": (
+        "ссылка на форму, куда программа отправляет ключи стрима: https://docs.google.com/forms/… или "
+        "https://forms.gle/…; пусто — форма не настроена"
+    ),
 }
 SETUP_SETTINGS_SAVE_FAILED: Final[str] = "Не удалось записать secrets\\livecraft.json: {error}"
 

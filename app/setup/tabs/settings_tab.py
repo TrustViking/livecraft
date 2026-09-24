@@ -1,6 +1,7 @@
 """Вкладка окна «Настройки запуска» поверх модели `SettingsPanel` (CLAUDE.md §8.2 п.3).
 
-Сетка полей по черновику настроек (`SettingsDraft`): текст — поле ввода, флажок — ttk.Checkbutton, уровень
+Сетка полей по черновику настроек (`SettingsDraft`): текст — поле ввода (ссылка на форму — тоже обычное
+открытое поле: она не секрет, §14 решение 15), флажок — ttk.Checkbutton, уровень
 рассуждений и тариф — выбор из перечней модели. «Сохранить» отдаёт черновик модели (`apply`) и, если модель
 его приняла, просит её записать livecraft.json; отказ — красная строка с подписью поля. Своих правил нет.
 """
@@ -20,6 +21,7 @@ from app.ui import messages_ru as msg
 
 # Поле черновика → путь поля в livecraft.json: по пути модель называет проблему, по нему же ищется подпись.
 FIELD_KEYS: Final[dict[str, str]] = {
+    "form_url": "form.url",
     "min_lead_minutes": "min_lead_minutes",
     "keep_days": "keep_days",
     "auto_start": "auto_start",
@@ -36,6 +38,8 @@ FIELD_KEYS: Final[dict[str, str]] = {
     "llm_max_output_tokens": "llm.max_output_tokens",
 }
 ENTRY_WIDTH_CHARS: Final[int] = 32
+URL_ENTRY_WIDTH_CHARS: Final[int] = 64       # ссылка на форму длинная: в узком поле её не проверить глазами
+WIDE_FIELDS: Final[frozenset[str]] = frozenset({"form_url"})
 READONLY: Final[str] = "readonly"
 HINT_FOREGROUND: Final[str] = "#6b6b6b"     # серая подсказка: читается, но не спорит с подписью поля
 HINT_WRAP_PIXELS: Final[int] = 420
@@ -138,4 +142,5 @@ class SettingsTab:
         self.variables[name] = text
         if options is not None:
             return ttk.Combobox(parent, textvariable=text, values=options, state=READONLY)
-        return ttk.Entry(parent, textvariable=text, width=ENTRY_WIDTH_CHARS)
+        width: int = URL_ENTRY_WIDTH_CHARS if name in WIDE_FIELDS else ENTRY_WIDTH_CHARS
+        return ttk.Entry(parent, textvariable=text, width=width)

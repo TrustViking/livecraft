@@ -121,11 +121,12 @@ def _fill_channel(tab: ChannelsTab, **values: str) -> None:
 # --- «Ключи и ссылки»
 
 
-def test_the_keys_tab_has_four_rows_with_hidden_input(window: SetupWindow) -> None:
+def test_the_keys_tab_has_three_rows_with_hidden_input(window: SetupWindow) -> None:
+    """Ссылки на форму на вкладке ключей нет: она открытая настройка (§14 решение 15)."""
     tab: KeysTab = window.keys_tab
     assert tab.panel is not None
-    assert len(tab.panel.rows) == 4
-    assert tuple(tab.rows) == tuple(SecretField)
+    assert len(tab.panel.rows) == 3
+    assert tuple(tab.rows) == SecretField.current()
     for view in tab.rows.values():
         assert view.entry.cget("show") == SECRET_ECHO
     assert all(entry.cget("show") == SECRET_ECHO for entry in _widgets(tab.frame) if isinstance(entry, ttk.Entry))
@@ -136,7 +137,7 @@ def test_the_window_shows_no_vault_value(window: SetupWindow) -> None:
     panel: KeysPanel | None = window.keys_tab.panel
     assert panel is not None
     values: set[str] = _secret_values(panel)
-    assert len(values) == len(SecretField)
+    assert len(values) == len(SecretField.current())
     texts: list[str] = _visible_texts(window)
     for row in panel.rows:
         assert row.display in texts                  # маска на месте…
@@ -280,6 +281,31 @@ def test_text_in_an_integer_field_shows_the_problem_and_keeps_the_file(
     )
     assert ready_paths.config_file.read_bytes() == REPO_SETTINGS_FILE.read_bytes()
     assert tab.is_dirty
+
+
+def test_the_form_url_is_an_open_field_that_saves(window: SetupWindow, ready_paths: LivecraftPaths) -> None:
+    """Ссылка на форму — не секрет (§14 решение 15): обычное поле без маски, запись — в form.url."""
+    tab: SettingsTab = window.settings_tab
+    entry: ttk.Widget = tab.inputs["form_url"]
+    assert isinstance(entry, ttk.Entry)
+    assert entry.cget("show") == ""
+    assert tab.hints["form_url"].cget("text") == msg.SETUP_SETTINGS_FIELD_HINTS["form.url"]
+    _type(entry, "https://forms.gle/AbCdEf123456")
+    tab.save_button.invoke()
+    assert tab.problem.text == ""
+    assert load_settings(ready_paths.config_file).form.url == "https://forms.gle/AbCdEf123456"
+
+
+def test_a_bad_form_url_shows_the_problem_and_keeps_the_file(window: SetupWindow, ready_paths: LivecraftPaths) -> None:
+    tab: SettingsTab = window.settings_tab
+    entry: ttk.Widget = tab.inputs["form_url"]
+    assert isinstance(entry, ttk.Entry)
+    _type(entry, "http://forms.gle/AbCdEf123456")
+    tab.save_button.invoke()
+    assert tab.problem.text == msg.SETUP_PROBLEM_LINE.format(
+        label=msg.SETUP_SETTINGS_FIELD_LABELS["form.url"], text=msg.CONFIG_PROBLEM_FORM_URL
+    )
+    assert ready_paths.config_file.read_bytes() == REPO_SETTINGS_FILE.read_bytes()
 
 
 def test_the_settings_widgets_follow_the_value_types(window: SetupWindow) -> None:
@@ -434,7 +460,7 @@ def test_an_own_field_gets_the_button_and_toggles_value_and_mask(window: SetupWi
     assert view.reveal_button.cget("text") == msg.SETUP_KEYS_BUTTON_HIDE
     view.reveal_button.invoke()
     _assert_masked(view, _own_mask())
-    for other in SecretField:
+    for other in SecretField.current():
         if other is not SecretField.OPENAI_API_KEY:
             assert _row(window.keys_tab, other).reveal_button.grid_info() == {}
 

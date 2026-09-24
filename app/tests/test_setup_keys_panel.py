@@ -21,7 +21,7 @@ OWN_OPENAI_KEY: str = "sk-proj-own-Zy9xWvUtSrQpOnMlKjIhGfEdCbA9876543210"
 OWN_SHEET_ID: str = "1own-B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ-own-table"
 OWN_SHEET_URL: str = f"https://docs.google.com/spreadsheets/d/{OWN_SHEET_ID}/edit#gid=0"
 OWN_RANGE: str = "'План стримов'!A2:F"
-OWN_FORM_URL: str = "https://forms.gle/OwnFormCode12345"
+LEGACY_FORM_URL: str = "https://forms.gle/OwnFormCode12345"
 REPLACE_ONLY: frozenset[RowAction] = frozenset({RowAction.REPLACE})
 OWN_ACTIONS: frozenset[RowAction] = frozenset({RowAction.REPLACE, RowAction.RESET, RowAction.REVEAL})
 ENTER_ONLY: frozenset[RowAction] = frozenset({RowAction.ENTER})
@@ -80,8 +80,24 @@ def _all_secret_values(*panels: KeysPanel) -> set[str]:
 
 def test_rows_follow_the_order_of_the_vault_fields(store: VaultStore) -> None:
     panel: KeysPanel = KeysPanel.from_store(store)
-    assert tuple(row.field for row in panel.rows) == tuple(SecretField)
-    assert tuple(row.label for row in panel.rows) == tuple(field.human_label for field in SecretField)
+    assert tuple(row.field for row in panel.rows) == SecretField.current()
+    assert tuple(row.label for row in panel.rows) == tuple(field.human_label for field in SecretField.current())
+
+
+def test_the_legacy_form_url_has_no_row_even_when_it_lies_in_the_vault(ready_paths: LivecraftPaths) -> None:
+    """Ссылка на форму — открытая настройка (§14 решение 15): строки на вкладке ключей у неё нет."""
+    write_supplied_vault(ready_paths, {**SUPPLIED_VALUES, SecretField.KEY_FORM_URL: LEGACY_FORM_URL})
+    panel: KeysPanel = KeysPanel.from_store(VaultStore.open(ready_paths))
+    assert panel.vault.get(SecretField.KEY_FORM_URL) is not None
+    assert SecretField.KEY_FORM_URL not in [row.field for row in panel.rows]
+
+
+def test_the_legacy_form_url_cannot_be_entered(store: VaultStore) -> None:
+    before: KeysPanel = KeysPanel.from_store(store)
+    edit: KeysPanelEdit = before.replace(SecretField.KEY_FORM_URL, LEGACY_FORM_URL)
+    assert not edit.is_applied
+    assert edit.problem == msg.SETUP_INPUT_LEGACY_FIELD
+    assert edit.panel is before
 
 
 def test_a_supplied_field_offers_only_replace_and_shows_the_mask(store: VaultStore) -> None:
@@ -130,9 +146,9 @@ def test_replace_with_good_input_makes_the_field_own_and_leaves_the_old_panel(st
 
 def test_replace_with_bad_input_names_the_problem_and_changes_nothing(store: VaultStore) -> None:
     before: KeysPanel = KeysPanel.from_store(store)
-    edit: KeysPanelEdit = before.replace(SecretField.KEY_FORM_URL, "http://example.com/form")
+    edit: KeysPanelEdit = before.replace(SecretField.SHEETS_RANGE, "A")
     assert not edit.is_applied
-    assert edit.problem == msg.SETUP_INPUT_KEY_FORM_URL
+    assert edit.problem == msg.SETUP_INPUT_SHEETS_RANGE
     assert edit.panel is before
     assert edit.panel.rows == before.rows
 
@@ -153,15 +169,15 @@ def test_enter_fills_an_empty_field_as_own(bare_store: VaultStore) -> None:
 
 
 def test_reset_over_a_supplied_value_brings_the_supplied_mask_back(store: VaultStore) -> None:
-    edited: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.KEY_FORM_URL, OWN_FORM_URL))
-    reset: KeysPanel = edited.reset(SecretField.KEY_FORM_URL)
-    row: KeyRow = _row(reset, SecretField.KEY_FORM_URL)
-    supplied: SecretValue | None = reset.supplied.get(SecretField.KEY_FORM_URL)
+    edited: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE))
+    reset: KeysPanel = edited.reset(SecretField.SHEETS_RANGE)
+    row: KeyRow = _row(reset, SecretField.SHEETS_RANGE)
+    supplied: SecretValue | None = reset.supplied.get(SecretField.SHEETS_RANGE)
     assert supplied is not None
     assert row.origin_label == msg.VAULT_ORIGIN_SUPPLIED
     assert row.display == supplied.masked
     assert row.actions == REPLACE_ONLY
-    assert _row(edited, SecretField.KEY_FORM_URL).origin_label == msg.VAULT_ORIGIN_OWN   # прежняя не менялась
+    assert _row(edited, SecretField.SHEETS_RANGE).origin_label == msg.VAULT_ORIGIN_OWN   # прежняя не менялась
 
 
 def test_reset_without_a_supplied_value_leaves_no_field(bare_store: VaultStore) -> None:
@@ -188,8 +204,8 @@ def test_reset_of_a_saved_own_field_shows_the_supplied_one_under_it(store: Vault
 
 
 def test_reset_label_of_an_own_field_over_the_supply_returns_the_program_value(store: VaultStore) -> None:
-    panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.KEY_FORM_URL, OWN_FORM_URL))
-    assert _row(panel, SecretField.KEY_FORM_URL).reset_label == msg.SETUP_KEYS_BUTTON_RESET_TO_SUPPLIED
+    panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE))
+    assert _row(panel, SecretField.SHEETS_RANGE).reset_label == msg.SETUP_KEYS_BUTTON_RESET_TO_SUPPLIED
 
 
 def test_reset_label_of_an_own_field_without_supply_deletes_it(bare_store: VaultStore) -> None:
@@ -263,16 +279,16 @@ def test_save_writes_only_the_local_file(store: VaultStore) -> None:
 
 
 def test_after_save_the_reread_panel_shows_own(store: VaultStore) -> None:
-    panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.KEY_FORM_URL, OWN_FORM_URL))
+    panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE))
     saved: KeysPanel = panel.save(store)
     reread: KeysPanel = KeysPanel.from_store(store)
     for current in (saved, reread):
-        row: KeyRow = _row(current, SecretField.KEY_FORM_URL)
+        row: KeyRow = _row(current, SecretField.SHEETS_RANGE)
         assert row.origin_label == msg.VAULT_ORIGIN_OWN
         assert row.actions == OWN_ACTIONS
         assert current.local_state is LocalVaultState.READ
-    own: SecretValue | None = reread.own.get(SecretField.KEY_FORM_URL)
-    assert own is not None and own.reveal() == OWN_FORM_URL
+    own: SecretValue | None = reread.own.get(SecretField.SHEETS_RANGE)
+    assert own is not None and own.reveal() == OWN_RANGE
 
 
 def test_save_after_reset_removes_the_field_from_the_local_file(store: VaultStore) -> None:
@@ -370,11 +386,10 @@ def test_no_vault_value_shows_in_rows_or_notices(store: VaultStore) -> None:
     edited: KeysPanel = _applied(read.replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY))
     edited = _applied(edited.replace(SecretField.SHEETS_ID, OWN_SHEET_URL))
     edited = _applied(edited.replace(SecretField.SHEETS_RANGE, OWN_RANGE))
-    edited = _applied(edited.replace(SecretField.KEY_FORM_URL, OWN_FORM_URL))
     saved: KeysPanel = edited.save(store)
-    panels: tuple[KeysPanel, ...] = (read, edited, saved, saved.reset(SecretField.KEY_FORM_URL))
+    panels: tuple[KeysPanel, ...] = (read, edited, saved, saved.reset(SecretField.SHEETS_RANGE))
     values: set[str] = _all_secret_values(*panels)
-    assert len(values) == 2 * len(SecretField)       # поставочные и свои — все восемь в эталоне
+    assert len(values) == 2 * len(SecretField.current())       # поставочные и свои — все шесть в эталоне
     for panel in panels:
         for text in _visible_texts(panel):
             for value in values:
