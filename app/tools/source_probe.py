@@ -5,7 +5,8 @@
 
 Ссылка нормализуется так же, как ссылка ряда таблицы (`https://youtu.be/<id>`), и идёт тем же путём, что
 в боевом запуске: `YtDlpFetcher` и `PreviewDownloader`. Сейф пробнику не нужен: ссылки на видео — не секрет.
-Коды: 0 — все источники получены; 1 — есть отказы; 2 — нет tools\\yt-dlp.exe или не указано ни одной ссылки.
+Коды: 0 — все источники получены и язык каждого определился; 1 — есть отказы или язык не определился;
+2 — нет tools\\yt-dlp.exe или не указано ни одной ссылки.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from app.core.sheet_text import normalize_youtube_link
 from app.observability.logging_setup import close_logging, get_logger, setup_logging
 from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
 from app.sources.fetcher import MetadataFetcher, SourceFailureReason, SourceFetch
+from app.sources.language import LanguageDecision, LanguageResolver
 from app.sources.metadata import SourceMetadata
 from app.sources.preview import Preview, PreviewDownloader, PreviewResult
 from app.sources.ytdlp import YtDlpFetcher
@@ -36,8 +38,8 @@ DURATION_TEMPLATE: Final[str] = "{hours}:{minutes:02d}:{seconds:02d}"
 
 
 class ProbeExit(IntEnum):
-    OK = 0          # все источники получены
-    ERRORS = 1      # есть отказы
+    OK = 0          # все источники получены, язык каждого определился
+    ERRORS = 1      # есть отказы или неопределённый язык
     NOT_READY = 2   # нет yt-dlp.exe или нет ссылок — работать не с чем
 
 
@@ -61,10 +63,16 @@ def _duration(seconds: int | None) -> str:
 
 @dataclass(frozen=True)
 class SourceProbeReport:
-    """Что показать человеку об одном источнике: поля yt-dlp и обложка либо причина отказа."""
+    """Что показать человеку об одном источнике: поля yt-dlp, язык и обложка либо причина отказа."""
 
     fetched: SourceFetch
     preview: PreviewResult | None
+    decision: LanguageDecision | None       # None — язык не решался: данных видео нет
+
+    @property
+    def is_ok(self) -> bool:
+        """Источник годится так же, как в боевом запуске: данные видео есть и язык определился."""
+        return self.fetched.is_ok and self.decision is not None and self.decision.is_resolved
 
     @property
     def lines(self) -> tuple[str, ...]:
@@ -90,14 +98,27 @@ class SourceProbeReport:
 
     @property
     def _outcome_lines(self) -> tuple[str, ...]:
-        """Отказ — причина и подробность yt-dlp; удача — строка обложки."""
+        """Отказ — причина и подробность yt-dlp; удача — строка языка и строка обложки."""
         failure: SourceFailureReason | None = self.fetched.failure
         if failure is not None:
             return (
                 msg.SOURCE_PROBE_FAILED.format(reason=failure.human),
                 msg.SOURCE_PROBE_DETAIL.format(detail=self.fetched.detail),
             )
-        return (self._preview_line(self.preview),) if self.preview is not None else ()
+        preview: tuple[str, ...] = (self._preview_line(self.preview),) if self.preview is not None else ()
+        return (*self._language_lines, *preview)
+
+    @property
+    def _language_lines(self) -> tuple[str, ...]:
+        """Решённый язык и правило; не определился — строка об этом; не решался — ничего."""
+        if self.decision is None:
+            return ()
+        if self.decision.language is None:
+            return (msg.SOURCE_PROBE_SOURCE_LANGUAGE_NONE,)
+        line: str = msg.SOURCE_PROBE_SOURCE_LANGUAGE.format(
+            code=self.decision.language, source=self.decision.source.value
+        )
+        return (line,)
 
     @staticmethod
     def _preview_line(result: PreviewResult) -> str:
@@ -112,15 +133,21 @@ class SourceProbeReport:
 
 @dataclass(frozen=True)
 class SourceProbe:
-    """Один прогон пробника: получатель, скачивание обложек и вывод `say` — параметрами, в тестах свои."""
+    """Один прогон пробника: получатель, скачивание обложек, язык и вывод `say` — параметрами, в тестах свои."""
 
     fetcher: MetadataFetcher
     downloader: PreviewDownloader
+    resolver: LanguageResolver
     say: Callable[[str], None]
 
     @classmethod
     def from_paths(cls, paths: LivecraftPaths, say: Callable[[str], None]) -> SourceProbe:
-        return cls(fetcher=YtDlpFetcher.from_paths(paths), downloader=PreviewDownloader(), say=say)
+        return cls(
+            fetcher=YtDlpFetcher.from_paths(paths),
+            downloader=PreviewDownloader(),
+            resolver=LanguageResolver.from_resources(),
+            say=say,
+        )
 
     def run(self, raw_links: Sequence[str]) -> int:
         self.say(msg.SOURCE_PROBE_TITLE)
@@ -129,16 +156,16 @@ class SourceProbe:
             return int(ProbeExit.NOT_READY)
         failed: int = 0
         for raw in raw_links:
-            outcome: SourceFetch | None = self._probe(raw)
-            if outcome is not None and outcome.failure is SourceFailureReason.TOOL_MISSING:
+            report: SourceProbeReport | None = self._probe(raw)
+            if report is not None and report.fetched.failure is SourceFailureReason.TOOL_MISSING:
                 return int(ProbeExit.NOT_READY)
-            if outcome is None or not outcome.is_ok:
+            if report is None or not report.is_ok:
                 failed += 1
         self.say(msg.SOURCE_PROBE_SUMMARY.format(total=len(raw_links), ok=len(raw_links) - failed, failed=failed))
         return int(ProbeExit.ERRORS if failed else ProbeExit.OK)
 
-    def _probe(self, raw: str) -> SourceFetch | None:
-        """Одна ссылка: нормализовать, спросить yt-dlp, скачать обложку, напечатать; не YouTube — None."""
+    def _probe(self, raw: str) -> SourceProbeReport | None:
+        """Одна ссылка: нормализовать, спросить yt-dlp, решить язык, скачать обложку, напечатать; не YouTube — None."""
         link: str | None = normalize_youtube_link(raw)
         if link is None:
             LOGGER.warning("source_probe_bad_link raw=%r", raw)
@@ -146,12 +173,15 @@ class SourceProbe:
             return None
         fetched: SourceFetch = self.fetcher.fetch(link)
         preview: PreviewResult | None = None
+        decision: LanguageDecision | None = None
         if fetched.is_ok and fetched.metadata is not None:
+            decision = self.resolver.resolve(fetched.metadata)
             preview = self.downloader.preview(fetched.metadata.thumbnail_url)
         LOGGER.info("source_probe link=%s %s", link, fetched.log_line)
-        for line in SourceProbeReport(fetched=fetched, preview=preview).lines:
+        report: SourceProbeReport = SourceProbeReport(fetched=fetched, preview=preview, decision=decision)
+        for line in report.lines:
             self.say(line)
-        return fetched
+        return report
 
 
 def _say(text: str) -> None:

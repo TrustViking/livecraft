@@ -26,6 +26,7 @@ class SourceFailureReason(str, Enum):
     BAD_OUTPUT = "bad_output"        # ответ yt-dlp — не объект JSON
     NO_TITLE = "no_title"            # ответ разобран, но названия нет
     FAILED = "failed"                # прочий отказ yt-dlp
+    NO_LANGUAGE = "no_language"      # язык видео не определился; yt-dlp эту причину не выдаёт — её ставит SourceVideo
 
     @property
     def human(self) -> str:

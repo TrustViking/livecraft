@@ -10,6 +10,7 @@ from PIL import Image
 
 from app.paths import LivecraftPaths, ROOT_ENV_VAR
 from app.sources.fetcher import SourceFailureReason, SourceFetch
+from app.sources.language import LanguageResolver
 from app.sources.metadata import SourceMetadata
 from app.sources.preview import PreviewDownloader, PreviewProblem
 from app.tools import source_probe
@@ -20,6 +21,7 @@ DATA_DIR: Path = Path(__file__).resolve().parent / "data" / "ytdlp"
 LINK: str = "https://youtu.be/dQw4w9WgXcQ"
 WATCH_LINK: str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=10"
 OTHER_LINK: str = "https://youtu.be/aB3_-xYz012"
+RESOLVER: LanguageResolver = LanguageResolver.from_resources()
 
 
 def load_info(name: str) -> dict[str, Any]:
@@ -65,7 +67,7 @@ def ok_fetch(link: str, name: str = "video_full.json") -> SourceFetch:
 def run_probe(fetcher: _FakeFetcher, get: _FakeGet, links: list[str]) -> tuple[int, list[str]]:
     lines: list[str] = []
     downloader: PreviewDownloader = PreviewDownloader(session_get=get, sleep=lambda _: None)
-    code: int = SourceProbe(fetcher=fetcher, downloader=downloader, say=lines.append).run(links)
+    code: int = SourceProbe(fetcher=fetcher, downloader=downloader, resolver=RESOLVER, say=lines.append).run(links)
     return code, lines
 
 
@@ -85,7 +87,10 @@ def test_probe_prints_the_fields_and_the_preview() -> None:
     assert msg.SOURCE_PROBE_AUDIO.format(value="uk, en") in lines
     assert msg.SOURCE_PROBE_SUBTITLES.format(value="uk, en") in lines
     assert msg.SOURCE_PROBE_AUTO_CAPTIONS.format(value="uk, ru, de") in lines
+    language: str = msg.SOURCE_PROBE_SOURCE_LANGUAGE.format(code="uk", source="metadata_arbitration_fallback")
+    assert language in lines
     assert any(line.startswith("  обложка: 1280×720, ") and "годится" in line for line in lines)
+    assert lines.index(language) < len(lines) - 2                  # язык — перед строкой обложки и итогом
     assert lines[-1] == msg.SOURCE_PROBE_SUMMARY.format(total=1, ok=1, failed=0)
 
 
@@ -116,6 +121,18 @@ def test_a_refusal_is_code_1_and_other_links_still_go() -> None:
     assert msg.SOURCE_PROBE_FAILED.format(reason=SourceFailureReason.PRIVATE.human) in lines
     assert msg.SOURCE_PROBE_DETAIL.format(detail="ERROR: Private video") in lines
     assert lines[-1] == msg.SOURCE_PROBE_SUMMARY.format(total=2, ok=1, failed=1)
+    assert sum(line.startswith("  язык источника:") for line in lines) == 1   # у отказа языка нет
+
+
+def test_undetected_language_is_named_and_counts_as_a_refusal() -> None:
+    info: dict[str, Any] = load_info("video_full.json") | {
+        "language": None, "title": "Эфир", "description": "", "formats": [], "automatic_captions": {},
+    }
+    fetch: SourceFetch = SourceFetch.from_metadata(LINK, SourceMetadata.from_ytdlp(LINK, info))
+    code, lines = run_probe(_FakeFetcher({LINK: fetch}), _FakeGet(_Response(200, png_bytes((64, 36)))), [LINK])
+    assert code == ProbeExit.ERRORS
+    assert msg.SOURCE_PROBE_SOURCE_LANGUAGE_NONE in lines
+    assert lines[-1] == msg.SOURCE_PROBE_SUMMARY.format(total=1, ok=0, failed=1)
 
 
 def test_a_link_that_is_not_youtube_is_a_refusal() -> None:
@@ -134,7 +151,9 @@ def test_no_links_is_code_2() -> None:
 
 def test_without_ytdlp_exe_is_code_2(livecraft_paths: LivecraftPaths) -> None:
     lines: list[str] = []
-    code: int = SourceProbe.from_paths(livecraft_paths, say=lines.append).run([LINK, OTHER_LINK])
+    probe: SourceProbe = SourceProbe.from_paths(livecraft_paths, say=lines.append)
+    assert probe.resolver.detector.service_hints == RESOLVER.detector.service_hints
+    code: int = probe.run([LINK, OTHER_LINK])
     assert code == ProbeExit.NOT_READY
     assert msg.SOURCE_PROBE_FAILED.format(reason=SourceFailureReason.TOOL_MISSING.human) in lines
     assert msg.SOURCE_PROBE_SOURCE.format(link=OTHER_LINK) not in lines   # дальше не идём

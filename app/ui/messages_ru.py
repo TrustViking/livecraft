@@ -412,6 +412,7 @@ SOURCE_FAILURE_REASONS: Final[dict[str, str]] = {
     "bad_output": "yt-dlp вернул ответ, который не разбирается",
     "no_title": "у видео нет названия",
     "failed": "yt-dlp не смог получить данные видео — подробности в логе",
+    "no_language": "язык видео не определился ни по данным YouTube, ни по названию и описанию",
 }
 SOURCE_NO_TITLE: Final[str] = "У видео нет названия — без него эфиру нечего дать в название."
 PREVIEW_PROBLEMS: Final[dict[str, str]] = {
@@ -435,6 +436,8 @@ SOURCE_PROBE_LANGUAGE: Final[str] = "  язык видео: {video}; язык к
 SOURCE_PROBE_AUDIO: Final[str] = "  языки аудио: {value}"
 SOURCE_PROBE_SUBTITLES: Final[str] = "  субтитры: {value}"
 SOURCE_PROBE_AUTO_CAPTIONS: Final[str] = "  автосубтитры: {value}"
+SOURCE_PROBE_SOURCE_LANGUAGE: Final[str] = "  язык источника: {code} ({source})"
+SOURCE_PROBE_SOURCE_LANGUAGE_NONE: Final[str] = "  язык источника: не определился"
 SOURCE_PROBE_MORE: Final[str] = "{shown} … и ещё {more}"
 SOURCE_PROBE_NONE: Final[str] = "нет"
 SOURCE_PROBE_PREVIEW_OK: Final[str] = "  обложка: {width}×{height}, {kilobytes} КБ — годится для YouTube"

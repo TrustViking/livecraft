@@ -20,6 +20,7 @@ from app.paths import LivecraftPaths
 from app.sheets.plan import SheetRow
 from app.sheets.rows import PlanRow, RowSkipReason
 from app.sources.fetcher import MetadataFetcher, SourceFailureReason, SourceFetch
+from app.sources.language import LanguageDecision, LanguageResolver, LanguageSource
 from app.sources.metadata import SourceMetadata
 from app.sources.preview import Preview, PreviewDownloader, PreviewProblem, PreviewResult
 from app.sources.video import SourceCatalog, SourceTally, SourceVideo
@@ -33,7 +34,10 @@ LINK: str = "https://youtu.be/dQw4w9WgXcQ"
 OTHER_LINK: str = "https://youtu.be/aB3_-xYz012"
 THIRD_LINK: str = "https://youtu.be/Zx9_8yW7v6U"
 THUMBNAIL: str = "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"
-COOKIES_TEXT: bytes = b"# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tvalue\n"
+RESOLVER: LanguageResolver = LanguageResolver.from_resources()
+# video_full.json: язык видео и звук — uk, название и описание langdetect читает как ru → ничья арбитров
+FULL_LANGUAGE: str = "language=uk language_source=metadata_arbitration_fallback"
+COOKIES_TEXT: bytes =b"# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tvalue\n"
 
 
 def load_info(name: str) -> dict[str, Any]:
@@ -538,8 +542,21 @@ def ok_fetch(link: str, info_name: str = "video_full.json") -> SourceFetch:
     return SourceFetch.from_metadata(link, SourceMetadata.from_ytdlp(link, load_info(info_name)))
 
 
-def catalog_for(fetcher: MetadataFetcher, get: _FakeGet) -> SourceCatalog:
-    return SourceCatalog(fetcher=fetcher, downloader=downloader_for(get, []))
+def catalog_for(fetcher: MetadataFetcher, get: _FakeGet, resolver: LanguageResolver = RESOLVER) -> SourceCatalog:
+    return SourceCatalog(fetcher=fetcher, downloader=downloader_for(get, []), resolver=resolver)
+
+
+def language_decisions(log: _Collector) -> list[str]:
+    """Строки решений языка: LanguageResolver пишет одну на каждое решение."""
+    return [line for line in log.messages() if line.startswith("language_decision ")]
+
+
+def no_language_fetch(link: str) -> SourceFetch:
+    """Видео, язык которого не определить: нет языка видео, короткие название и описание."""
+    info: dict[str, Any] = load_info("video_full.json") | {
+        "language": None, "title": "Эфир", "description": "", "formats": [], "automatic_captions": {},
+    }
+    return SourceFetch.from_metadata(link, SourceMetadata.from_ytdlp(link, info))
 
 
 def test_fake_fetcher_is_a_metadata_fetcher() -> None:
@@ -547,20 +564,25 @@ def test_fake_fetcher_is_a_metadata_fetcher() -> None:
     assert callable(fetcher.fetch)
 
 
-def test_two_rows_with_one_link_are_one_fetch_and_one_download(log: _Collector) -> None:
+def test_two_rows_with_one_link_are_one_fetch_one_language_and_one_download(log: _Collector) -> None:
     fetcher: _FakeFetcher = _FakeFetcher({LINK: ok_fetch(LINK)})
     get: _FakeGet = _FakeGet(_Response(200, png_bytes()))
     rows: tuple[PlanRow, ...] = (admitted_row(2, LINK), admitted_row(5, LINK))
-    videos: tuple[SourceVideo, ...] = catalog_for(fetcher, get).prepare(rows)
+    catalog: SourceCatalog = catalog_for(fetcher, get)
+    videos: tuple[SourceVideo, ...] = catalog.prepare(rows)
     assert [video.row.row_number for video in videos] == [2, 5]
     assert all(video.is_ready and video.preview is not None for video in videos)
     assert fetcher.calls == [LINK]
     assert len(get.calls) == 1
     assert videos[0].preview is videos[1].preview
+    assert videos[0].language is videos[1].language
+    assert len(language_decisions(log)) == 1
+    assert list(catalog.languages) == [LINK]
     info: list[str] = log.messages(logging.INFO)
-    assert f"source row=2 link={LINK} ok preview=ok" in info
-    assert f"source row=5 link={LINK} ok preview=ok" in info
+    assert f"source row=2 link={LINK} ok preview=ok {FULL_LANGUAGE}" in info
+    assert f"source row=5 link={LINK} ok preview=ok {FULL_LANGUAGE}" in info
     assert any("sources_prepared sources=2 links=1 ready=2 failed=0" in line for line in info)
+    assert any(line.endswith("languages=uk:2") for line in info)
 
 
 def test_skipped_row_is_not_processed() -> None:
@@ -577,16 +599,19 @@ def test_one_failed_source_does_not_stop_the_next(log: _Collector) -> None:
     failed: SourceFetch = SourceFetch.failed(OTHER_LINK, SourceFailureReason.PRIVATE, "ERROR: Private video")
     fetcher: _FakeFetcher = _FakeFetcher({OTHER_LINK: failed, LINK: ok_fetch(LINK)})
     get: _FakeGet = _FakeGet(_Response(200, png_bytes()))
-    videos: tuple[SourceVideo, ...] = catalog_for(fetcher, get).prepare(
-        (admitted_row(2, OTHER_LINK), admitted_row(3, LINK))
-    )
+    catalog: SourceCatalog = catalog_for(fetcher, get)
+    videos: tuple[SourceVideo, ...] = catalog.prepare((admitted_row(2, OTHER_LINK), admitted_row(3, LINK)))
     assert [video.is_ready for video in videos] == [False, True]
     assert videos[0].failure is SourceFailureReason.PRIVATE
     assert videos[0].refusal is SourceFailureReason.PRIVATE
     assert videos[0].preview is None and videos[0].preview_problem is None
+    assert videos[0].language is None                # язык отказавшего источника не решаем
+    assert list(catalog.languages) == [LINK]
     assert len(get.calls) == 1                       # обложку отказавшего источника не качаем
     warnings: list[str] = log.messages(logging.WARNING)
-    assert any(f"row=2 link={OTHER_LINK} reason=private" in line for line in warnings)
+    assert any(
+        f"row=2 link={OTHER_LINK} reason=private preview=- language=- language_source=-" in line for line in warnings
+    )
     assert any("failed=1 failures=private:1" in line for line in log.messages(logging.INFO))
 
 
@@ -598,10 +623,10 @@ def test_source_without_preview_is_still_ready(log: _Collector) -> None:
     assert videos[0].preview is None
     assert videos[0].preview_problem is PreviewProblem.NOT_FOUND
     assert SourceTally(videos).no_preview == 1
-    assert f"source row=2 link={LINK} ok preview=not_found" in log.messages(logging.INFO)
+    assert f"source row=2 link={LINK} ok preview=not_found {FULL_LANGUAGE}" in log.messages(logging.INFO)
 
 
-def test_source_without_title_is_not_ready_and_gets_no_preview() -> None:
+def test_source_without_title_is_not_ready_and_gets_no_language_and_no_preview(log: _Collector) -> None:
     info: dict[str, Any] = load_info("video_full.json") | {"title": ""}
     no_title: SourceFetch = SourceFetch.from_metadata(LINK, SourceMetadata.from_ytdlp(LINK, info))
     get: _FakeGet = _FakeGet()
@@ -611,28 +636,74 @@ def test_source_without_title_is_not_ready_and_gets_no_preview() -> None:
     assert not videos[0].is_ready
     assert videos[0].metadata is not None
     assert videos[0].refusal is SourceFailureReason.NO_TITLE
+    assert videos[0].language is None
+    assert language_decisions(log) == []
     assert get.calls == []
 
 
-def test_tally_counts_by_reason() -> None:
+def test_source_whose_language_is_undetected_is_not_ready(log: _Collector) -> None:
+    get: _FakeGet = _FakeGet()
+    videos: tuple[SourceVideo, ...] = catalog_for(_FakeFetcher({LINK: no_language_fetch(LINK)}), get).prepare(
+        (admitted_row(2, LINK),)
+    )
+    video: SourceVideo = videos[0]
+    assert video.failure is None and video.metadata is not None and video.metadata.problem is None
+    assert video.language is not None and not video.language.is_resolved
+    assert video.language.source is LanguageSource.UNDETECTED
+    assert video.language_code is None
+    assert not video.is_ready
+    assert video.refusal is SourceFailureReason.NO_LANGUAGE
+    assert get.calls == []                           # источник дальше не идёт — обложка ему не нужна
+    warnings: list[str] = log.messages(logging.WARNING)
+    assert any(line.startswith(f"language_decision url={LINK} final_language=unknown") for line in warnings)
+    assert any(
+        f"row=2 link={LINK} reason=no_language preview=- language=- language_source=undetected" in line
+        for line in warnings
+    )
+    assert any("failures=no_language:1" in line and line.endswith("languages=-") for line in log.messages(logging.INFO))
+
+
+def test_refusal_order_is_ytdlp_then_title_then_language() -> None:
+    undetected: LanguageDecision = RESOLVER.resolve(no_language_fetch(LINK).metadata)   # type: ignore[arg-type]
+    failed: SourceFetch = SourceFetch.failed(LINK, SourceFailureReason.TIMEOUT)
+    info: dict[str, Any] = load_info("video_full.json") | {"title": ""}
+    no_title: SourceFetch = SourceFetch.from_metadata(LINK, SourceMetadata.from_ytdlp(LINK, info))
+    row: PlanRow = admitted_row(2, LINK)
+    assert SourceVideo.of(row, failed, None, undetected).refusal is SourceFailureReason.TIMEOUT
+    assert SourceVideo.of(row, no_title, None, undetected).refusal is SourceFailureReason.NO_TITLE
+    assert SourceVideo.of(row, no_language_fetch(LINK), None, undetected).refusal is SourceFailureReason.NO_LANGUAGE
+    assert SourceVideo.of(row, no_language_fetch(LINK), None, None).refusal is SourceFailureReason.NO_LANGUAGE
+
+
+def test_tally_counts_by_reason_and_by_language() -> None:
     failed: SourceFetch = SourceFetch.failed(OTHER_LINK, SourceFailureReason.UNAVAILABLE)
+    uk: LanguageDecision = RESOLVER.resolve(ok_fetch(LINK).metadata)   # type: ignore[arg-type]
+    ru: LanguageDecision = RESOLVER.resolve(ok_fetch(OTHER_LINK, "video_no_thumbnail.json").metadata)   # type: ignore[arg-type]
+    en: LanguageDecision = RESOLVER.resolve(ok_fetch(THIRD_LINK, "video_no_description.json").metadata)   # type: ignore[arg-type]
     videos: tuple[SourceVideo, ...] = (
-        SourceVideo.of(admitted_row(2, OTHER_LINK), failed, None),
-        SourceVideo.of(admitted_row(3, OTHER_LINK), failed, None),
-        SourceVideo.of(admitted_row(4, LINK), ok_fetch(LINK), PreviewResult.failed(PreviewProblem.NO_URL)),
+        SourceVideo.of(admitted_row(2, OTHER_LINK), failed, None, None),
+        SourceVideo.of(admitted_row(3, OTHER_LINK), failed, None, None),
+        SourceVideo.of(admitted_row(4, LINK), ok_fetch(LINK), PreviewResult.failed(PreviewProblem.NO_URL), uk),
+        SourceVideo.of(admitted_row(5, THIRD_LINK), ok_fetch(THIRD_LINK, "video_no_description.json"), None, en),
+        SourceVideo.of(admitted_row(6, OTHER_LINK), ok_fetch(OTHER_LINK, "video_no_thumbnail.json"), None, ru),
+        SourceVideo.of(admitted_row(7, LINK), ok_fetch(LINK), None, uk),
     )
     tally: SourceTally = SourceTally(videos)
-    assert tally.ready == 1
-    assert tally.no_preview == 1
+    assert (uk.language, ru.language, en.language) == ("uk", "ru", "en")
+    assert tally.ready == 4
+    assert tally.no_preview == 4
     assert tally.failures == {SourceFailureReason.UNAVAILABLE: 2}
+    assert list(tally.languages.items()) == [("uk", 2), ("en", 1), ("ru", 1)]
     assert tally.log_line == (
-        "sources=3 links=2 ready=1 failed=2 failures=unavailable:2 no_preview=1"
+        "sources=6 links=3 ready=4 failed=2 failures=unavailable:2 no_preview=4 languages=uk:2,en:1,ru:1"
     )
 
 
-def test_catalog_from_paths_uses_ytdlp(livecraft_paths: LivecraftPaths) -> None:
+def test_catalog_from_paths_uses_ytdlp_and_the_resource_resolver(livecraft_paths: LivecraftPaths) -> None:
     catalog: SourceCatalog = SourceCatalog.from_paths(livecraft_paths)
     assert isinstance(catalog.fetcher, YtDlpFetcher)
     assert catalog.fetcher.ytdlp_exe == livecraft_paths.ytdlp_exe
+    assert catalog.resolver.detector.service_hints == RESOLVER.detector.service_hints
     videos: tuple[SourceVideo, ...] = catalog.prepare((admitted_row(2, LINK),))
     assert videos[0].failure is SourceFailureReason.TOOL_MISSING
+    assert videos[0].language is None
