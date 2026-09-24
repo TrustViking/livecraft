@@ -14,8 +14,10 @@ import pytest
 
 from app.config.loader import load_channels, load_settings
 from app.paths import LivecraftPaths
+from app.secretsafe.store import VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.setup.app import SELECTED, TAB_STYLE, THEME, SetupWindow
+from app.setup.fields.language_choice import LanguageCatalog
 from app.setup.panels.keys_panel import KeysPanel
 from app.setup.readiness import Readiness
 from app.setup.tabs import (
@@ -26,6 +28,7 @@ from app.setup.tabs import (
     KEYCODE_C,
     KEYCODE_V,
     KEYCODE_X,
+    PAD,
     PASTE_EVENT,
     EditShortcut,
     EditShortcuts,
@@ -109,8 +112,22 @@ def _type(entry: ttk.Entry, text: str) -> None:
     entry.insert(0, text)
 
 
+def _pick_languages(tab: ChannelsTab, *codes: str) -> None:
+    """Выбор языков так, как это делает человек: поиск по коду и щелчок по строке списка."""
+    for code in codes:
+        tab.language_search.set(code)
+        (position,) = [index for index, option in enumerate(tab.visible_languages) if option.code == code]
+        tab.language_list.selection_set(position)
+        tab.pick_languages()
+    tab.language_search.set("")
+
+
 def _fill_channel(tab: ChannelsTab, **values: str) -> None:
+    """Поля канала; языки — строкой кодов через запятую, они выбираются в списке."""
     for name, value in values.items():
+        if name == "languages":
+            _pick_languages(tab, *(code.strip() for code in value.split(",")))
+            continue
         widget: ttk.Entry = tab.inputs[name]
         if isinstance(widget, ttk.Combobox):
             widget.set(value)
@@ -161,8 +178,8 @@ def test_a_good_own_key_becomes_own_and_clears_the_input(window: SetupWindow) ->
     assert view.origin.cget("text") == msg.VAULT_ORIGIN_OWN
     assert view.entry.get() == ""
     assert view.problem.text == ""
-    assert tab.is_dirty
-    assert window.is_dirty
+    assert not tab.is_dirty                    # «Сохранить значение» записало сейф сразу
+    assert not window.is_dirty
 
 
 def test_a_bad_own_key_shows_the_problem_and_keeps_the_input(window: SetupWindow) -> None:
@@ -179,15 +196,68 @@ def test_a_bad_own_key_shows_the_problem_and_keeps_the_input(window: SetupWindow
     assert not tab.is_dirty
 
 
-def test_saving_the_keys_writes_the_own_vault(window: SetupWindow, ready_paths: LivecraftPaths) -> None:
+def _own_on_disk(paths: LivecraftPaths, field: SecretField) -> str | None:
+    """Своё значение поля так, как его прочитает следующий запуск; значение раскрывает тест, а не окно."""
+    secret: SecretValue | None = VaultStore.open(paths).load().own.get(field)
+    return None if secret is None else secret.reveal()
+
+
+def test_accepting_a_value_writes_the_own_vault_at_once(window: SetupWindow, ready_paths: LivecraftPaths) -> None:
     tab: KeysTab = window.keys_tab
+    assert not ready_paths.vault_local_file.exists()
     view: KeyRowView = _row(tab, SecretField.OPENAI_API_KEY)
     _type(view.entry, OWN_OPENAI_KEY)
     view.accept_button.invoke()
-    tab.save_button.invoke()
     assert ready_paths.vault_local_file.is_file()
+    assert _own_on_disk(ready_paths, SecretField.OPENAI_API_KEY) == OWN_OPENAI_KEY
     assert not tab.is_dirty
     assert view.reset_button.winfo_manager() == "grid"        # своё значение можно сбросить к поставке
+
+
+def test_a_second_value_changes_the_file_again(window: SetupWindow, ready_paths: LivecraftPaths) -> None:
+    _accept(window, SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY)
+    before: bytes = ready_paths.vault_local_file.read_bytes()
+    _accept(window, SecretField.SHEETS_RANGE, OWN_RANGE)
+    assert ready_paths.vault_local_file.read_bytes() != before
+    assert _own_on_disk(ready_paths, SecretField.SHEETS_RANGE) == OWN_RANGE
+    assert _own_on_disk(ready_paths, SecretField.OPENAI_API_KEY) == OWN_OPENAI_KEY
+
+
+def test_the_keys_tab_has_no_common_save_button(window: SetupWindow) -> None:
+    tab: KeysTab = window.keys_tab
+    assert not hasattr(tab, "save_button")
+    buttons: list[str] = [str(widget.cget("text")) for widget in _widgets(tab.frame) if isinstance(widget, ttk.Button)]
+    assert msg.SETUP_BUTTON_SAVE not in buttons
+    assert buttons.count(msg.SETUP_KEYS_BUTTON_ACCEPT) == len(SecretField.current())
+
+
+def test_deleting_the_own_value_is_written_at_once(window: SetupWindow, ready_paths: LivecraftPaths) -> None:
+    view: KeyRowView = _accept(window, SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY)
+    view.reset_button.invoke()
+    assert _own_on_disk(ready_paths, SecretField.OPENAI_API_KEY) is None
+    assert view.origin.cget("text") == msg.VAULT_ORIGIN_SUPPLIED
+    assert not window.keys_tab.is_dirty
+
+
+def test_a_failed_write_keeps_the_input_and_leaves_nothing_unsaved(
+    window: SetupWindow, ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Запись не удалась: диалог, вкладка на прочитанном с диска, введённое — в поле для повтора."""
+    shown: list[str] = []
+    monkeypatch.setattr(messagebox, "showerror", lambda title, message, **_options: shown.append(message))
+
+    def _refuse(self: VaultStore, own: object) -> None:
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(VaultStore, "save_local", _refuse)
+    view: KeyRowView = _row(window.keys_tab, SecretField.OPENAI_API_KEY)
+    _type(view.entry, OWN_OPENAI_KEY)
+    view.accept_button.invoke()
+    assert shown == [msg.SETUP_KEYS_SAVE_FAILED_OS]
+    assert view.entry.get() == OWN_OPENAI_KEY
+    assert view.origin.cget("text") == msg.VAULT_ORIGIN_SUPPLIED
+    assert not window.keys_tab.is_dirty
+    assert not ready_paths.vault_local_file.exists()
 
 
 # --- «Каналы YouTube»
@@ -208,9 +278,10 @@ def test_a_channel_added_through_the_form_appears_in_the_table(window: SetupWind
     assert tab.is_dirty
 
 
-def test_uppercase_languages_show_the_problem_with_the_field_label(window: SetupWindow) -> None:
+def test_a_channel_without_languages_shows_the_problem_with_the_field_label(window: SetupWindow) -> None:
     tab: ChannelsTab = window.channels_tab
-    _fill_channel(tab, account_name="Канал HU", handle="@kanal_hu", google_account="owner@gmail.com", languages="UK")
+    _fill_channel(tab, account_name="Канал HU", handle="@kanal_hu", google_account="owner@gmail.com")
+    assert tab.selection.codes == ()
     tab.buttons["add"].invoke()
     assert tab.edit_problem.text == msg.SETUP_PROBLEM_LINE.format(
         label=msg.SETUP_CHANNEL_FIELD_LABELS["languages"], text=msg.CONFIG_PROBLEM_LANGUAGES
@@ -387,6 +458,14 @@ def test_closing_a_clean_window_does_not_ask(window: SetupWindow, monkeypatch: p
     assert window.is_closed
 
 
+def test_closing_after_an_accepted_key_does_not_ask(window: SetupWindow, monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[str] = _answer(monkeypatch, True)
+    _accept(window, SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY)
+    window.request_close()
+    assert asked == []
+    assert window.is_closed
+
+
 def test_the_close_button_of_the_window_goes_through_the_question(window: SetupWindow) -> None:
     assert str(window.root.protocol("WM_DELETE_WINDOW")).endswith("request_close")
 
@@ -400,7 +479,7 @@ def test_a_broken_vault_file_is_named_on_the_keys_tab(
         tab: KeysTab = window.keys_tab
         assert tab.panel is None
         assert ready_paths.vault_local_file.name in tab.notice.cget("text")
-        assert tab.save_button.instate(["disabled"])
+        assert tab.rows_frame.winfo_manager() == ""         # строк с кнопками записи нет
         assert not tab.is_dirty
 
 
@@ -492,9 +571,8 @@ def test_reset_hides_the_value(window: SetupWindow) -> None:
     assert view.reveal_button.grid_info() == {}
 
 
-def test_save_hides_the_value(window: SetupWindow) -> None:
-    view: KeyRowView = _revealed_key(window)
-    window.keys_tab.save_button.invoke()
+def test_the_written_own_value_keeps_its_reveal_button(window: SetupWindow) -> None:
+    view: KeyRowView = _accept(window, SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY)
     _assert_masked(view, _own_mask())
     assert view.reveal_button.grid_info() != {}      # после записи поле по-прежнему своё
 
@@ -513,8 +591,6 @@ def test_the_revealed_value_goes_only_to_its_own_label(
     """Показанное значение — только в подписи своей строки: не в полях ввода, не в строке готовности, не в логе."""
     with caplog.at_level(logging.DEBUG):
         view: KeyRowView = _revealed_key(window)
-        window.keys_tab.save_button.invoke()
-        view.reveal_button.invoke()
     holders: list[tk.Misc] = []
     for widget in _widgets(window.root):
         if isinstance(widget, (ttk.Entry, tk.Entry)):     # ttk.Combobox — тоже Entry
@@ -720,7 +796,7 @@ def test_every_shortcut_letter_is_bound_by_tk_to_its_event(window: SetupWindow) 
 
 
 def test_the_shortcuts_leave_non_input_widgets_alone(window: SetupWindow) -> None:
-    button: ttk.Button = window.keys_tab.save_button
+    button: ttk.Button = window.settings_tab.save_button
     assert window.edit_shortcuts.handle(_KeyEvent(button, KEYCODE_V, "Cyrillic_em")) is None
 
 
@@ -796,3 +872,108 @@ def test_the_reset_button_without_supply_deletes_the_own_value(bare_window: Setu
 
 def test_the_keys_notice_says_own_values_stay_on_this_computer(window: SetupWindow) -> None:
     assert "Свои значения и их сброс касаются только этого компьютера." in str(window.keys_tab.notice.cget("text"))
+
+
+# --- ряды кнопок по центру (задача 3.7a)
+
+
+@pytest.mark.parametrize("tab_name", ["channels_tab", "settings_tab"])
+def test_the_button_row_is_centred_without_stretching(window: SetupWindow, tab_name: str) -> None:
+    frame: ttk.Frame = getattr(window, tab_name).buttons_frame
+    info: dict[str, object] = frame.pack_info()
+    assert (info["anchor"], info["fill"], info["side"]) == ("center", "none", "top")
+    assert info["pady"] == PAD
+    for button in frame.winfo_children():
+        assert button.pack_info()["fill"] == "none"
+
+
+def test_the_save_buttons_live_in_the_centred_rows(window: SetupWindow) -> None:
+    assert window.settings_tab.save_button.master is window.settings_tab.buttons_frame
+    assert window.channels_tab.buttons["save"].master is window.channels_tab.buttons_frame
+
+
+# --- языки канала из списка (задача 3.7a)
+
+
+def test_two_languages_picked_in_the_list_go_to_the_draft_as_codes(window: SetupWindow) -> None:
+    tab: ChannelsTab = window.channels_tab
+    _pick_languages(tab, "uk", "hu")
+    assert tab.form_draft.languages == "uk, hu"
+    assert tab.form_draft.language_codes == ["uk", "hu"]
+    assert tab.language_selected.cget("text") == msg.SETUP_LANGUAGE_SELECTED.format(names="украинский, венгерский")
+
+
+def test_the_search_filter_keeps_the_selection(window: SetupWindow) -> None:
+    tab: ChannelsTab = window.channels_tab
+    _pick_languages(tab, "uk")
+    tab.language_search.set("венг")
+    assert [option.code for option in tab.visible_languages] == ["hu"]
+    tab.language_list.selection_set(0)
+    tab.pick_languages()
+    assert tab.selection.codes == ("uk", "hu")
+    tab.language_search.set("")
+    selected: list[str] = [tab.visible_languages[index].code for index in tab.language_list.curselection()]
+    assert selected == ["uk", "hu"]
+
+
+def test_unselecting_a_visible_language_keeps_the_hidden_ones(window: SetupWindow) -> None:
+    tab: ChannelsTab = window.channels_tab
+    _pick_languages(tab, "uk", "hu")
+    tab.language_search.set("hu")
+    tab.language_list.selection_clear(0, tk.END)
+    tab.pick_languages()
+    assert tab.selection.codes == ("uk",)
+
+
+def test_the_form_languages_come_first_and_marked(window: SetupWindow) -> None:
+    tab: ChannelsTab = window.channels_tab
+    form_codes: tuple[str, ...] = tuple(load_settings(window.paths.config_file).form.values["language"])
+    labels: tuple[str, ...] = tab.language_list.get(0, len(form_codes) - 1)
+    assert [option.code for option in tab.visible_languages[: len(form_codes)]] == list(form_codes)
+    assert all(label.endswith("— есть в форме") for label in labels)
+    assert tab.language_list.size() == len(tab.catalog.options)
+
+
+def test_a_language_not_in_the_form_is_named_at_once(window: SetupWindow) -> None:
+    tab: ChannelsTab = window.channels_tab
+    _pick_languages(tab, "uk")
+    assert tab.language_warning.text == ""
+    _pick_languages(tab, "de")
+    assert tab.language_warning.text == msg.SETUP_LANGUAGE_NOT_IN_FORM.format(names="немецкий")
+
+
+def test_a_language_not_in_the_form_does_not_stop_saving(window: SetupWindow, ready_paths: LivecraftPaths) -> None:
+    tab: ChannelsTab = window.channels_tab
+    _fill_channel(tab, account_name="Канал DE", handle="@kanal_de", google_account="owner@gmail.com", languages="de")
+    tab.buttons["add"].invoke()
+    tab.buttons["save"].invoke()
+    assert tab.edit_problem.text == ""
+    assert load_channels(ready_paths.channels_file)[-1].languages == ("de",)
+
+
+def test_the_table_shows_language_names(window: SetupWindow) -> None:
+    tab: ChannelsTab = window.channels_tab
+    column: int = list(tab.tree.cget("columns")).index("languages")
+    assert tab.tree.item("0", "values")[column] == "украинский"
+    assert tab.tree.item("1", "values")[column] == "русский, английский"
+
+
+def test_selecting_a_row_marks_its_languages_in_the_list(window: SetupWindow) -> None:
+    tab: ChannelsTab = window.channels_tab
+    tab.tree.selection_set("1")
+    tab.fill_from_selection()
+    assert tab.selection.codes == ("ru", "en")
+    selected: list[str] = [tab.visible_languages[index].code for index in tab.language_list.curselection()]
+    assert sorted(selected) == ["en", "ru"]
+
+
+def test_without_readable_settings_the_list_is_full_and_unmarked(
+    ready_paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ready_paths.config_file.write_text("{", encoding="utf-8")
+    for window in _open(ready_paths, capsys):
+        tab: ChannelsTab = window.channels_tab
+        assert not tab.catalog.has_form
+        assert tab.language_list.size() == len(LanguageCatalog.load(()).options)
+        _pick_languages(tab, "de")
+        assert tab.language_warning.text == ""

@@ -4,6 +4,7 @@
 открытое поле: она не секрет, §14 решение 15), флажок — ttk.Checkbutton, уровень
 рассуждений и тариф — выбор из перечней модели. «Сохранить» отдаёт черновик модели (`apply`) и, если модель
 его приняла, просит её записать livecraft.json; отказ — красная строка с подписью поля. Своих правил нет.
+Кнопка — в ряду по центру окна, как на вкладке каналов.
 """
 from __future__ import annotations
 
@@ -62,8 +63,11 @@ class SettingsTab:
         self._build_fields()
         self.problem: ProblemLine = ProblemLine(self.frame, msg.SETUP_SETTINGS_FIELD_LABELS)
         self.problem.label.pack(fill=tk.X, anchor=tk.W)
-        self.save_button: ttk.Button = ttk.Button(self.frame, text=msg.SETUP_BUTTON_SAVE, command=self.save)
-        self.save_button.pack(anchor=tk.E, pady=PAD)
+        # Ряд кнопок — по центру окна, кнопки своего размера; отступ снизу — как у вкладки каналов.
+        self.buttons_frame: ttk.Frame = ttk.Frame(self.frame)
+        self.buttons_frame.pack(side=tk.TOP, anchor=tk.CENTER, pady=PAD)
+        self.save_button: ttk.Button = ttk.Button(self.buttons_frame, text=msg.SETUP_BUTTON_SAVE, command=self.save)
+        self.save_button.pack(side=tk.LEFT, padx=PAD)
         self._on_saved: Callable[[], None] = on_saved
         self._show()
 

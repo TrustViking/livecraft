@@ -2,7 +2,9 @@
 
 Вкладка рисует строки модели (`KeyRow`): название поля, откуда оно, маску и кнопки по доступным действиям.
 Ввод своего значения — поле со скрытыми символами; принято моделью — поле очищается, отказ — красная строка
-под полем, а введённое остаётся. Кнопка «Сохранить» отдаёт модели сейф этой установки (`VaultStore.open`).
+под полем, а введённое остаётся. Принятое сразу записывается в сейф этой установки (`VaultStore.open`) —
+одним шагом, как и сброс своего значения: общей кнопки «Сохранить» на вкладке нет. Запись не удалась — диалог,
+вкладка остаётся на прочитанном с диска, введённое — в поле, чтобы нажать «Сохранить значение» ещё раз.
 
 Значение сейфа в виджет по умолчанию не попадает: строка рисует маску из модели, а поле ввода — то, что
 человек печатает сам, и то скрытыми символами. Буфер обмена не трогается: в поле ввода вставлять и выделять
@@ -159,8 +161,6 @@ class KeysTab:
             field: KeyRowView(self.rows_frame, field, position, self.accept, self.reset, self.toggle_own_value)
             for position, field in enumerate(SecretField.current())
         }
-        self.save_button: ttk.Button = ttk.Button(self.frame, text=msg.SETUP_BUTTON_SAVE, command=self.save)
-        self.save_button.pack(anchor=tk.E, pady=PAD)
         self._on_saved: Callable[[], None] = on_saved
         self.panel: KeysPanel | None = None
         self.load_error: VaultFormatError | None = None
@@ -172,7 +172,10 @@ class KeysTab:
         return self.panel is not None and self.panel.is_dirty
 
     def accept(self, field: SecretField) -> None:
-        """«Сохранить значение»: введённое — модели; принято — строка перерисована и поле очищено."""
+        """«Сохранить значение»: введённое — модели; принято — сразу в сейф, строка перерисована, поле очищено.
+
+        Модель отказала — причина под полем; запись не удалась — диалог. В обоих случаях введённое остаётся.
+        """
         if self.panel is None:
             return
         self.hide_revealed()
@@ -181,34 +184,35 @@ class KeysTab:
         if not edit.is_applied:
             view.refused(edit.problem)
             return
-        self.panel = edit.panel
+        if not self._save(edit.panel):
+            return
         view.accepted()
-        self._show()
 
     def reset(self, field: SecretField) -> None:
-        """Сброс своего значения: модель убирает его — вернётся поставочное, а если его нет, поле опустеет."""
+        """Сброс своего значения — сразу в сейф: вернётся поставочное, а если его нет, поле опустеет."""
         if self.panel is None:
             return
         self.hide_revealed()
-        self.panel = self.panel.reset(field)
-        self.rows[field].problem.show_text(None)
-        self._show()
+        if self._save(self.panel.reset(field)):
+            self.rows[field].problem.show_text(None)
 
-    def save(self) -> None:
-        """«Сохранить»: модель пишет личный сейф. Отказ — диалог без значения и без пути к сейфу."""
-        if self.panel is None:
-            return
-        self.hide_revealed()
+    def _save(self, edited: KeysPanel) -> bool:
+        """Модель с правкой пишет личный сейф; записано — вкладка на прочитанном заново и True.
+
+        Отказ — диалог без значения и без пути к сейфу, вкладка прежняя (несохранённого не остаётся), False.
+        """
         try:
-            self.panel = self.panel.save(VaultStore.open(self.paths))
+            saved: KeysPanel = edited.save(VaultStore.open(self.paths))
         except DpapiUnavailable:
             messagebox.showerror(msg.SETUP_SAVE_FAILED_TITLE, msg.SETUP_INPUT_OWN_UNAVAILABLE, parent=self.frame)
-            return
+            return False
         except OSError:
             messagebox.showerror(msg.SETUP_SAVE_FAILED_TITLE, msg.SETUP_KEYS_SAVE_FAILED_OS, parent=self.frame)
-            return
+            return False
+        self.panel = saved
         self._show()
         self._on_saved()
+        return True
 
     def toggle_own_value(self, field: SecretField) -> None:
         """«Показать»/«скрыть» своё значение поля. Модель не отдала значение (поставка, поля нет) — ничего."""
@@ -238,11 +242,10 @@ class KeysTab:
         self._show()
 
     def _show(self) -> None:
-        """Перерисовать вкладку по модели: оговорки сверху, строки полей, доступность «Сохранить»."""
+        """Перерисовать вкладку по модели: оговорки сверху и строки полей; модели нет — только причина."""
         if self.panel is None:
             self.notice.configure(text=msg.VAULT_FILE_BROKEN.format(error=self.load_error))
             self.rows_frame.pack_forget()
-            self.save_button.state(["disabled"])
             return
         self.notice.configure(text=NOTICE_JOINER.join(self.panel.notices))
         for row in self.panel.rows:

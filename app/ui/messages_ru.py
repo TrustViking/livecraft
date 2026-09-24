@@ -309,7 +309,7 @@ SETUP_KEYS_BUTTON_REVEAL: Final[str] = "показать"
 SETUP_KEYS_BUTTON_HIDE: Final[str] = "скрыть"
 SETUP_KEYS_SAVE_FAILED_OS: Final[str] = (
     "Не удалось записать файл ваших значений. Проверьте, не занят ли он другой программой "
-    "(антивирус, синхронизация), и нажмите «Сохранить» ещё раз."
+    "(антивирус, синхронизация), и нажмите «Сохранить значение» ещё раз."
 )
 # Вкладка «Каналы YouTube»: подписи по ключам SettingProblem (имя поля строки канала) и по полям ChannelDraft.
 SETUP_CHANNEL_FIELD_LABELS: Final[dict[str, str]] = {
@@ -326,6 +326,18 @@ SETUP_CHANNELS_BUTTON_UPDATE: Final[str] = "Изменить выбранный"
 SETUP_CHANNELS_BUTTON_REMOVE: Final[str] = "Удалить выбранный"
 SETUP_CHANNELS_NOTHING_SELECTED: Final[str] = "Сначала выберите канал в таблице."
 SETUP_CHANNELS_SAVE_FAILED: Final[str] = "Не удалось записать secrets\\channels.json: {error}"
+# Языки канала — выбор из списка по названию (app\setup\fields\language_choice.py); языки формы — первыми.
+SETUP_LANGUAGE_OPTION: Final[str] = "{name} ({code})"
+SETUP_LANGUAGE_OPTION_IN_FORM: Final[str] = "{name} ({code}) — есть в форме"
+SETUP_LANGUAGE_SEARCH_LABEL: Final[str] = "поиск:"
+SETUP_LANGUAGE_LIST_HINT: Final[str] = (
+    "Щёлкните язык, чтобы выбрать его или снять выбор; можно выбрать несколько. Поиск выбор не сбрасывает."
+)
+SETUP_LANGUAGE_SELECTED: Final[str] = "выбрано: {names}"
+SETUP_LANGUAGE_SELECTED_NONE: Final[str] = "выбрано: ничего"
+SETUP_LANGUAGE_NOT_IN_FORM: Final[str] = (
+    "язык {names} нет среди вариантов Google-формы — эфиры на нём не будут допущены"
+)
 # Вкладка «Настройки запуска»: подписи по ключам SettingProblem (путь поля в livecraft.json).
 SETUP_SETTINGS_FIELD_LABELS: Final[dict[str, str]] = {
     "min_lead_minutes": "минимальный запас до старта эфира (минут)",
