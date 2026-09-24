@@ -424,6 +424,11 @@ PREVIEW_PROBLEMS: Final[dict[str, str]] = {
     "too_large": "обложка больше 2 МБ и после сжатия",
 }
 
+# --- слоты (app\slots\): тексты эфира под правила YouTube
+SLOT_EMPTY_TITLE: Final[str] = (
+    "Название эфира пустое после подгонки под правила YouTube — слот дальше не идёт."
+)
+
 # --- пробник источников (app\tools\source_probe.py): {…} — данные видео, их можно показывать
 SOURCE_PROBE_TITLE: Final[str] = "Проверка источников через yt-dlp"
 SOURCE_PROBE_USAGE: Final[str] = "Укажите одну или несколько ссылок: python -m app.tools.source_probe <ссылка> …"

@@ -1,8 +1,9 @@
 """Общие фикстуры: папки livecraft в tmp_path, фиксированное «сейчас», корень репо, сейф на диске,
-готовый к запуску корень, живой и мёртвый посторонние процессы.
+готовый к запуску корень, живой и мёртвый посторонние процессы, готовый источник и лог слотов.
 """
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,11 @@ from app.secretsafe.crypto import FORMAT_VERSION, VAULT_KEY_BYTES, EncryptedFiel
 from app.secretsafe.dpapi import Dpapi
 from app.secretsafe.store import VAULT_FILE_ENCODING, ProgramKey, VaultStore
 from app.secretsafe.value import SecretField
+from app.sheets.rows import PlanRow
+from app.sources.language import LanguageProfile
+from app.sources.metadata import SourceMetadata
+from app.sources.preview import Preview
+from app.sources.video import SourceVideo
 
 KYIV_WINTER: timezone = timezone(timedelta(hours=2))   # даты и время — по Киеву (CLAUDE.md §6, инвариант 4)
 FIXED_NOW: datetime = datetime(2026, 9, 20, 12, 0, tzinfo=KYIV_WINTER)
@@ -47,6 +53,64 @@ def write_supplied_vault(paths: LivecraftPaths, values: dict[SecretField, str]) 
     paths.vault_file.write_text(
         VaultFile(version=FORMAT_VERSION, salt=salt, fields=fields).render(), encoding=VAULT_FILE_ENCODING
     )
+
+
+def ready_source(
+    row: PlanRow, title: str, description: str, language: str, preview: Preview | None = None
+) -> SourceVideo:
+    """Годный источник без сети: данные видео как от yt-dlp, язык — настоящим решением по языку видео."""
+    link: str = row.link or ""
+    metadata: SourceMetadata = SourceMetadata(
+        url=link,
+        video_id=link.rsplit("/", 1)[-1],
+        title=title,
+        description=description,
+        thumbnail_url="",
+        youtube_language=language,
+        channel_language=None,
+        duration_seconds=None,
+        canonical_url=link,
+        audio_languages=(),
+        subtitle_languages=(),
+        auto_caption_languages=(),
+    )
+    return SourceVideo(
+        row=row,
+        metadata=metadata,
+        preview=preview,
+        failure=None,
+        preview_problem=None,
+        language=LanguageProfile(video_language=language, channel_language=None).decide(),
+    )
+
+
+class LogCollector(logging.Handler):
+    """Свой обработчик прямо на логгере: не зависит от propagate после других тестов."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+    def messages(self, level: int | None = None) -> list[str]:
+        return [record.getMessage() for record in self.records if level is None or record.levelno == level]
+
+
+@pytest.fixture
+def slot_log() -> Iterator[LogCollector]:
+    """Записи логгера livecraft.slots за время теста."""
+    logger: logging.Logger = logging.getLogger("livecraft.slots")
+    collector: LogCollector = LogCollector()
+    level: int = logger.level
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(collector)
+    try:
+        yield collector
+    finally:
+        logger.removeHandler(collector)
+        logger.setLevel(level)
 
 
 @pytest.fixture
