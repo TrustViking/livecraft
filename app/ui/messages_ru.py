@@ -395,6 +395,47 @@ SHEETS_PROBE_COLUMN: Final[str] = "«{name}» ({number}-я в диапазоне
 SHEETS_PROBE_ROWS: Final[str] = "Рядов прочитано: {rows}, допущено: {admitted}, отсеяно: {skipped}."
 SHEETS_PROBE_SKIP_LINE: Final[str] = "  {reason}: {count}"
 
+# --- источники (app\sources\): данные видео через yt-dlp и обложка. Ключи словарей — значения
+# SourceFailureReason и PreviewProblem; ссылки на видео YouTube — не секрет, их можно показывать.
+SOURCE_FAILURE_REASONS: Final[dict[str, str]] = {
+    "tool_missing": "нет программы yt-dlp.exe в папке tools — без неё данные видео не получить",
+    "private": "видео приватное или требует входа: cookies не подошли или их нет",
+    "unavailable": "видео недоступно: удалено или заблокировано",
+    "timeout": "yt-dlp не ответил вовремя",
+    "bad_output": "yt-dlp вернул ответ, который не разбирается",
+    "no_title": "у видео нет названия",
+    "failed": "yt-dlp не смог получить данные видео — подробности в логе",
+}
+SOURCE_NO_TITLE: Final[str] = "У видео нет названия — без него эфиру нечего дать в название."
+PREVIEW_PROBLEMS: Final[dict[str, str]] = {
+    "no_url": "источник не дал адреса обложки",
+    "not_found": "обложки по адресу нет",
+    "rejected": "сервер обложек отказал в скачивании",
+    "unavailable": "обложка не скачалась и после повторов",
+    "not_image": "скачанный файл — не картинка",
+    "too_large": "обложка больше 2 МБ и после сжатия",
+}
+
+# --- пробник источников (app\tools\source_probe.py): {…} — данные видео, их можно показывать
+SOURCE_PROBE_TITLE: Final[str] = "Проверка источников через yt-dlp"
+SOURCE_PROBE_USAGE: Final[str] = "Укажите одну или несколько ссылок: python -m app.tools.source_probe <ссылка> …"
+SOURCE_PROBE_SOURCE: Final[str] = "Источник {link}"
+SOURCE_PROBE_BAD_LINK: Final[str] = "  в ссылке не найдено видео YouTube: {raw}"
+SOURCE_PROBE_ID: Final[str] = "  id: {value}"
+SOURCE_PROBE_NAME: Final[str] = "  название: {value}"
+SOURCE_PROBE_DURATION: Final[str] = "  длительность: {value}"
+SOURCE_PROBE_LANGUAGE: Final[str] = "  язык видео: {video}; язык канала: {channel}"
+SOURCE_PROBE_AUDIO: Final[str] = "  языки аудио: {value}"
+SOURCE_PROBE_SUBTITLES: Final[str] = "  субтитры: {value}"
+SOURCE_PROBE_AUTO_CAPTIONS: Final[str] = "  автосубтитры: {value}"
+SOURCE_PROBE_MORE: Final[str] = "{shown} … и ещё {more}"
+SOURCE_PROBE_NONE: Final[str] = "нет"
+SOURCE_PROBE_PREVIEW_OK: Final[str] = "  обложка: {width}×{height}, {kilobytes} КБ — годится для YouTube"
+SOURCE_PROBE_PREVIEW_BAD: Final[str] = "  обложка: не годится — {reason}"
+SOURCE_PROBE_FAILED: Final[str] = "  отказ: {reason}"
+SOURCE_PROBE_DETAIL: Final[str] = "  подробно: {detail}"
+SOURCE_PROBE_SUMMARY: Final[str] = "Источников: {total}, получено: {ok}, отказов: {failed}."
+
 # --- обрыв и падение запуска (app\main.py::run_cli)
 RUN_INTERRUPTED: Final[str] = (
     "Запуск прерван. Что уже сделано на YouTube, найдёт и учтёт следующий запуск."

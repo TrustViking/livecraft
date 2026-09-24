@@ -1,0 +1,28 @@
+{
+  "id": "dQw4w9WgXcQ",
+  "title": "Тестовый эфир: разбор вопросов | #12 #тест #livecraft",
+  "description": "Короткое тестовое описание.\nВторая строка.",
+  "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
+  "language": "uk",
+  "channel_language": "ru",
+  "duration": 3723.5,
+  "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "original_url": "https://youtu.be/dQw4w9WgXcQ",
+  "formats": [
+    {"format_id": "sb0", "acodec": "none", "vcodec": "none"},
+    {"format_id": "140", "acodec": "mp4a.40.2", "vcodec": "none", "language": "uk"},
+    {"format_id": "251", "acodec": "opus", "vcodec": "none", "language": "uk"},
+    {"format_id": "251-1", "acodec": "opus", "vcodec": "none", "language": "en"},
+    {"format_id": "137", "acodec": "none", "vcodec": "avc1.640028", "language": "de"},
+    {"format_id": "18", "acodec": "mp4a.40.2", "vcodec": "avc1.42001E"}
+  ],
+  "subtitles": {
+    "uk": [{"ext": "vtt"}],
+    "en": [{"ext": "vtt"}]
+  },
+  "automatic_captions": {
+    "uk": [{"ext": "vtt"}],
+    "ru": [{"ext": "vtt"}],
+    "de": [{"ext": "vtt"}]
+  }
+}
