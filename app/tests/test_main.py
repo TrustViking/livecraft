@@ -84,7 +84,6 @@ def test_version_flag_creates_no_folders(livecraft_root: Path) -> None:
         ["--dry-run"],
         ["--no-llm"],
         ["--dry-run", "--no-llm", "--debug"],
-        ["--export-slots", "slots.json"],
     ],
 )
 def test_without_setup_every_mode_asks_for_setup(
@@ -113,6 +112,7 @@ def test_the_root_comes_from_the_environment_variable(livecraft_root: Path) -> N
     """Так корень подменяют все тесты запуска: папки создаются в нём, а не в репо (CLAUDE.md §5)."""
     assert run_cli([]) == int(ExitCode.CONFIG)
     assert sorted(item.name for item in livecraft_root.iterdir()) == [
+        "bcast",
         "image",
         "keystreams",
         "logs",
@@ -166,10 +166,9 @@ def test_unknown_flag_is_a_parse_error() -> None:
 
 def test_every_flag_of_section_ten_is_understood() -> None:
     request: RunRequest = RunRequest.from_args(
-        build_parser().parse_args(["--dry-run", "--no-llm", "--export-slots", "out/slots.json", "--debug"])
+        build_parser().parse_args(["--dry-run", "--no-llm", "--debug"])
     )
     assert request.dry_run and request.no_llm and request.debug
-    assert request.export_slots == Path("out/slots.json")
     assert not request.setup and not request.check and not request.status and request.auth is None
 
 
@@ -185,9 +184,12 @@ def test_help_survives_a_console_that_cannot_encode_russian(monkeypatch: pytest.
     assert b"usage: livecraft" in buffer.getvalue()
 
 
-def test_export_slots_without_a_path_is_a_parse_error() -> None:
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["--export-slots"])
+@pytest.mark.parametrize("argv", [["--export-slots"], ["--export-slots", "slots.json"]])
+def test_export_slots_is_gone(argv: list[str]) -> None:
+    """Выгрузка слотов — это пакет plan_*.bcast (§14 решение 13): ключа больше нет, argparse отвечает кодом 2."""
+    with pytest.raises(SystemExit) as raised:
+        build_parser().parse_args(argv)
+    assert raised.value.code == 2
 
 
 def test_request_without_flags_is_the_full_cycle() -> None:
@@ -195,7 +197,7 @@ def test_request_without_flags_is_the_full_cycle() -> None:
     assert not any(
         (request.setup, request.check, request.status, request.dry_run, request.no_llm, request.debug)
     )
-    assert request.auth is None and request.export_slots is None
+    assert request.auth is None
 
 
 def test_exit_codes_are_the_ones_section_ten_names() -> None:

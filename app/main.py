@@ -64,13 +64,11 @@ class RunRequest:
     status: bool
     dry_run: bool
     no_llm: bool
-    export_slots: Path | None
     debug: bool
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> RunRequest:
         """Namespace argparse дальше главной функции не уходит: ниже работают только с этим объектом."""
-        export: str | None = args.export_slots
         return cls(
             setup=args.setup,
             check=args.check,
@@ -78,7 +76,6 @@ class RunRequest:
             status=args.status,
             dry_run=args.dry_run,
             no_llm=args.no_llm,
-            export_slots=None if export is None else Path(export),
             debug=args.debug,
         )
 
@@ -87,7 +84,7 @@ class RunRequest:
         """Строка запуска для лога: секретов в флагах нет, ник канала — в кавычках (CLAUDE.md §11)."""
         return (
             f"setup={self.setup} check={self.check} auth={_quoted(self.auth)} status={self.status} "
-            f"dry_run={self.dry_run} no_llm={self.no_llm} export_slots={self.export_slots}"
+            f"dry_run={self.dry_run} no_llm={self.no_llm}"
         )
 
 
@@ -97,7 +94,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dry-run", action="store_true", help=msg.HELP_DRY_RUN)
     parser.add_argument("--no-llm", action="store_true", help=msg.HELP_NO_LLM)
-    parser.add_argument("--export-slots", metavar=msg.CLI_METAVAR_PATH, help=msg.HELP_EXPORT_SLOTS)
     parser.add_argument("--debug", action="store_true", help=msg.HELP_DEBUG)
     parser.add_argument(
         "--version",

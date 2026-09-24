@@ -37,6 +37,7 @@ EXPECTED_LAYOUT: dict[str, str] = {
     "ytdlp_exe": "tools/yt-dlp.exe",
     "deno_exe": "tools/deno.exe",
     "image_dir": "image",
+    "bcast_dir": "bcast",
     "keystreams_dir": "keystreams",
     "keys_file": "keystreams/keys.txt",
     "state_dir": "state",
@@ -44,7 +45,7 @@ EXPECTED_LAYOUT: dict[str, str] = {
     "logs_dir": "logs",
     "startup_log_file": "logs/startup.log",
 }
-EXPECTED_DIRECTORIES: tuple[str, ...] = ("secrets", "tools", "image", "keystreams", "state", "logs")
+EXPECTED_DIRECTORIES: tuple[str, ...] = ("secrets", "tools", "image", "bcast", "keystreams", "state", "logs")
 
 
 def test_root_comes_from_the_environment_variable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

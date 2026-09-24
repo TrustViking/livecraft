@@ -18,7 +18,6 @@ HELP_DRY_RUN: Final[str] = (
     "в форму не отправлять, keys.txt не менять"
 )
 HELP_NO_LLM: Final[str] = "не звать LLM: взять название и описание источника как есть"
-HELP_EXPORT_SLOTS: Final[str] = "выгрузить слоты запуска JSON-ом в указанный файл (отладка)"
 HELP_CHECK: Final[str] = "проверить каждый канал: вход, ник и название, языки, число запланированных эфиров"
 HELP_AUTH: Final[str] = (
     "заново авторизовать канал (ник handle из channels.json, например @MyChannel) или all — все каналы"
@@ -28,7 +27,6 @@ HELP_DEBUG: Final[str] = "подробный лог в терминал"
 HELP_VERSION: Final[str] = "показать номер версии и выйти"
 VERSION_TEXT: Final[str] = "Livecraft {version}"
 # Подписи значений в справке argparse: их видит человек, поэтому они здесь, а не в main.py (§11).
-CLI_METAVAR_PATH: Final[str] = "ПУТЬ"
 CLI_METAVAR_HANDLE: Final[str] = "НИК"
 
 # --- шапка запуска: первая строка любого запуска, время — то же, что в отчёте этого запуска
@@ -455,6 +453,18 @@ PREVIEW_PROBLEMS: Final[dict[str, str]] = {
 SLOT_EMPTY_TITLE: Final[str] = (
     "Название эфира пустое после подгонки под правила YouTube — слот дальше не идёт."
 )
+
+# --- пакет plan_*.bcast (app\packages\, §14 решение 13): куда записан или что сделать, чтобы записался.
+# Ключи словаря — значения PackageProblem.
+PACKAGE_PROBLEMS: Final[dict[str, str]] = {
+    "no_slots": "в запуске нет годных слотов — записывать нечего",
+    "form_not_configured": (
+        "не задана ссылка на форму ключей — задайте ссылку на форму в настройщике, "
+        "вкладка «Настройки запуска»"
+    ),
+}
+PACKAGE_WRITTEN: Final[str] = "Пакет записан: {path} (слотов: {slots}, обложек: {previews})."
+PACKAGE_NOT_WRITTEN: Final[str] = "Пакет не записан: {reason}."
 
 # --- пробник источников (app\tools\source_probe.py): {…} — данные видео, их можно показывать
 SOURCE_PROBE_TITLE: Final[str] = "Проверка источников через yt-dlp"

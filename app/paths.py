@@ -1,7 +1,7 @@
 """Корень livecraft и его папки (CLAUDE.md §5): рядом с exe (frozen) или корень репо (dev).
 
 Одна папка данных на роль (§6, инвариант 10): secrets\\ — всё секретное и все конфиги,
-image\\ — превью, keystreams\\ — ключи потоков, state\\ — замок и служебные отметки,
+image\\ — превью, bcast\\ — пакеты plan_*.bcast, keystreams\\ — ключи потоков, state\\ — замок и служебные отметки,
 logs\\ — лог и отчёт, tools\\ — внешние бинарники. Всё остальное — в app\\.
 Ставить программу в папку с правом записи (D:\\_exe\\Livecraft), не в Program Files.
 """
@@ -49,6 +49,7 @@ class LivecraftPaths:
     ytdlp_exe: Path                # tools\yt-dlp.exe — метаданные и превью источников
     deno_exe: Path                 # tools\deno.exe — нужен yt-dlp для части извлекателей
     image_dir: Path                # image\ — превью по шаблону {date}\{language}
+    bcast_dir: Path                # bcast\ — пакеты plan_*.bcast: пишет режим А, читает режим Б (§14 решения 13, 18)
     keystreams_dir: Path           # keystreams\ — ключи потоков для ручной передачи
     keys_file: Path                # keystreams\keys.txt
     state_dir: Path                # state\ — замок одного экземпляра и отметки автообновлений
@@ -63,6 +64,7 @@ class LivecraftPaths:
             self.secrets_dir,
             self.tools_dir,
             self.image_dir,
+            self.bcast_dir,
             self.keystreams_dir,
             self.state_dir,
             self.logs_dir,
@@ -93,6 +95,7 @@ def build_paths(root: Path) -> LivecraftPaths:
         ytdlp_exe=tools_dir / "yt-dlp.exe",
         deno_exe=tools_dir / "deno.exe",
         image_dir=root / "image",
+        bcast_dir=root / "bcast",
         keystreams_dir=keystreams_dir,
         keys_file=keystreams_dir / "keys.txt",
         state_dir=state_dir,
