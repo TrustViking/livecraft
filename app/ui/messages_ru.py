@@ -13,6 +13,12 @@ CLI_DESCRIPTION: Final[str] = (
     "Livecraft: план стримов из Google Sheets → эфиры на YouTube → ключи потоков стримеру."
 )
 HELP_SETUP: Final[str] = "открыть настройщик: ключи и ссылки, каналы YouTube, настройки запуска"
+# Режимы запуска по ярлыкам (§10, §14 решения 17, 18); без флага — «всё».
+HELP_ANNOUNCE: Final[str] = (
+    "объявления: таблица → нейросеть → слоты → пакет в bcast\\ → Google Doc, анонсы и пакет в Telegram"
+)
+HELP_BROADCAST: Final[str] = "эфиры: таблица → нейросеть → слоты → пакет в bcast\\ → эфиры на YouTube, ключи, форма"
+HELP_FROM_PACKAGE: Final[str] = "эфиры из пакетов: пакеты из bcast\\ → эфиры, ключи, форма; без таблицы и нейросети"
 HELP_DRY_RUN: Final[str] = (
     "прочитать таблицу, собрать слоты и сверить их с YouTube; ничего не создавать, "
     "в форму не отправлять, keys.txt не менять"
@@ -32,9 +38,41 @@ CLI_METAVAR_HANDLE: Final[str] = "НИК"
 # --- шапка запуска: первая строка любого запуска, время — то же, что в отчёте этого запуска
 CONSOLE_TITLE: Final[str] = "Livecraft {version} — {generated_at}"
 
-# --- настройка программы (CLAUDE.md §8): без сейфа и конфига обычный запуск не начинается
+# --- настройка программы (CLAUDE.md §8): без сейфа и конфига --check, --auth и --status не начинаются
 # Что именно не так, перечислено строками выше (сейф и конфиги называют свои причины сами) — здесь только что делать.
 SETUP_REQUIRED: Final[str] = "Запустите livecraft.bat --setup и заполните настройки."
+# Режим не может сделать ничего (app\setup\readiness.py::ModeReadiness): программа сама открывает окно настройки.
+SETUP_OPENING: Final[str] = "Не хватает настроек — открываю окно настройки."
+
+# --- готовность частей режима (app\setup\run_mode.py, app\setup\readiness.py, §10): по строке на часть.
+# Ключи — значения RunPart.
+RUN_PART_LABELS: Final[dict[str, str]] = {
+    "plan": "чтение таблицы плана",
+    "merge": "название и описание эфиров нейросетью",
+    "package": "пакет эфиров в папке bcast",
+    "announce": "объявления в Google Docs и Telegram",
+    "broadcast": "эфиры на YouTube и ключи в форму",
+    "packages_in": "эфиры из пакетов папки bcast",
+}
+# На каком этапе появится часть, которой в этой версии нет (§13).
+RUN_PART_STAGES: Final[dict[str, str]] = {
+    "announce": "Публикация",
+    "packages_in": "Эфиры",
+}
+RUN_PART_BLOCKED: Final[str] = "Не готово — {part}: {gaps}."
+RUN_PART_NOT_BUILT: Final[str] = "Пока нет — {part}: будет на этапе «{stage}», в этой версии не выполняется."
+# Что задать и где: {what} — чего не хватает, {tab} — вкладка настройщика (SETUP_TAB_*).
+READINESS_GAP_IN_SETUP: Final[str] = "{what} — «Livecraft — настройка», вкладка «{tab}»"
+READINESS_GAP_SETTINGS: Final[str] = "настройки запуска ({key} — {problem})"
+READINESS_GAP_FORM: Final[str] = "ссылка на Google форму для ключей стрима"
+READINESS_GAP_CHANNELS_MISSING: Final[str] = "каналы YouTube не заданы"
+READINESS_GAP_CHANNELS: Final[str] = "каналы YouTube ({key} — {problem})"
+READINESS_GAP_VAULT_BROKEN: Final[str] = "ключи и ссылки не читаются: {error}"
+# client_secret.json в настройщике не задаётся (§9): это файл OAuth-клиента, его кладут рядом с программой.
+READINESS_GAP_CLIENT_SECRET: Final[str] = "нет файла входа в Google client_secret.json — положите его сюда: {path}"
+# Полная проверка (окно настройщика, --check, --status): нет файла каналов — не ошибка, а «ещё не задано».
+READINESS_CHANNELS_MISSING: Final[str] = "Каналы YouTube не заданы — добавьте их на вкладке «Каналы YouTube»."
+CONFIG_FIX_IN_SETUP: Final[str] = "{error}. Исправьте в настройщике, вкладка «{tab}»."
 # Однократный перенос ссылки на форму из старого места в настройки (app\setup\migration.py, §14 решение 15).
 # Самой ссылки в строках нет: в консоль она не уходит.
 FORM_URL_MIGRATED: Final[str] = "Ссылка на форму ключей перенесена в настройки программы — вводить её заново не нужно."
@@ -71,8 +109,7 @@ VAULT_FILE_BROKEN: Final[str] = (
 # --- конфиги (CLAUDE.md §5): два JSON, все поля обязательные, умолчаний и копирования примеров нет
 CONFIG_ERROR: Final[str] = "Ошибка в конфиге {path}: {key} — {problem}"
 CONFIG_ROOT_KEY: Final[str] = "(корень файла)"
-CONFIG_CHANNELS_HINT: Final[str] = "Создайте файл {path} с таким содержимым и впишите свои значения:"
-# Что вписать в каждое поле: печатается между CONFIG_CHANNELS_HINT и шаблоном.
+# Что вписать в каждое поле channels.json: идёт в лог (DEBUG) перед шаблоном, когда файл сломан.
 # {languages} — CONFIG_LANGUAGES_RULE, {privacy} и {platform} — допустимые значения из config\loader.py.
 CONFIG_CHANNELS_FIELDS: Final[tuple[str, ...]] = (
     "  account_name — название канала как на YouTube: оно уходит в форму как «Название канала»;",
@@ -84,8 +121,8 @@ CONFIG_CHANNELS_FIELDS: Final[tuple[str, ...]] = (
     "  platform — {platform}.",
 )
 CONFIG_LANGUAGES_RULE: Final[str] = 'непустой список кодов строчными буквами без повторов, например ["uk"] или ["uk", "ru"]'
-CONFIG_SETTINGS_HINT: Final[str] = "Восстановите файл {path} с таким содержимым и впишите свои значения:"
-# Точные шаблоны файлов для консоли: печатаются, когда файла или поля нет. В код как умолчания не идут.
+# Точные шаблоны файлов: идут в лог (DEBUG), когда файл сломан; окно настройщика открывается на шаблоне настроек.
+# В код как умолчания не идут.
 # Шаблон настроек совпадает с поставочным secrets\livecraft.json — это проверяет тест.
 CONFIG_CHANNELS_TEMPLATE: Final[str] = """{
   "channels": [

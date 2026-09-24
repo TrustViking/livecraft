@@ -28,7 +28,8 @@ from app.secretsafe.crypto import KEY_WRAPPED
 from app.secretsafe.store import VAULT_FILE_ENCODING, VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
-from app.tests.conftest import REPO_CHANNELS_EXAMPLE, REPO_ROOT, SUPPLIED_VALUES
+from app.setup.run_mode import RunMode, RunPart
+from app.tests.conftest import FORM_URL, REPO_ROOT, SUPPLIED_VALUES, set_form_url, write_supplied_vault
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
 
@@ -42,11 +43,28 @@ def _closed_logging() -> Iterator[None]:
     close_logging()
 
 
+@pytest.fixture(autouse=True)
+def window_calls(monkeypatch: pytest.MonkeyPatch) -> list[LivecraftPaths]:
+    """Окно настройщика в тестах запуска не открывается: вызовы записываются. Тест может подменить сам."""
+    from app.setup.app import SetupApp
+
+    calls: list[LivecraftPaths] = []
+    monkeypatch.setattr(SetupApp, "run", lambda self: calls.append(self.paths))
+    return calls
+
+
 @pytest.fixture
-def ready_root(ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch) -> LivecraftPaths:
-    """Готовый к запуску корень из conftest, подставленный запуску через LIVECRAFT_ROOT."""
+def unformed_root(ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch) -> LivecraftPaths:
+    """Корень из conftest со всем, кроме ссылки на форму, подставленный запуску через LIVECRAFT_ROOT."""
     monkeypatch.setenv(ROOT_ENV_VAR, str(ready_paths.root))
     return ready_paths
+
+
+@pytest.fixture
+def ready_root(unformed_root: LivecraftPaths) -> LivecraftPaths:
+    """Полностью настроенный корень: и ссылка на форму задана — готовы все реализованные части режима."""
+    set_form_url(unformed_root, FORM_URL)
+    return unformed_root
 
 
 @pytest.fixture
@@ -76,27 +94,51 @@ def test_version_flag_creates_no_folders(livecraft_root: Path) -> None:
 @pytest.mark.parametrize(
     "argv",
     [
-        [],
         ["--check"],
         ["--status"],
         ["--auth", "@Osvald.X"],
         ["--auth", "all"],
+    ],
+)
+def test_without_setup_a_service_run_asks_for_setup(
+    argv: list[str],
+    livecraft_root: Path,
+    capsys: pytest.CaptureFixture[str],
+    window_calls: list[LivecraftPaths],
+) -> None:
+    """--check, --auth, --status без полной настройки не начинаются: код 2 и строка про --setup, без шаблонов."""
+    assert run_cli(argv) == int(ExitCode.CONFIG)
+    out: str = capsys.readouterr().out
+    assert msg.READINESS_CHANNELS_MISSING in out
+    assert msg.CONFIG_CHANNELS_TEMPLATE not in out and msg.CONFIG_SETTINGS_TEMPLATE not in out
+    assert out.rstrip().endswith(msg.SETUP_REQUIRED)  # что делать — последней строкой
+    assert window_calls == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [],
+        ["--announce"],
+        ["--broadcast"],
         ["--dry-run"],
         ["--no-llm"],
         ["--dry-run", "--no-llm", "--debug"],
     ],
 )
-def test_without_setup_every_mode_asks_for_setup(
+def test_without_setup_a_mode_opens_the_setup_window(
     argv: list[str],
     livecraft_root: Path,
     capsys: pytest.CaptureFixture[str],
+    window_calls: list[LivecraftPaths],
 ) -> None:
-    """Нет сейфа и конфига — обычный запуск не начинается: код 2, шаблон и строка про --setup (CLAUDE.md §8)."""
+    """Не готово ничего — программа сама открывает окно настройки, после него код 2; шаблонов в консоли нет."""
     assert run_cli(argv) == int(ExitCode.CONFIG)
     out: str = capsys.readouterr().out
-    assert msg.SETUP_REQUIRED in out
-    assert msg.CONFIG_CHANNELS_TEMPLATE in out        # загрузчик читает channels.json первым — его шаблон
-    assert out.rstrip().endswith(msg.SETUP_REQUIRED)  # что делать — последней строкой
+    assert msg.SETUP_OPENING in out
+    assert msg.CONFIG_CHANNELS_TEMPLATE not in out and msg.CONFIG_SETTINGS_TEMPLATE not in out
+    assert msg.SETUP_REQUIRED not in out
+    assert window_calls == [build_paths(livecraft_root)]
 
 
 def test_the_title_is_the_first_line_of_any_run(
@@ -150,10 +192,17 @@ def test_the_log_quotes_the_channel_handle(livecraft_root: Path) -> None:
         ["--check", "--auth", "all"],
         ["--status", "--auth", "all"],
         ["--setup", "--auth", "all"],
+        ["--announce", "--setup"],
+        ["--broadcast", "--setup"],
+        ["--from-package", "--setup"],
+        ["--announce", "--broadcast"],
+        ["--broadcast", "--from-package"],
+        ["--announce", "--check"],
+        ["--from-package", "--status"],
     ],
 )
 def test_two_modes_at_once_are_a_parse_error(argv: list[str]) -> None:
-    """--setup / --check / --auth / --status взаимоисключающие (CLAUDE.md §10)."""
+    """Режимы и --setup / --check / --auth / --status взаимоисключающие (CLAUDE.md §10)."""
     with pytest.raises(SystemExit) as raised:
         build_parser().parse_args(argv)
     assert raised.value.code == 2
@@ -170,6 +219,34 @@ def test_every_flag_of_section_ten_is_understood() -> None:
     )
     assert request.dry_run and request.no_llm and request.debug
     assert not request.setup and not request.check and not request.status and request.auth is None
+    assert request.mode is RunMode.ALL and not request.is_service_run
+
+
+@pytest.mark.parametrize(
+    ("argv", "mode"),
+    [
+        (["--announce"], RunMode.ANNOUNCE),
+        (["--broadcast"], RunMode.BROADCAST),
+        (["--from-package"], RunMode.FROM_PACKAGE),
+        ([], RunMode.ALL),
+    ],
+)
+def test_mode_flags_choose_the_mode(argv: list[str], mode: RunMode) -> None:
+    request: RunRequest = RunRequest.from_args(build_parser().parse_args(argv))
+    assert request.mode is mode
+    assert f"mode={mode.value} " in request.log_line
+
+
+@pytest.mark.parametrize("argv", [["--setup"], ["--check"], ["--status"], ["--auth", "all"]])
+def test_service_flags_are_service_runs(argv: list[str]) -> None:
+    assert RunRequest.from_args(build_parser().parse_args(argv)).is_service_run
+
+
+def test_help_lists_the_mode_flags(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--help"])
+    out: str = capsys.readouterr().out
+    assert "--announce" in out and "--broadcast" in out and "--from-package" in out
 
 
 def test_help_survives_a_console_that_cannot_encode_russian(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,7 +288,7 @@ def test_debug_puts_the_log_into_the_terminal(
     assert run_cli(["--debug"]) == int(ExitCode.CONFIG)
     captured: pytest.CaptureResult[str] = capsys.readouterr()
     assert "run_started version=" in captured.err          # сырой лог — в stderr
-    assert msg.SETUP_REQUIRED in captured.out              # тексты оператора — в stdout
+    assert msg.SETUP_OPENING in captured.out               # тексты оператора — в stdout
 
 
 def test_a_run_leaves_no_lock_behind(livecraft_root: Path) -> None:
@@ -348,18 +425,23 @@ def test_an_existing_settings_file_is_left_alone(
     assert ready_root.config_file.stat().st_mtime_ns == mtime
 
 
-def test_a_settings_file_missing_a_field_prints_its_template(
+def test_a_settings_file_missing_a_field_names_it_and_logs_its_template(
     ready_root: LivecraftPaths,
     capsys: pytest.CaptureFixture[str],
+    window_calls: list[LivecraftPaths],
 ) -> None:
-    """Сломанный файл программа не перезаписывает: называет поле и печатает шаблон (§5)."""
+    """Сломанный файл программа не перезаписывает: называет поле и где исправить; шаблон — только в лог (§5)."""
     data: dict[str, object] = json.loads(ready_root.config_file.read_text(encoding="utf-8"))
     del data["keep_days"]
     ready_root.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    assert run_cli([]) == int(ExitCode.CONFIG)
+    assert run_cli([]) == int(ExitCode.CONFIG)          # без настроек таблицу не прочитать — не готово ничего
     out: str = capsys.readouterr().out
-    assert msg.CONFIG_SETTINGS_TEMPLATE in out and msg.SETUP_REQUIRED in out
-    assert "keep_days" in out
+    assert msg.CONFIG_SETTINGS_TEMPLATE not in out
+    assert "keep_days" in out and msg.SETUP_TAB_SETTINGS in out
+    assert window_calls == [ready_root]
+    close_logging()
+    [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
+    assert "config_template " in log_file.read_text(encoding="utf-8")
 
 
 def test_a_ready_root_prints_the_summary_and_exits_0(
@@ -391,7 +473,7 @@ def test_config_errors_land_in_the_log(livecraft_root: Path) -> None:
     [log_file] = list((livecraft_root / "logs").glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
     assert "config_error path=" in text and "kind=file_missing" in text
-    assert "readiness config=error" in text
+    assert "readiness settings=ok channels=- " in text      # настройки прочитаны и без каналов
 
 
 def test_an_unreadable_own_vault_is_announced_and_the_run_goes_on(
@@ -418,13 +500,15 @@ def test_an_unreadable_own_vault_is_announced_and_the_run_goes_on(
 def test_a_broken_own_vault_file_stops_the_run_with_code_2(
     ready_root: LivecraftPaths,
     capsys: pytest.CaptureFixture[str],
+    window_calls: list[LivecraftPaths],
 ) -> None:
     """Повреждённый vault.local.dat — не «файла нет»: отказ с именем файла, без отката на поставку (§16)."""
     ready_root.vault_local_file.write_bytes(b"\xff\xfe\x00vault\x80\x81")
     assert run_cli([]) == int(ExitCode.CONFIG)
     out: str = capsys.readouterr().out
     assert ready_root.vault_local_file.name in out
-    assert msg.SETUP_REQUIRED in out
+    assert msg.SETUP_OPENING not in out                 # окно правку повреждённого файла не позволяет
+    assert window_calls == []
     assert msg.VAULT_LOCAL_UNREADABLE not in out
     assert "ВНИМАНИЕ" not in out
 
@@ -462,7 +546,7 @@ def test_the_readiness_line_in_the_log_carries_no_value(ready_root: LivecraftPat
     close_logging()
     [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
-    assert "readiness config=ok channels=2 local=absent vault=" in text
+    assert "readiness settings=ok channels=2 local=absent vault=" in text
     for value in SUPPLIED_VALUES.values():
         assert value not in text
 
@@ -480,19 +564,19 @@ def _save_own_form_url(paths: LivecraftPaths, value: str) -> None:
 
 
 def test_the_form_url_moves_from_the_own_vault_to_the_settings(
-    ready_root: LivecraftPaths,
+    unformed_root: LivecraftPaths,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _save_own_form_url(ready_root, OWN_FORM_URL)
+    _save_own_form_url(unformed_root, OWN_FORM_URL)
     assert run_cli([]) == int(ExitCode.OK)
     out: str = capsys.readouterr().out
     assert msg.FORM_URL_MIGRATED in out
     assert out.index(msg.FORM_URL_MIGRATED) < out.index(msg.READINESS_SUMMARY_TITLE)
     assert OWN_FORM_URL not in out
-    assert load_settings(ready_root.config_file).form.url == OWN_FORM_URL
-    assert VaultStore.open(ready_root).load().vault.get(SecretField.KEY_FORM_URL) is None
+    assert load_settings(unformed_root.config_file).form.url == OWN_FORM_URL
+    assert VaultStore.open(unformed_root).load().vault.get(SecretField.KEY_FORM_URL) is None
     close_logging()
-    [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
+    [log_file] = list(unformed_root.logs_dir.glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
     assert "form_url_migrated outcome=moved source=own" in text
     assert OWN_FORM_URL not in text
@@ -501,12 +585,125 @@ def test_the_form_url_moves_from_the_own_vault_to_the_settings(
 
 
 def test_a_bad_form_url_in_the_vault_is_announced_and_the_run_goes_on(
-    ready_root: LivecraftPaths,
+    unformed_root: LivecraftPaths,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _save_own_form_url(ready_root, "http://example.com/secret-form")
-    assert run_cli([]) == int(ExitCode.OK)
+    _save_own_form_url(unformed_root, "http://example.com/secret-form")
+    assert run_cli([]) == int(ExitCode.ERRORS)                 # без формы пакет и эфиры не готовы, таблица — да
     out: str = capsys.readouterr().out
     assert msg.FORM_URL_MIGRATION_FAILED.format(reason=msg.CONFIG_PROBLEM_FORM_URL) in out
     assert "http://example.com/secret-form" not in out
-    assert load_settings(ready_root.config_file).form.url == ""
+    assert load_settings(unformed_root.config_file).form.url == ""
+
+
+# --- готовность по частям режима (задача 3.8, §10, §14 решения 17, 18)
+
+
+def _line_of(part: RunPart, out: str) -> str:
+    """Строка части в консоли: по имени части для людей."""
+    [line] = [line for line in out.splitlines() if part.human_label in line]
+    return line
+
+
+def test_without_channels_the_settings_are_read_and_only_broadcasts_wait(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+    window_calls: list[LivecraftPaths],
+) -> None:
+    """Боевой случай 24-09-2026: нет channels.json — настройки всё равно прочитаны, сводка есть, строка о каналах
+    с точным действием, шаблона каналов в консоли нет; «всё» — код 1, окно не открывается."""
+    ready_root.channels_file.unlink()
+    assert run_cli([]) == int(ExitCode.ERRORS)
+    out: str = capsys.readouterr().out
+    assert msg.READINESS_SUMMARY_TITLE in out
+    line: str = _line_of(RunPart.BROADCAST, out)
+    assert msg.READINESS_GAP_CHANNELS_MISSING in line and msg.SETUP_TAB_CHANNELS in line
+    assert msg.CONFIG_CHANNELS_TEMPLATE not in out
+    assert msg.SETUP_REQUIRED not in out and msg.SETUP_OPENING not in out
+    assert window_calls == []
+
+
+def test_without_channels_the_announce_mode_is_code_0(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Объявлениям каналы не нужны; их самих в этой версии нет — это «появится позже», а не ошибка."""
+    ready_root.channels_file.unlink()
+    assert run_cli(["--announce"]) == int(ExitCode.OK)
+    out: str = capsys.readouterr().out
+    assert RunPart.ANNOUNCE.not_built_line in out
+    assert RunPart.BROADCAST.human_label not in out
+
+
+def test_without_channels_the_broadcast_mode_is_code_1(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ready_root.channels_file.unlink()
+    assert run_cli(["--broadcast"]) == int(ExitCode.ERRORS)
+    assert msg.READINESS_GAP_CHANNELS_MISSING in _line_of(RunPart.BROADCAST, capsys.readouterr().out)
+
+
+def test_the_from_package_mode_says_its_reading_comes_later(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+    window_calls: list[LivecraftPaths],
+) -> None:
+    """Режим Б: чтения пакетов в этой версии нет — строка «появится позже», код 0; таблица и ключ OpenAI не нужны."""
+    _drop_supplied_vault(ready_root)
+    assert run_cli(["--from-package"]) == int(ExitCode.OK)
+    out: str = capsys.readouterr().out
+    assert RunPart.PACKAGES_IN.not_built_line in out
+    assert window_calls == []
+
+
+def _drop_supplied_vault(paths: LivecraftPaths) -> None:
+    """Поставочного сейфа нет: ни таблицы, ни ключа OpenAI."""
+    paths.vault_file.unlink()
+
+
+def test_a_fully_configured_root_runs_every_built_part(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Всё настроено: строк «не готово» нет, только «появится позже» об объявлениях; код 0."""
+    assert run_cli([]) == int(ExitCode.OK)
+    out: str = capsys.readouterr().out
+    assert RunPart.ANNOUNCE.not_built_line in out
+    assert "Не готово" not in out
+
+
+def test_no_llm_does_not_need_the_openai_key(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--no-llm: нейросети нет — и ключ OpenAI не нужен; без флага его нехватка — строка и код 1."""
+    write_supplied_vault(ready_root, {k: v for k, v in SUPPLIED_VALUES.items() if k is not SecretField.OPENAI_API_KEY})
+    assert run_cli(["--no-llm"]) == int(ExitCode.OK)
+    assert RunPart.MERGE.human_label not in capsys.readouterr().out
+    assert run_cli([]) == int(ExitCode.ERRORS)
+    assert SecretField.OPENAI_API_KEY.human_label in _line_of(RunPart.MERGE, capsys.readouterr().out)
+
+
+def test_without_the_table_nothing_is_ready_and_the_window_opens(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+    window_calls: list[LivecraftPaths],
+) -> None:
+    """Без чтения таблицы режим А не делает ничего, даже если форма и каналы на месте: окно и код 2."""
+    ready_root.client_secret_file.unlink()
+    assert run_cli(["--broadcast"]) == int(ExitCode.CONFIG)
+    out: str = capsys.readouterr().out
+    assert "client_secret.json" in _line_of(RunPart.PLAN, out)
+    assert msg.SETUP_OPENING in out
+    assert window_calls == [ready_root]
+
+
+def test_the_mode_readiness_lands_in_the_log(ready_root: LivecraftPaths) -> None:
+    ready_root.channels_file.unlink()
+    assert run_cli([]) == int(ExitCode.ERRORS)
+    close_logging()
+    [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
+    text: str = log_file.read_text(encoding="utf-8")
+    assert "mode_readiness mode=all ready=plan,merge,package blocked=broadcast not_built=announce" in text
+    assert "run_started version=" in text and "mode=all " in text

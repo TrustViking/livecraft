@@ -97,10 +97,13 @@ class FormUrlMigration:
 
     @classmethod
     def plan(cls, paths: LivecraftPaths, readiness: Readiness) -> FormUrlMigration | None:
-        """Перенос нужен, только если настройки прочитаны, ссылка в них пуста, а в сейфе она есть."""
-        if readiness.config is None or readiness.vault_load is None:
+        """Перенос нужен, только если настройки прочитаны, ссылка в них пуста, а в сейфе она есть.
+
+        Каналы переносу не нужны: ссылка — настройка livecraft.json, а не channels.json.
+        """
+        if readiness.settings is None or readiness.vault_load is None:
             return None
-        settings: LivecraftSettings = readiness.config.settings
+        settings: LivecraftSettings = readiness.settings
         if settings.form.is_configured:
             return None
         secret: SecretValue | None = readiness.vault_load.vault.get(LEGACY_FIELD)

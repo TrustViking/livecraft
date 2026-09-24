@@ -75,6 +75,16 @@ def test_nothing_to_move_when_the_form_url_is_already_set(ready_paths: Livecraft
     assert FormUrlMigration.plan(ready_paths, Readiness.check(ready_paths)) is None
 
 
+def test_the_move_works_without_channels(ready_paths: LivecraftPaths) -> None:
+    """Боевой случай 24-09-2026: channels.json ещё нет — ссылка всё равно переезжает, каналы ей не нужны."""
+    _save_own(ready_paths, {SecretField.KEY_FORM_URL: OWN_FORM_URL})
+    ready_paths.channels_file.unlink()
+    result: FormUrlMigrationResult = _planned(ready_paths).run()
+    assert result.moved
+    assert load_settings(ready_paths.config_file).form.url == OWN_FORM_URL
+    assert _own_layer(ready_paths).get(SecretField.KEY_FORM_URL) is None
+
+
 def test_nothing_to_move_when_the_settings_do_not_read(ready_paths: LivecraftPaths) -> None:
     _save_own(ready_paths, {SecretField.KEY_FORM_URL: OWN_FORM_URL})
     ready_paths.config_file.unlink()

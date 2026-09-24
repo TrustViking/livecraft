@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import atexit
+import dataclasses
 import logging
 import shutil
 import subprocess
@@ -15,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from app.config.loader import ShippedSettings
+from app.config.loader import LivecraftSettings, ShippedSettings, load_settings, save_settings_file
 from app.paths import LivecraftPaths, build_paths, ensure_dirs
 from app.secretsafe.crypto import FORMAT_VERSION, VAULT_KEY_BYTES, EncryptedField, VaultCrypto, VaultFile
 from app.secretsafe.dpapi import Dpapi
@@ -58,6 +59,10 @@ SUPPLIED_VALUES: dict[SecretField, str] = {
 }
 # Ссылка на форму в сейфе — так её хранили до §14 решения 15; нужна тестам переноса в livecraft.json.
 LEGACY_FORM_URL: str = "https://docs.google.com/forms/d/e/1FAIpQLSf-supplied/viewform"
+# Ссылка на форму в livecraft.json для тестов, которым нужна настроенная форма (пакет, эфиры).
+FORM_URL: str = "https://forms.gle/AbCdEf123456"
+# client_secret.json готового корня: достаточно, что файл есть (§9) — к Google тесты не ходят.
+CLIENT_SECRET_STUB: str = '{"installed": {}}'
 
 
 def write_supplied_vault(paths: LivecraftPaths, values: dict[SecretField, str]) -> None:
@@ -190,8 +195,18 @@ def live_foreign_process() -> Iterator[subprocess.Popen[bytes]]:
 
 @pytest.fixture
 def ready_paths(livecraft_paths: LivecraftPaths) -> LivecraftPaths:
-    """Корень, готовый к запуску: настройки из поставки репо, каналы из примера, поставочный сейф на все нужные поля."""
+    """Корень, готовый к запуску: настройки из поставки репо, каналы из примера, поставочный сейф на все нужные поля,
+    файл OAuth-клиента на месте (его содержимое читает только вход в Google, в этих тестах входа нет).
+
+    Ссылка на форму в поставочных настройках пуста: пакет и эфиры без неё не готовы — это задают сами тесты."""
     SHIPPED_SETTINGS.install(livecraft_paths.config_file)
     shutil.copyfile(REPO_CHANNELS_EXAMPLE, livecraft_paths.channels_file)
     write_supplied_vault(livecraft_paths, SUPPLIED_VALUES)
+    livecraft_paths.client_secret_file.write_text(CLIENT_SECRET_STUB, encoding="utf-8")
     return livecraft_paths
+
+
+def set_form_url(paths: LivecraftPaths, url: str) -> None:
+    """Ссылка на форму в livecraft.json — тем же загрузчиком, что пишет настройщик."""
+    settings: LivecraftSettings = load_settings(paths.config_file)
+    save_settings_file(paths.config_file, dataclasses.replace(settings, form=dataclasses.replace(settings.form, url=url)))

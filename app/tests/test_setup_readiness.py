@@ -14,7 +14,8 @@ from app.secretsafe.crypto import KEY_FIELDS, KEY_SALT, KEY_VERSION, KEY_WRAPPED
 from app.secretsafe.store import VAULT_FILE_ENCODING, LocalVaultState, VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
-from app.setup.readiness import Readiness
+from app.setup.readiness import ModeReadiness, PartReadiness, Readiness
+from app.setup.run_mode import RunMode, RunPart
 from app.tests.conftest import (
     REPO_CHANNELS_EXAMPLE,
     SHIPPED_SETTINGS_FILE,
@@ -39,47 +40,65 @@ def _save_own_sheets_id(paths: LivecraftPaths) -> None:
     VaultStore.open(paths).save_local(own)
 
 
+def _mode_texts(readiness: Readiness) -> tuple[str, ...]:
+    """Строки частей и строки лога всех режимов, с нейросетью и без."""
+    texts: list[str] = []
+    for mode in RunMode:
+        for no_llm in (False, True):
+            mode_readiness: ModeReadiness = readiness.for_mode(mode, no_llm=no_llm)
+            texts.extend((*mode_readiness.lines, mode_readiness.log_line))
+    return tuple(texts)
+
+
 def _every_text(readiness: Readiness) -> str:
     """Всё, что Readiness отдаёт наружу — людям и в лог."""
     return "\n".join(
         (*readiness.summary_lines, *readiness.problems, *readiness.warnings, *readiness.template_lines,
-         readiness.log_line)
+         readiness.log_line, *_mode_texts(readiness))
     )
 
 
-# --- чистая установка
+# --- чистая установка: файлы читаются независимо друг от друга
 
 
 def test_a_clean_root_is_not_ready(livecraft_paths: LivecraftPaths) -> None:
-    """Ни конфигов, ни сейфа: первым загрузчик читает channels.json — его и называет, с шаблоном."""
+    """Ни конфигов, ни сейфа: обе ошибки названы — сначала настройки, потом каналы; шаблонов нет (файлов нет)."""
     readiness: Readiness = Readiness.check(livecraft_paths)
     assert not readiness.is_ready
-    assert readiness.config_error is not None
-    assert readiness.config_error.config_path == livecraft_paths.channels_file
-    assert readiness.config_error.kind is ConfigProblem.FILE_MISSING
-    assert str(readiness.config_error) == readiness.problems[0]
-    assert readiness.template_lines[0] == msg.CONFIG_CHANNELS_HINT.format(path=livecraft_paths.channels_file)
-    assert readiness.template_lines[-1] == msg.CONFIG_CHANNELS_TEMPLATE
+    assert readiness.settings is None and readiness.channels is None and readiness.config is None
+    assert readiness.settings_error is not None and readiness.settings_error.config_path == livecraft_paths.config_file
+    assert readiness.channels_error is not None and readiness.channels_error.kind is ConfigProblem.FILE_MISSING
+    assert readiness.config_errors == (readiness.settings_error, readiness.channels_error)
+    assert readiness.problems[0] == msg.CONFIG_FIX_IN_SETUP.format(
+        error=readiness.settings_error, tab=msg.SETUP_TAB_SETTINGS
+    )
+    assert readiness.problems[1] == msg.READINESS_CHANNELS_MISSING
+    assert readiness.template_lines == ()
 
 
-def test_a_missing_settings_file_gets_the_settings_template(livecraft_paths: LivecraftPaths) -> None:
+def test_settings_are_read_without_channels(livecraft_paths: LivecraftPaths) -> None:
+    """Боевой случай 24-09-2026: нет channels.json — livecraft.json всё равно прочитан."""
+    shutil.copyfile(SHIPPED_SETTINGS_FILE, livecraft_paths.config_file)
+    readiness: Readiness = Readiness.check(livecraft_paths)
+    assert readiness.settings is not None and readiness.settings_error is None
+    assert readiness.channels is None and readiness.config is None
+    assert msg.READINESS_FIELD_LINE.format(
+        label=msg.FORM_URL_LABEL, origin=msg.READINESS_FORM_NOT_CONFIGURED
+    ) in readiness.summary_lines
+
+
+def test_channels_are_read_without_settings(livecraft_paths: LivecraftPaths) -> None:
     shutil.copyfile(REPO_CHANNELS_EXAMPLE, livecraft_paths.channels_file)
     readiness: Readiness = Readiness.check(livecraft_paths)
-    assert readiness.config_error is not None
-    assert readiness.config_error.config_path == livecraft_paths.config_file
-    assert readiness.problems[0] == str(readiness.config_error)
-    assert readiness.template_lines == (
-        msg.CONFIG_SETTINGS_HINT.format(path=livecraft_paths.config_file),
-        msg.CONFIG_SETTINGS_TEMPLATE,
-    )
+    assert readiness.channels is not None and len(readiness.channels) == 2
+    assert readiness.settings is None and readiness.settings_error is not None
+    assert readiness.summary_lines[-1] == msg.READINESS_CHANNELS_LINE.format(count=2, languages="en, ru, uk")
 
 
-def test_the_channels_template_explains_every_field(livecraft_paths: LivecraftPaths) -> None:
-    """Между подсказкой и шаблоном — что вписать в каждое поле; допустимые значения — от загрузчика."""
-    lines: tuple[str, ...] = Readiness.check(livecraft_paths).template_lines
-    body: str = "\n".join(lines[1:-1])
-    assert len(lines) == len(msg.CONFIG_CHANNELS_FIELDS) + 2
-    assert msg.CONFIG_LANGUAGES_RULE in body and "public, unlisted" in body and "youtube" in body
+def test_the_config_property_joins_both_files(ready_paths: LivecraftPaths) -> None:
+    readiness: Readiness = Readiness.check(ready_paths)
+    assert readiness.config is not None
+    assert readiness.config.settings == readiness.settings and readiness.config.channels == readiness.channels
 
 
 # --- конфиги на месте, сейфа нет
@@ -89,7 +108,7 @@ def test_configs_without_a_vault_leave_only_the_vault_problem(livecraft_paths: L
     _copy_configs(livecraft_paths)
     readiness: Readiness = Readiness.check(livecraft_paths)
     assert not readiness.is_ready
-    assert readiness.config_error is None and readiness.vault_error is None
+    assert readiness.config_errors == () and readiness.vault_error is None
     assert readiness.problems == (Vault.empty().admission_reason,)
     for field in SecretField.current():
         assert field.human_label in readiness.problems[0]
@@ -97,24 +116,41 @@ def test_configs_without_a_vault_leave_only_the_vault_problem(livecraft_paths: L
     assert readiness.template_lines == ()
 
 
-def test_a_broken_config_field_is_named(livecraft_paths: LivecraftPaths) -> None:
+def test_a_broken_config_field_is_named_with_where_to_fix_it(livecraft_paths: LivecraftPaths) -> None:
     _copy_configs(livecraft_paths)
     data: dict[str, Any] = json.loads(livecraft_paths.config_file.read_text(encoding="utf-8"))
     data["keep_days"] = 0
     livecraft_paths.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     readiness: Readiness = Readiness.check(livecraft_paths)
-    assert readiness.config_error is not None and readiness.config_error.key_path == "keep_days"
-    assert readiness.template_lines == ()          # значение негодное, файл и поле на месте — шаблон не нужен
+    assert readiness.settings_error is not None and readiness.settings_error.key_path == "keep_days"
+    line: str = readiness.problems[0]
+    assert str(livecraft_paths.config_file) in line and "keep_days" in line and msg.SETUP_TAB_SETTINGS in line
+    assert readiness.channels is not None                  # каналы от сломанных настроек не зависят
+    assert readiness.template_lines == (msg.CONFIG_SETTINGS_TEMPLATE,)       # только для лога
 
 
-def test_a_missing_config_field_brings_the_template(livecraft_paths: LivecraftPaths) -> None:
+def test_a_broken_channels_file_is_named_with_its_tab_and_template(livecraft_paths: LivecraftPaths) -> None:
+    _copy_configs(livecraft_paths)
+    livecraft_paths.channels_file.write_text('{"channels": []}', encoding="utf-8")
+    readiness: Readiness = Readiness.check(livecraft_paths)
+    assert readiness.channels_error is not None
+    assert msg.SETUP_TAB_CHANNELS in readiness.problems[0]
+    assert str(livecraft_paths.channels_file) in readiness.problems[0]
+    lines: tuple[str, ...] = readiness.template_lines
+    assert lines[-1] == msg.CONFIG_CHANNELS_TEMPLATE
+    assert len(lines) == len(msg.CONFIG_CHANNELS_FIELDS) + 1
+    body: str = "\n".join(lines[:-1])
+    assert msg.CONFIG_LANGUAGES_RULE in body and "public, unlisted" in body and "youtube" in body
+
+
+def test_a_missing_config_field_brings_the_template_for_the_log(livecraft_paths: LivecraftPaths) -> None:
     _copy_configs(livecraft_paths)
     data: dict[str, Any] = json.loads(livecraft_paths.config_file.read_text(encoding="utf-8"))
     del data["timezone"]
     livecraft_paths.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     readiness: Readiness = Readiness.check(livecraft_paths)
-    assert readiness.config_error is not None and readiness.config_error.key_path == "timezone"
-    assert readiness.template_lines[-1] == msg.CONFIG_SETTINGS_TEMPLATE
+    assert readiness.settings_error is not None and readiness.settings_error.key_path == "timezone"
+    assert readiness.template_lines == (msg.CONFIG_SETTINGS_TEMPLATE,)
 
 
 # --- готово
@@ -218,10 +254,10 @@ def test_a_local_vault_file_that_does_not_open_stops_the_run(ready_paths: Livecr
     _assert_broken_local_file(ready_paths, Readiness.check(ready_paths))
 
 
-def test_the_config_problem_comes_before_the_vault_problem(livecraft_paths: LivecraftPaths) -> None:
+def test_the_config_problems_come_before_the_vault_problem(livecraft_paths: LivecraftPaths) -> None:
     readiness: Readiness = Readiness.check(livecraft_paths)
-    assert readiness.problems[0] == str(readiness.config_error)
-    assert readiness.problems[1] == Vault.empty().admission_reason
+    assert len(readiness.problems) == 3
+    assert readiness.problems[2] == Vault.empty().admission_reason
 
 
 # --- ни значений, ни масок ни в одном выводе (§7.4)
@@ -265,7 +301,7 @@ def test_the_log_line_carries_labels_and_state_only(ready_paths: LivecraftPaths)
     readiness: Readiness = Readiness.check(ready_paths)
     assert readiness.vault is not None
     line: str = readiness.log_line
-    assert line.startswith("config=ok channels=2 local=absent vault=")
+    assert line.startswith("settings=ok channels=2 local=absent vault=")
     assert readiness.vault.log_line in line
     assert line.isascii()
 
@@ -279,7 +315,7 @@ def test_check_prints_nothing(livecraft_paths: LivecraftPaths, capsys: pytest.Ca
 
 def test_the_readiness_object_is_frozen(ready_paths: LivecraftPaths) -> None:
     with pytest.raises(Exception):
-        Readiness.check(ready_paths).config = None     # type: ignore[misc]
+        Readiness.check(ready_paths).settings = None     # type: ignore[misc]
 
 
 # --- форма ключей в сводке: по livecraft.json, а не по сейфу (§14 решение 15)
@@ -323,3 +359,137 @@ def test_the_legacy_vault_field_has_no_summary_line(ready_paths: LivecraftPaths,
 def test_without_readable_settings_there_is_no_form_line(livecraft_paths: LivecraftPaths) -> None:
     lines: tuple[str, ...] = Readiness.check(livecraft_paths).summary_lines
     assert not any(msg.FORM_URL_LABEL in line for line in lines)
+
+
+# --- готовность по частям режима (задача 3.8, §10)
+
+
+def _configured(paths: LivecraftPaths) -> Readiness:
+    """Всё настроено, и форма тоже: готовы все реализованные части."""
+    _set_form_url(paths, FORM_URL)
+    return Readiness.check(paths)
+
+
+def _gaps_text(part: PartReadiness) -> str:
+    assert part.action is not None
+    return part.action
+
+
+def test_a_fully_configured_root_has_every_built_part_ready(ready_paths: LivecraftPaths) -> None:
+    readiness: Readiness = _configured(ready_paths)
+    for part in RunPart:
+        state: PartReadiness = readiness.part(part)
+        assert state.is_built is part.is_built
+        assert state.is_ready is part.is_built
+        assert (state.action is None) is part.is_built
+
+
+def test_without_channels_the_table_merge_and_package_are_ready(ready_paths: LivecraftPaths) -> None:
+    _set_form_url(ready_paths, FORM_URL)
+    ready_paths.channels_file.unlink()
+    readiness: Readiness = Readiness.check(ready_paths)
+    assert readiness.part(RunPart.PLAN).is_ready
+    assert readiness.part(RunPart.MERGE).is_ready
+    assert readiness.part(RunPart.PACKAGE).is_ready
+    broadcast: PartReadiness = readiness.part(RunPart.BROADCAST)
+    assert broadcast.is_blocked
+    action: str = _gaps_text(broadcast)
+    assert msg.READINESS_GAP_CHANNELS_MISSING in action and msg.SETUP_TAB_CHANNELS in action
+    assert action.startswith(msg.RUN_PART_BLOCKED.split("{", 1)[0])
+    assert RunPart.BROADCAST.human_label in action
+
+
+def test_without_the_openai_key_merge_waits_and_no_llm_does_not_need_it(ready_paths: LivecraftPaths) -> None:
+    _set_form_url(ready_paths, FORM_URL)
+    write_supplied_vault(ready_paths, {k: v for k, v in SUPPLIED_VALUES.items() if k is not SecretField.OPENAI_API_KEY})
+    readiness: Readiness = Readiness.check(ready_paths)
+    merge: PartReadiness = readiness.part(RunPart.MERGE)
+    assert merge.is_blocked
+    assert SecretField.OPENAI_API_KEY.human_label in _gaps_text(merge) and msg.SETUP_TAB_KEYS in _gaps_text(merge)
+    assert readiness.for_mode(RunMode.ALL, no_llm=False).blocked == (merge,)
+    assert readiness.for_mode(RunMode.ALL, no_llm=True).blocked == ()
+
+
+def test_without_the_form_the_package_and_broadcasts_wait(ready_paths: LivecraftPaths) -> None:
+    readiness: Readiness = Readiness.check(ready_paths)       # поставочная ссылка на форму пуста
+    for part in (RunPart.PACKAGE, RunPart.BROADCAST):
+        state: PartReadiness = readiness.part(part)
+        assert state.is_blocked
+        assert msg.READINESS_GAP_FORM in _gaps_text(state) and msg.SETUP_TAB_SETTINGS in _gaps_text(state)
+    assert readiness.part(RunPart.PLAN).is_ready and readiness.part(RunPart.MERGE).is_ready
+
+
+def test_without_client_secret_the_table_waits(ready_paths: LivecraftPaths) -> None:
+    ready_paths.client_secret_file.unlink()
+    readiness: Readiness = _configured(ready_paths)
+    plan: PartReadiness = readiness.part(RunPart.PLAN)
+    assert plan.is_blocked
+    assert str(ready_paths.client_secret_file) in _gaps_text(plan)
+    assert readiness.for_mode(RunMode.BROADCAST, no_llm=False).is_nothing_ready     # основа режима А не готова
+
+
+def test_without_the_table_fields_the_table_waits_and_names_both(ready_paths: LivecraftPaths) -> None:
+    write_supplied_vault(ready_paths, {SecretField.OPENAI_API_KEY: SUPPLIED_VALUES[SecretField.OPENAI_API_KEY]})
+    plan: PartReadiness = _configured(ready_paths).part(RunPart.PLAN)
+    assert plan.is_blocked
+    for field in (SecretField.SHEETS_ID, SecretField.SHEETS_RANGE):
+        assert field.human_label in _gaps_text(plan)
+
+
+def test_a_broken_settings_file_blocks_the_parts_that_need_it_with_the_key(ready_paths: LivecraftPaths) -> None:
+    data: dict[str, Any] = json.loads(ready_paths.config_file.read_text(encoding="utf-8"))
+    data["keep_days"] = 0
+    ready_paths.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    readiness: Readiness = Readiness.check(ready_paths)
+    for part in (RunPart.PLAN, RunPart.PACKAGE, RunPart.BROADCAST):
+        action: str = _gaps_text(readiness.part(part))
+        assert "keep_days" in action and msg.SETUP_TAB_SETTINGS in action
+    assert readiness.part(RunPart.MERGE).is_ready            # нейросети нужен только ключ
+
+
+def test_announce_and_packages_in_are_not_built_not_blocked(ready_paths: LivecraftPaths) -> None:
+    """Частей, которых нет в этой версии, настройкой не починить: строка «появится позже», а не «не готово»."""
+    readiness: Readiness = Readiness.check(ready_paths)
+    for part in (RunPart.ANNOUNCE, RunPart.PACKAGES_IN):
+        state: PartReadiness = readiness.part(part)
+        assert not state.is_built and not state.is_blocked and not state.is_ready
+        assert state.action == part.not_built_line
+
+
+def test_the_announce_mode_with_everything_set_blocks_nothing(ready_paths: LivecraftPaths) -> None:
+    mode: ModeReadiness = _configured(ready_paths).for_mode(RunMode.ANNOUNCE, no_llm=False)
+    assert [part.part for part in mode.ready] == [RunPart.PLAN, RunPart.MERGE, RunPart.PACKAGE]
+    assert mode.blocked == ()
+    assert [part.part for part in mode.not_built] == [RunPart.ANNOUNCE]
+    assert mode.lines == (RunPart.ANNOUNCE.not_built_line,)
+    assert not mode.is_nothing_ready
+    assert mode.log_line == "mode=announce ready=plan,merge,package blocked=- not_built=announce"
+
+
+def test_the_from_package_mode_needs_no_table_and_no_key(ready_paths: LivecraftPaths) -> None:
+    ready_paths.vault_file.unlink()
+    ready_paths.client_secret_file.unlink()
+    mode: ModeReadiness = _configured(ready_paths).for_mode(RunMode.FROM_PACKAGE, no_llm=False)
+    assert [part.part for part in mode.ready] == [RunPart.BROADCAST]
+    assert mode.blocked == () and not mode.is_nothing_ready
+
+
+def test_a_clean_root_has_nothing_ready(livecraft_paths: LivecraftPaths) -> None:
+    for mode in RunMode:
+        state: ModeReadiness = Readiness.check(livecraft_paths).for_mode(mode, no_llm=False)
+        assert state.is_nothing_ready and state.is_fixable_in_setup
+
+
+def test_the_mode_lines_come_one_per_part_in_work_order(ready_paths: LivecraftPaths) -> None:
+    ready_paths.channels_file.unlink()
+    mode: ModeReadiness = Readiness.check(ready_paths).for_mode(RunMode.ALL, no_llm=False)
+    parts: list[RunPart] = [part.part for part in mode.parts if part.action is not None]
+    assert parts == [RunPart.PACKAGE, RunPart.ANNOUNCE, RunPart.BROADCAST]
+    assert len(mode.lines) == 3
+
+
+def test_a_broken_vault_file_blocks_the_table_and_is_not_fixable_in_the_window(ready_paths: LivecraftPaths) -> None:
+    ready_paths.vault_local_file.write_bytes(NOT_UTF8_BYTES)
+    mode: ModeReadiness = _configured(ready_paths).for_mode(RunMode.ALL, no_llm=False)
+    assert mode.is_nothing_ready and not mode.is_fixable_in_setup
+    assert ready_paths.vault_local_file.name in mode.parts[0].action     # type: ignore[operator]
