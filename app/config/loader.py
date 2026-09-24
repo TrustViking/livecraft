@@ -123,6 +123,7 @@ CHANNEL_JOINER: Final[str] = ",\n"
 # Как render_settings_file раскладывает livecraft.json: так же, как поставочный файл.
 SETTINGS_FILE_INDENT: Final[int] = 2
 SETTINGS_FILE_END: Final[str] = "\n"
+SHIPPED_TEMPLATE_NAME: Final[str] = "CONFIG_SETTINGS_TEMPLATE"     # «путь» в ошибке разбора шаблона
 ALLOWED_JOINER: Final[str] = ", "
 # Ник канала (@handle) — ключ канала: уникален на YouTube и не зависит от регистра (§6 инвариант 5).
 HANDLE_PREFIX: Final[str] = "@"
@@ -463,6 +464,39 @@ def load_livecraft_config(config_file: Path, channels_file: Path) -> LivecraftCo
     """Каналы читаются первыми: их заполняет человек, ошибка в них вероятнее."""
     channels: tuple[ChannelConfig, ...] = load_channels(channels_file)
     return LivecraftConfig(settings=load_settings(config_file), channels=channels)
+
+
+@dataclass(frozen=True)
+class ShippedSettings:
+    """Поставочный вид livecraft.json (§5): файла в git нет, программа кладёт его сама, когда его нет.
+
+    `template` — текст шаблона (CONFIG_SETTINGS_TEMPLATE): без чьих-либо данных, ссылка на форму пуста
+    (§14 решение 16). Шаблон разбирается тем же загрузчиком, что и файл; негодный шаблон — ошибка программы.
+    Существующий файл не трогается никогда: в нём настройки человека, а сломанный файл называет загрузчик.
+    """
+
+    template: str
+
+    @property
+    def settings(self) -> LivecraftSettings:
+        """Настройки шаблона. Шаблон не разобрался — ValueError с путём ключа: это ошибка программиста."""
+        try:
+            return parse_settings(json.loads(self.template), Path(SHIPPED_TEMPLATE_NAME))
+        except json.JSONDecodeError as error:
+            raise ValueError(f"shipped settings template is not JSON: {error}") from error
+        except ConfigError as error:
+            raise ValueError(f"shipped settings template is invalid at {error.key_path}: {error.problem}") from error
+
+    def install(self, config_file: Path) -> bool:
+        """Нет файла — записать поставочный вид атомарно и вернуть True; файл есть — ничего не трогать, False.
+
+        Пишется разобранный шаблон тем же render_settings_file, что и настройщик: негодный шаблон на диск
+        не попадает, а текст файла совпадает с шаблоном байт в байт (тест держит это равенство).
+        """
+        if config_file.exists():
+            return False
+        write_text_atomically(config_file, render_settings_file(self.settings), CONFIG_ENCODING)
+        return True
 
 
 def render_channels_file(channels: Iterable[ChannelConfig]) -> str:

@@ -45,10 +45,17 @@ FORM_URL_MIGRATION_FAILED: Final[str] = (
     "Впишите её на вкладке «Настройки запуска»: livecraft.bat --setup."
 )
 
+# livecraft.json в git нет (§5): нет файла — программа сама кладёт поставочный вид (CONFIG_SETTINGS_TEMPLATE).
+SETTINGS_FILE_CREATED: Final[str] = "Настройки программы созданы из поставочного шаблона: {path}"
+
 # --- готовность к запуску (app\setup\readiness.py): сводка без значений — только откуда что взялось (§7.4)
 READINESS_SUMMARY_TITLE: Final[str] = "Настройки livecraft:"
 READINESS_FIELD_LINE: Final[str] = "  {label}: {origin}"
 READINESS_FIELD_ABSENT: Final[str] = "нет"
+# Форма ключей — открытая настройка livecraft.json (§14 решение 15): сводка говорит, задана ли ссылка, но не её саму.
+FORM_URL_LABEL: Final[str] = "Google форма для ключей стрима (эфира)"
+READINESS_FORM_CONFIGURED: Final[str] = "настроена"
+READINESS_FORM_NOT_CONFIGURED: Final[str] = "не настроена"
 READINESS_CHANNELS_LINE: Final[str] = "  каналов: {count}, языки стримов: {languages}"
 READINESS_CHANNELS_ABSENT: Final[str] = "  каналы: не прочитаны"
 # Личный сейф есть, но не читается: молчаливый откат на поставку недопустим (§16) — иначе получатель
@@ -212,7 +219,7 @@ VAULT_FIELD_SHEETS_ID: Final[str] = "Google таблица контент-пла
 # Пример в названии — не поставочный диапазон: название стоит в масках и сводках, и настоящий диапазон
 # в нём подсказал бы структуру таблицы, ради сокрытия которой диапазон и лежит в сейфе (§7.5).
 VAULT_FIELD_SHEETS_RANGE: Final[str] = "колонки Google таблицы (например, B:H)"
-VAULT_FIELD_KEY_FORM_URL: Final[str] = "Google форма для ключей стрима (эфира)"
+VAULT_FIELD_KEY_FORM_URL: Final[str] = FORM_URL_LABEL     # устаревшее поле сейфа, §14 решение 15
 # Маска по отпечатку: название поля и четыре знака sha256 — различить два значения можно, восстановить нет.
 VAULT_MASK_FINGERPRINT: Final[str] = "{label} (…{fingerprint})"
 # Происхождение поля: пришло со сборкой или его вписал сам пользователь (§7.3).
@@ -331,7 +338,7 @@ SETUP_SETTINGS_FIELD_LABELS: Final[dict[str, str]] = {
     "youtube_pause_seconds": "пауза между обращениями к YouTube (секунд)",
     "image_dir_template": "папка для обложек",
     "timezone": "часовой пояс",
-    "form.url": "Google форма для ключей стрима (эфира)",
+    "form.url": FORM_URL_LABEL,
     "llm.model": "модель OpenAI",
     "llm.fallback_model": "запасная модель OpenAI",
     "llm.reasoning_effort": "глубина рассуждений модели",

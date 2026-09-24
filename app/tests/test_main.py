@@ -314,15 +314,50 @@ def test_the_normal_run_does_not_import_the_window() -> None:
     assert result.stdout.strip() == "False"
 
 
-def test_a_missing_settings_file_prints_its_template(
+def test_a_missing_settings_file_is_created_from_the_template(
     livecraft_root: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    (livecraft_root / "secrets").mkdir(parents=True)
-    shutil.copyfile(REPO_CHANNELS_EXAMPLE, livecraft_root / "secrets" / "channels.json")
+    """livecraft.json в git нет (§5): программа кладёт поставочный вид сама, восстанавливать руками нечего."""
+    config_file: Path = livecraft_root / "secrets" / "livecraft.json"
+    run_cli([])
+    out: str = capsys.readouterr().out
+    assert msg.SETTINGS_FILE_CREATED.format(path=config_file) in out
+    assert config_file.read_text(encoding="utf-8") == msg.CONFIG_SETTINGS_TEMPLATE + "\n"
+    assert msg.CONFIG_SETTINGS_TEMPLATE not in out                  # шаблон не печатается: файл уже есть
+    close_logging()
+    [log_file] = list((livecraft_root / "logs").glob(LOG_GLOB))
+    assert "settings_file_created path=" in log_file.read_text(encoding="utf-8")
+
+
+def test_an_existing_settings_file_is_left_alone(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data: dict[str, object] = json.loads(ready_root.config_file.read_text(encoding="utf-8"))
+    data["keep_days"] = 7
+    ready_root.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    before: bytes = ready_root.config_file.read_bytes()
+    mtime: int = ready_root.config_file.stat().st_mtime_ns
+    for _ in range(2):
+        assert run_cli([]) == int(ExitCode.OK)
+        assert msg.SETTINGS_FILE_CREATED.split("{", 1)[0] not in capsys.readouterr().out
+    assert ready_root.config_file.read_bytes() == before
+    assert ready_root.config_file.stat().st_mtime_ns == mtime
+
+
+def test_a_settings_file_missing_a_field_prints_its_template(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Сломанный файл программа не перезаписывает: называет поле и печатает шаблон (§5)."""
+    data: dict[str, object] = json.loads(ready_root.config_file.read_text(encoding="utf-8"))
+    del data["keep_days"]
+    ready_root.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     assert run_cli([]) == int(ExitCode.CONFIG)
     out: str = capsys.readouterr().out
     assert msg.CONFIG_SETTINGS_TEMPLATE in out and msg.SETUP_REQUIRED in out
+    assert "keep_days" in out
 
 
 def test_a_ready_root_prints_the_summary_and_exits_0(

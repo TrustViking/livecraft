@@ -114,8 +114,9 @@ class Readiness:
 
     @property
     def summary_lines(self) -> tuple[str, ...]:
-        """Сводка для оператора: по каждому полю сейфа — откуда оно (или «нет»), каналы и языки. Без значений."""
-        return (msg.READINESS_SUMMARY_TITLE, *self._field_lines, self._channels_line)
+        """Сводка для оператора: по каждому нужному полю сейфа — откуда оно (или «нет»), настроена ли форма
+        ключей, каналы и языки. Без значений; устаревшее поле сейфа (ссылка на форму) не показывается."""
+        return (msg.READINESS_SUMMARY_TITLE, *self._field_lines, *self._form_lines, self._channels_line)
 
     @property
     def log_line(self) -> str:
@@ -131,8 +132,23 @@ class Readiness:
     def _field_lines(self) -> tuple[str, ...]:
         return tuple(
             msg.READINESS_FIELD_LINE.format(label=field.human_label, origin=self._origin_label(field))
-            for field in SecretField
+            for field in SecretField.current()
         )
+
+    @property
+    def _form_lines(self) -> tuple[str, ...]:
+        """Настроена ли форма ключей — по livecraft.json (§14 решение 15); настройки не прочитаны — строки нет.
+
+        Ссылку не печатаем: сводке достаточно «настроена / не настроена».
+        """
+        if self.config is None:
+            return ()
+        state: str = (
+            msg.READINESS_FORM_CONFIGURED
+            if self.config.settings.form.is_configured
+            else msg.READINESS_FORM_NOT_CONFIGURED
+        )
+        return (msg.READINESS_FIELD_LINE.format(label=msg.FORM_URL_LABEL, origin=state),)
 
     def _origin_label(self, field: SecretField) -> str:
         origin: VaultOrigin | None = None if self.vault is None else self.vault.origin_of(field)

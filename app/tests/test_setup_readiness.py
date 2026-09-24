@@ -17,7 +17,7 @@ from app.secretsafe.vault import Vault, VaultOrigin
 from app.setup.readiness import Readiness
 from app.tests.conftest import (
     REPO_CHANNELS_EXAMPLE,
-    REPO_SETTINGS_FILE,
+    SHIPPED_SETTINGS_FILE,
     SUPPLIED_VALUES,
     write_supplied_vault,
 )
@@ -27,7 +27,7 @@ OWN_SHEETS_ID: str = "1own-B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ-own-table"
 
 
 def _copy_configs(paths: LivecraftPaths) -> None:
-    shutil.copyfile(REPO_SETTINGS_FILE, paths.config_file)
+    shutil.copyfile(SHIPPED_SETTINGS_FILE, paths.config_file)
     shutil.copyfile(REPO_CHANNELS_EXAMPLE, paths.channels_file)
 
 
@@ -137,7 +137,7 @@ def test_the_summary_names_every_field_and_its_origin(ready_paths: LivecraftPath
 
 def test_the_summary_of_an_empty_vault_says_no_for_every_field(livecraft_paths: LivecraftPaths) -> None:
     lines: tuple[str, ...] = Readiness.check(livecraft_paths).summary_lines
-    for field in SecretField:
+    for field in SecretField.current():
         assert msg.READINESS_FIELD_LINE.format(label=field.human_label, origin=msg.READINESS_FIELD_ABSENT) in lines
     assert lines[-1] == msg.READINESS_CHANNELS_ABSENT
 
@@ -280,3 +280,46 @@ def test_check_prints_nothing(livecraft_paths: LivecraftPaths, capsys: pytest.Ca
 def test_the_readiness_object_is_frozen(ready_paths: LivecraftPaths) -> None:
     with pytest.raises(Exception):
         Readiness.check(ready_paths).config = None     # type: ignore[misc]
+
+
+# --- форма ключей в сводке: по livecraft.json, а не по сейфу (§14 решение 15)
+
+FORM_URL: str = "https://forms.gle/AbCdEf123456"
+LEGACY_FORM_LABEL: str = SecretField.KEY_FORM_URL.human_label
+
+
+def _set_form_url(paths: LivecraftPaths, url: str) -> None:
+    data: dict[str, Any] = json.loads(paths.config_file.read_text(encoding="utf-8"))
+    data["form"]["url"] = url
+    paths.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def test_the_summary_says_the_form_is_not_configured_on_the_shipped_settings(ready_paths: LivecraftPaths) -> None:
+    lines: tuple[str, ...] = Readiness.check(ready_paths).summary_lines
+    assert msg.READINESS_FIELD_LINE.format(label=msg.FORM_URL_LABEL, origin=msg.READINESS_FORM_NOT_CONFIGURED) in lines
+    assert lines[-1] == msg.READINESS_CHANNELS_LINE.format(count=2, languages="en, ru, uk")
+
+
+def test_the_summary_says_the_form_is_configured_and_hides_the_link(ready_paths: LivecraftPaths) -> None:
+    _set_form_url(ready_paths, FORM_URL)
+    readiness: Readiness = Readiness.check(ready_paths)
+    lines: tuple[str, ...] = readiness.summary_lines
+    assert msg.READINESS_FIELD_LINE.format(label=msg.FORM_URL_LABEL, origin=msg.READINESS_FORM_CONFIGURED) in lines
+    assert FORM_URL not in "\n".join(lines) + readiness.log_line
+
+
+@pytest.mark.parametrize("in_vault", [False, True])
+def test_the_legacy_vault_field_has_no_summary_line(ready_paths: LivecraftPaths, in_vault: bool) -> None:
+    """Устаревшее поле сейфа не показывается ни «нет», ни «поставка»: о форме — одна строка по настройкам."""
+    if in_vault:
+        write_supplied_vault(ready_paths, {**SUPPLIED_VALUES, SecretField.KEY_FORM_URL: FORM_URL})
+    lines: tuple[str, ...] = Readiness.check(ready_paths).summary_lines
+    form_lines: list[str] = [line for line in lines if LEGACY_FORM_LABEL in line]
+    assert form_lines == [
+        msg.READINESS_FIELD_LINE.format(label=msg.FORM_URL_LABEL, origin=msg.READINESS_FORM_NOT_CONFIGURED)
+    ]
+
+
+def test_without_readable_settings_there_is_no_form_line(livecraft_paths: LivecraftPaths) -> None:
+    lines: tuple[str, ...] = Readiness.check(livecraft_paths).summary_lines
+    assert not any(msg.FORM_URL_LABEL in line for line in lines)

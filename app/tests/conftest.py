@@ -3,16 +3,19 @@
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from app.config.loader import ShippedSettings
 from app.paths import LivecraftPaths, build_paths, ensure_dirs
 from app.secretsafe.crypto import FORMAT_VERSION, VAULT_KEY_BYTES, EncryptedField, VaultCrypto, VaultFile
 from app.secretsafe.dpapi import Dpapi
@@ -23,11 +26,28 @@ from app.sources.language import LanguageProfile
 from app.sources.metadata import SourceMetadata
 from app.sources.preview import Preview
 from app.sources.video import SourceVideo
+from app.ui import messages_ru as msg
 
 KYIV_WINTER: timezone = timezone(timedelta(hours=2))   # даты и время — по Киеву (CLAUDE.md §6, инвариант 4)
 FIXED_NOW: datetime = datetime(2026, 9, 20, 12, 0, tzinfo=KYIV_WINTER)
 REPO_ROOT: Path = Path(__file__).resolve().parents[2]
-REPO_SETTINGS_FILE: Path = REPO_ROOT / "secrets" / "livecraft.json"
+SHIPPED_SETTINGS: ShippedSettings = ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE)
+
+
+def _shipped_settings_file() -> Path:
+    """Поставочный livecraft.json, собранный боевым путём (ShippedSettings.install) во временной папке сессии.
+
+    В git файла нет (§5), а secrets\\livecraft.json разработчика — его личные настройки: тесты на них не опираются.
+    """
+    folder: Path = Path(tempfile.mkdtemp(prefix="livecraft-shipped-"))
+    atexit.register(shutil.rmtree, folder, True)
+    path: Path = folder / "livecraft.json"
+    SHIPPED_SETTINGS.install(path)
+    return path
+
+
+SHIPPED_SETTINGS_FILE: Path = _shipped_settings_file()
+REPO_SETTINGS_FILE: Path = SHIPPED_SETTINGS_FILE      # прежнее имя: им пользуются test_setup_migration.py и test_tools_sheets_probe.py
 REPO_CHANNELS_EXAMPLE: Path = REPO_ROOT / "app" / "examples" / "channels.example.json"
 # Ключ поставочного сейфа во временном корне (secrets\program.key, §7.3) и то, что в поставку положила сборка.
 PROGRAM_KEY_BYTES: bytes = bytes(range(VAULT_KEY_BYTES))
@@ -171,7 +191,7 @@ def live_foreign_process() -> Iterator[subprocess.Popen[bytes]]:
 @pytest.fixture
 def ready_paths(livecraft_paths: LivecraftPaths) -> LivecraftPaths:
     """Корень, готовый к запуску: настройки из поставки репо, каналы из примера, поставочный сейф на все нужные поля."""
-    shutil.copyfile(REPO_SETTINGS_FILE, livecraft_paths.config_file)
+    SHIPPED_SETTINGS.install(livecraft_paths.config_file)
     shutil.copyfile(REPO_CHANNELS_EXAMPLE, livecraft_paths.channels_file)
     write_supplied_vault(livecraft_paths, SUPPLIED_VALUES)
     return livecraft_paths

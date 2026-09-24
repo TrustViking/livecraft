@@ -1,6 +1,6 @@
 ########################################
 # livecraft: privacy + clean repo
-# структуру livecraft (CLAUDE.md §5): secrets\, image\, keystreams\, state\, logs\.
+# структуру livecraft (CLAUDE.md §5): secrets\, image\, bcast\, tokens\, keystreams\, state\, logs\.
 # Широкие правила вида *.bat или *.ico не заводить — они прячут нужные файлы проекта.
 ########################################
 
@@ -11,11 +11,13 @@
 .env.*
 
 ########################################
-# Секреты: всё, что в secrets\, — личное (CLAUDE.md §7).
-# В git из этой папки — только livecraft.json: технические настройки,
-# единственный источник и для dev, и для сборки.
+# Секреты и настройки: всё, что в secrets\, — личное (CLAUDE.md §5, §7).
+# livecraft.json в git тоже нет: в нём ссылка на форму и другие настройки человека
+# (§14 решения 15, 16). Поставочный вид — app\ui\messages_ru.py::CONFIG_SETTINGS_TEMPLATE;
+# нет файла — программа кладёт его сама (app\config\loader.py::ShippedSettings).
 # Явные строки ниже избыточны при /secrets/*, но оставлены как документ намерения:
-#   vault.dat            — поставочный сейф (ключ OpenAI, id таблицы, URL формы)
+#   livecraft.json       — технические настройки и ссылка на форму ключей
+#   vault.dat            — поставочный сейф (ключ OpenAI, id таблицы, диапазон)
 #   vault.local.dat      — личный сейф пользователя (DPAPI, привязан к Windows-аккаунту)
 #   program.key          — ключ поставочного сейфа в dev-режиме
 #   channels.json        — каналы владельца; channels.previous.json, channels_passport.json
@@ -23,7 +25,7 @@
 #   client_secret.json, <handle>.token.json, sheets.token.json, cookies.txt
 ########################################
 /secrets/*
-!/secrets/livecraft.json
+/secrets/livecraft.json
 /secrets/vault.dat
 /secrets/vault.local.dat
 /secrets/program.key
@@ -121,8 +123,10 @@ temp/
 /state/
 # внешние бинарники: yt-dlp.exe, deno.exe (обновляются сами)
 /tools/
-# отладочная выгрузка слотов (--export-slots)
-/export/
+# пакеты plan_*.bcast: пишет режим А, читает режим Б (§5, §14 решения 13, 18)
+/bcast/
+# созданные пары «токен + ключ» *.lctoken / *.lckey (§5, §14 решение 16)
+/tokens/
 
 ########################################
 # Локальные пусковые скрипты с абсолютными путями

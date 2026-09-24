@@ -6,7 +6,8 @@
 Обрыв (Ctrl+C) и любое необработанное исключение ловятся в run_cli: строка в лог и в консоль, код 1 —
 это единственный перехват Exception во всей программе (§11).
 
-Каждый запуск, кроме --version, начинается с проверки готовности (app\\setup\\readiness.py): сейф и оба
+Каждый запуск, кроме --version, сначала кладёт livecraft.json из поставочного шаблона, если файла нет
+(в git его нет, §5), затем проверяет готовность (app\\setup\\readiness.py): сейф и оба
 конфига прочитаны, всего хватает. Фильтр секретов в логах встаёт сразу после чтения сейфа (§7.4). Ссылка на форму,
 оставшаяся в сейфе, один раз сама переносится в livecraft.json (app\\setup\\migration.py). Не готово —
 обычный запуск не начинается: что не так, шаблон сломанного конфига, строка про --setup и код 2 (§8.2).
@@ -25,7 +26,7 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Final
 
-from app.config.loader import ConfigError
+from app.config.loader import ConfigError, ShippedSettings
 from app.core.dates import format_datetime_text
 from app.observability.logging_setup import close_logging, get_logger, install_secret_filter, setup_logging
 from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
@@ -165,6 +166,7 @@ def _run_guarded(request: RunRequest, paths: LivecraftPaths, log_path: Path) -> 
 
 def _run(request: RunRequest, paths: LivecraftPaths) -> int:
     """Готовность решает Readiness; здесь — только печать и выбор кода (§8.2)."""
+    _install_settings(paths)
     readiness: Readiness = Readiness.check(paths)
     if readiness.vault is not None:
         install_secret_filter(readiness.vault)      # сразу после чтения сейфа, до любых строк лога (§7.4)
@@ -179,6 +181,14 @@ def _run(request: RunRequest, paths: LivecraftPaths) -> int:
         return int(ExitCode.CONFIG)
     _say_lines(readiness.summary_lines)
     return int(ExitCode.OK)
+
+
+def _install_settings(paths: LivecraftPaths) -> None:
+    """livecraft.json в git нет (§5): нет файла — программа кладёт поставочный вид сама, человеку делать нечего."""
+    if not ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE).install(paths.config_file):
+        return
+    LOGGER.info("settings_file_created path=%s", paths.config_file)
+    _say(msg.SETTINGS_FILE_CREATED.format(path=paths.config_file))
 
 
 def _migrate_form_url(paths: LivecraftPaths, readiness: Readiness) -> Readiness:

@@ -33,7 +33,7 @@ from app.setup.tabs import (
 from app.setup.tabs.channels_tab import ChannelsTab
 from app.setup.tabs.keys_tab import SECRET_ECHO, KeyRowView, KeysTab
 from app.setup.tabs.settings_tab import SettingsTab
-from app.tests.conftest import REPO_CHANNELS_EXAMPLE, REPO_SETTINGS_FILE, SUPPLIED_VALUES
+from app.tests.conftest import REPO_CHANNELS_EXAMPLE, SHIPPED_SETTINGS_FILE, SUPPLIED_VALUES
 from app.ui import messages_ru as msg
 
 OWN_OPENAI_KEY: str = "sk-proj-own-Zy9xWvUtSrQpOnMlKjIhGfEdCbA9876543210"
@@ -279,7 +279,7 @@ def test_text_in_an_integer_field_shows_the_problem_and_keeps_the_file(
     assert tab.problem.text == msg.SETUP_PROBLEM_LINE.format(
         label=msg.SETUP_SETTINGS_FIELD_LABELS["min_lead_minutes"], text=msg.CONFIG_PROBLEM_INT_MIN.format(minimum=0)
     )
-    assert ready_paths.config_file.read_bytes() == REPO_SETTINGS_FILE.read_bytes()
+    assert ready_paths.config_file.read_bytes() == SHIPPED_SETTINGS_FILE.read_bytes()
     assert tab.is_dirty
 
 
@@ -305,7 +305,7 @@ def test_a_bad_form_url_shows_the_problem_and_keeps_the_file(window: SetupWindow
     assert tab.problem.text == msg.SETUP_PROBLEM_LINE.format(
         label=msg.SETUP_SETTINGS_FIELD_LABELS["form.url"], text=msg.CONFIG_PROBLEM_FORM_URL
     )
-    assert ready_paths.config_file.read_bytes() == REPO_SETTINGS_FILE.read_bytes()
+    assert ready_paths.config_file.read_bytes() == SHIPPED_SETTINGS_FILE.read_bytes()
 
 
 def test_the_settings_widgets_follow_the_value_types(window: SetupWindow) -> None:

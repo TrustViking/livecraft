@@ -16,7 +16,7 @@ from app.config.loader import (
 from app.paths import LivecraftPaths
 from app.setup.fields.settings_draft import SettingsDraft
 from app.setup.panels.settings_panel import SettingsPanel, SettingsPanelEdit
-from app.tests.conftest import REPO_SETTINGS_FILE
+from app.tests.conftest import SHIPPED_SETTINGS_FILE
 from app.ui import messages_ru as msg
 
 BROKEN_JSON: bytes = b'{"min_lead_minutes": 60,'
@@ -24,7 +24,7 @@ FORM_URL: str = "https://docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform"
 
 
 def _shipped() -> LivecraftSettings:
-    return load_settings(REPO_SETTINGS_FILE)
+    return load_settings(SHIPPED_SETTINGS_FILE)
 
 
 def _applied(panel: SettingsPanel, **changes: Any) -> SettingsPanel:
@@ -203,7 +203,7 @@ def test_save_changes_only_the_edited_field(ready_paths: LivecraftPaths) -> None
 
 def test_save_without_changes_writes_the_shipped_file_again(ready_paths: LivecraftPaths) -> None:
     SettingsPanel.from_paths(ready_paths).save(ready_paths)
-    assert ready_paths.config_file.read_bytes() == REPO_SETTINGS_FILE.read_bytes()
+    assert ready_paths.config_file.read_bytes() == SHIPPED_SETTINGS_FILE.read_bytes()
 
 
 def test_without_a_settings_file_the_panel_opens_on_the_template(livecraft_paths: LivecraftPaths) -> None:
@@ -236,7 +236,7 @@ def test_a_broken_settings_file_is_named_and_replaced_only_on_save(livecraft_pat
 
 
 def test_a_settings_file_missing_a_field_opens_on_the_template(livecraft_paths: LivecraftPaths) -> None:
-    data: dict[str, Any] = json.loads(REPO_SETTINGS_FILE.read_text(encoding="utf-8"))
+    data: dict[str, Any] = json.loads(SHIPPED_SETTINGS_FILE.read_text(encoding="utf-8"))
     del data["timezone"]
     livecraft_paths.config_file.write_text(json.dumps(data), encoding="utf-8")
     panel: SettingsPanel = SettingsPanel.from_paths(livecraft_paths)

@@ -27,6 +27,7 @@ from app.config.loader import (
     Privacy,
     ReasoningEffort,
     ServiceTier,
+    ShippedSettings,
     load_channels,
     load_livecraft_config,
     load_settings,
@@ -40,15 +41,15 @@ from app.config.loader import (
 )
 from app.paths import LivecraftPaths
 from app.secretsafe.value import SecretField
+from app.tests.conftest import SHIPPED_SETTINGS, SHIPPED_SETTINGS_FILE
 from app.ui import messages_ru as msg
 
-REPO_SETTINGS: Path = Path(__file__).resolve().parents[2] / "secrets" / "livecraft.json"
 REPO_CHANNELS_EXAMPLE: Path = Path(__file__).resolve().parents[2] / "app" / "examples" / "channels.example.json"
 
 
 def _settings_data() -> dict[str, Any]:
-    """Настройки из настоящего поставочного файла репо — а не выдуманные в тесте."""
-    return json.loads(REPO_SETTINGS.read_text(encoding="utf-8"))
+    """Настройки из поставочного вида, который кладёт сама программа, — а не выдуманные в тесте."""
+    return json.loads(SHIPPED_SETTINGS_FILE.read_text(encoding="utf-8"))
 
 
 def _channels_data() -> dict[str, Any]:
@@ -84,7 +85,7 @@ def _channel(**changes: Any) -> dict[str, Any]:
 
 
 def test_the_shipped_settings_file_loads(tmp_path: Path) -> None:
-    settings: LivecraftSettings = load_settings(REPO_SETTINGS)
+    settings: LivecraftSettings = load_settings(SHIPPED_SETTINGS_FILE)
     assert settings.min_lead_minutes == 60
     assert settings.keep_days == 30
     assert settings.auto_start is True and settings.set_thumbnail is True
@@ -111,14 +112,56 @@ def test_the_channels_example_loads() -> None:
 
 
 def test_both_files_load_together(tmp_path: Path) -> None:
-    config: LivecraftConfig = load_livecraft_config(REPO_SETTINGS, REPO_CHANNELS_EXAMPLE)
-    assert config.settings == load_settings(REPO_SETTINGS)
+    config: LivecraftConfig = load_livecraft_config(SHIPPED_SETTINGS_FILE, REPO_CHANNELS_EXAMPLE)
+    assert config.settings == load_settings(SHIPPED_SETTINGS_FILE)
     assert config.channels == load_channels(REPO_CHANNELS_EXAMPLE)
 
 
-def test_the_settings_template_is_the_shipped_file() -> None:
-    """Шаблон в консоли — ровно то, что лежит в поставке: иначе «восстановите файл» даст другой файл."""
-    assert json.loads(msg.CONFIG_SETTINGS_TEMPLATE) == _settings_data()
+# --- поставочный вид livecraft.json: файла в git нет, программа кладёт шаблон сама (§5)
+
+
+def test_the_shipped_template_parses_with_an_empty_form_url() -> None:
+    """Шаблон разбирается тем же загрузчиком; поставка без чьих-либо данных (§14 решение 16)."""
+    settings: LivecraftSettings = parse_settings(json.loads(msg.CONFIG_SETTINGS_TEMPLATE), Path("template"))
+    assert settings == SHIPPED_SETTINGS.settings
+    assert settings.form.url == "" and not settings.form.is_configured
+    for forbidden in ("docs.google.com", "forms.gle"):
+        assert forbidden not in msg.CONFIG_SETTINGS_TEMPLATE
+
+
+def test_the_rendered_shipped_settings_are_the_template_byte_for_byte() -> None:
+    """Файл, который кладёт программа, и шаблон из консоли — один и тот же текст."""
+    rendered: str = render_settings_file(ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE).settings)
+    assert rendered == msg.CONFIG_SETTINGS_TEMPLATE + "\n"
+
+
+def test_install_creates_the_missing_file_from_the_template(tmp_path: Path) -> None:
+    config_file: Path = tmp_path / "livecraft.json"
+    assert ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE).install(config_file) is True
+    assert config_file.read_text(encoding="utf-8") == msg.CONFIG_SETTINGS_TEMPLATE + "\n"
+    assert load_settings(config_file) == SHIPPED_SETTINGS.settings
+
+
+def test_install_leaves_an_existing_file_alone(tmp_path: Path) -> None:
+    """В файле — настройки человека или сломанный файл, который назовёт загрузчик: трогать нельзя."""
+    config_file: Path = tmp_path / "livecraft.json"
+    for content in (b'{"keep_days": 7}', b"\xff not json"):
+        config_file.write_bytes(content)
+        assert ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE).install(config_file) is False
+        assert config_file.read_bytes() == content
+
+
+@pytest.mark.parametrize(
+    ("template", "fragment"),
+    [("{", "not JSON"), (msg.CONFIG_SETTINGS_TEMPLATE.replace('"keep_days": 30', '"keep_days": 0'), "keep_days")],
+)
+def test_a_broken_template_is_a_programmer_error_and_writes_nothing(
+    tmp_path: Path, template: str, fragment: str
+) -> None:
+    config_file: Path = tmp_path / "livecraft.json"
+    with pytest.raises(ValueError, match=fragment):
+        ShippedSettings(template=template).install(config_file)
+    assert not config_file.exists()
 
 
 def test_the_channels_template_loads_with_the_same_loader(tmp_path: Path) -> None:
@@ -236,7 +279,7 @@ def test_an_invalid_value_does_not_ask_for_the_template(tmp_path: Path) -> None:
 
 def test_a_duplicate_key_is_an_error(tmp_path: Path) -> None:
     """json молча взял бы последнее значение — здесь это ошибка с именем поля."""
-    text: str = REPO_SETTINGS.read_text(encoding="utf-8").replace('"keep_days": 30,', '"keep_days": 30, "keep_days": 7,')
+    text: str = SHIPPED_SETTINGS_FILE.read_text(encoding="utf-8").replace('"keep_days": 30,', '"keep_days": 30, "keep_days": 7,')
     path: Path = tmp_path / "livecraft.json"
     path.write_text(text, encoding="utf-8")
     with pytest.raises(ConfigError) as raised:
@@ -246,7 +289,7 @@ def test_a_duplicate_key_is_an_error(tmp_path: Path) -> None:
 
 
 def test_a_duplicate_form_option_is_an_error(tmp_path: Path) -> None:
-    text: str = REPO_SETTINGS.read_text(encoding="utf-8").replace(
+    text: str = SHIPPED_SETTINGS_FILE.read_text(encoding="utf-8").replace(
         '"youtube": "You Tube",', '"youtube": "You Tube", "youtube": "YouTube",'
     )
     path: Path = tmp_path / "livecraft.json"
@@ -311,14 +354,14 @@ KYIV: str = "Europe/Kyiv"
 
 
 def test_the_shipped_settings_give_the_kyiv_zone() -> None:
-    zone: ZoneInfo = load_settings(REPO_SETTINGS).zone
+    zone: ZoneInfo = load_settings(SHIPPED_SETTINGS_FILE).zone
     assert isinstance(zone, ZoneInfo)
     assert zone.key == KYIV
 
 
 def test_the_zone_is_real_and_follows_summer_time() -> None:
     """Не заглушка UTC: зимой Киев +02:00, летом +03:00 — база зон стоит и читается."""
-    zone: ZoneInfo = load_settings(REPO_SETTINGS).zone
+    zone: ZoneInfo = load_settings(SHIPPED_SETTINGS_FILE).zone
     assert datetime(2027, 1, 15, 12, 0, tzinfo=zone).utcoffset() == timedelta(hours=2)
     assert datetime(2027, 7, 15, 12, 0, tzinfo=zone).utcoffset() == timedelta(hours=3)
 
@@ -453,7 +496,7 @@ def _settings_with_form_url(tmp_path: Path, url: Any) -> Path:
 
 def test_the_shipped_form_url_is_empty_and_not_configured() -> None:
     """Поставка без чьих-либо данных (§14 решение 16): форма не настроена, и это не ошибка файла."""
-    form: FormSettings = load_settings(REPO_SETTINGS).form
+    form: FormSettings = load_settings(SHIPPED_SETTINGS_FILE).form
     assert form.url == ""
     assert not form.is_configured
     assert form.url_problem is None and form.problem is None
@@ -524,7 +567,7 @@ def test_the_form_url_is_written_first_and_reads_back(tmp_path: Path) -> None:
 
 
 def test_the_form_url_problem_is_checked_before_the_rest_of_the_form() -> None:
-    form: FormSettings = dataclasses.replace(load_settings(REPO_SETTINGS).form, url="http://forms.gle/x")
+    form: FormSettings = dataclasses.replace(load_settings(SHIPPED_SETTINGS_FILE).form, url="http://forms.gle/x")
     assert form.problem == form.url_problem
     assert form.url_problem is not None and form.url_problem.key == "url"
 
@@ -636,7 +679,7 @@ def test_the_account_name_is_stored_in_nfc(tmp_path: Path) -> None:
 
 @pytest.fixture
 def config() -> LivecraftConfig:
-    return load_livecraft_config(REPO_SETTINGS, REPO_CHANNELS_EXAMPLE)
+    return load_livecraft_config(SHIPPED_SETTINGS_FILE, REPO_CHANNELS_EXAMPLE)
 
 
 def test_served_languages_are_the_union_of_channel_languages(config: LivecraftConfig) -> None:
@@ -718,18 +761,18 @@ def test_the_error_text_names_the_file_the_key_and_the_problem(tmp_path: Path) -
 
 def test_the_rendered_settings_file_is_the_shipped_file_byte_for_byte() -> None:
     """Настройщик, сохранивший поставку без правок, пишет ровно тот же файл."""
-    assert render_settings_file(load_settings(REPO_SETTINGS)).encode("utf-8") == REPO_SETTINGS.read_bytes()
+    assert render_settings_file(load_settings(SHIPPED_SETTINGS_FILE)).encode("utf-8") == SHIPPED_SETTINGS_FILE.read_bytes()
 
 
 def test_the_saved_settings_file_reads_back_into_an_equal_object(livecraft_paths: LivecraftPaths) -> None:
-    settings: LivecraftSettings = load_settings(REPO_SETTINGS)
+    settings: LivecraftSettings = load_settings(SHIPPED_SETTINGS_FILE)
     save_settings_file(livecraft_paths.config_file, settings)
     assert load_settings(livecraft_paths.config_file) == settings
-    assert livecraft_paths.config_file.read_bytes() == REPO_SETTINGS.read_bytes()
+    assert livecraft_paths.config_file.read_bytes() == SHIPPED_SETTINGS_FILE.read_bytes()
 
 
 def test_the_settings_data_keep_the_key_order_of_the_file() -> None:
-    data: dict[str, Any] = load_settings(REPO_SETTINGS).to_data()
+    data: dict[str, Any] = load_settings(SHIPPED_SETTINGS_FILE).to_data()
     assert tuple(data) == SETTINGS_KEYS
     assert tuple(data["llm"]) == LLM_KEYS
     assert tuple(data["form"]) == FORM_KEYS
@@ -744,7 +787,7 @@ def test_the_channel_data_keep_the_key_order_of_the_file() -> None:
 
 
 def test_parsing_read_settings_data_equals_loading_the_file() -> None:
-    assert parse_settings(_settings_data(), REPO_SETTINGS) == load_settings(REPO_SETTINGS)
+    assert parse_settings(_settings_data(), SHIPPED_SETTINGS_FILE) == load_settings(SHIPPED_SETTINGS_FILE)
 
 
 def test_parsing_read_channels_data_equals_loading_the_file() -> None:
@@ -800,7 +843,7 @@ def test_parsing_data_with_nan_gives_the_same_error(tmp_path: Path) -> None:
 def test_rendering_settings_built_around_the_loader_with_nan_fails() -> None:
     """Страховка записи: нестандартного JSON в livecraft.json не бывает."""
     settings: LivecraftSettings = dataclasses.replace(
-        load_settings(REPO_SETTINGS), youtube_pause_seconds=float("nan")
+        load_settings(SHIPPED_SETTINGS_FILE), youtube_pause_seconds=float("nan")
     )
     with pytest.raises(ValueError):
         render_settings_file(settings)
