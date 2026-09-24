@@ -36,7 +36,7 @@
 - всё, что программа исправила сама, она называет в отчёте запуска;
 - всё, что человек обязан сделать, программа называет одной строкой с точным действием.
 
-Принято Артуром 24-09-2026.
+Принято 24-09-2026.
 
 ---
 
@@ -203,8 +203,9 @@ app\
   observability\          logging_setup.py — маскирование секретов и ключей потока
   runtime\                single_instance.py (InstanceLock — замок одного экземпляра),
                           ytdlp_updater.py, deno_updater.py, cookies_updater.py — автообновление внешних бинарников
-  sheets\                 client.py (Google Sheets API), plan.py (SheetPlan, SheetRow), rows.py (нормализация, дедуп, язык)
-  sources\                fetcher.py (Protocol), ytdlp.py (YtDlpFetcher), preview.py (Preview, нормализация Pillow), metadata.py, video.py (SourceVideo, SourceCatalog)
+  sheets\                 client.py (Google Sheets API), plan.py (SheetPlan, SheetRow), rows.py (нормализация, дедуп)
+  sources\                fetcher.py (Protocol), ytdlp.py (YtDlpFetcher), preview.py (Preview, нормализация Pillow), metadata.py, language.py (LanguageResolver — язык источника, §14 решение 12), video.py (SourceVideo, SourceCatalog)
+  resources\              loader.py; text\ — промты и лексиконы restreamer файлами, без правок текстов (§2)
   llm\                    client.py, factory.py, providers\, rate_limits.py, usage_tracker.py, model_*.py, merges\ (контракты merge), prompts\
   texts\                  санация после LLM, safe-обрезка, композиция описания, quality gate
   slots\                  slot.py (StreamSlot), builder.py (SlotBuilder: ряды + метаданные + merge → слоты), preview.py
