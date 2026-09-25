@@ -45,19 +45,22 @@ from app.ui import messages_ru as msg
 OWN_OPENAI_KEY: str = "sk-proj-own-Zy9xWvUtSrQpOnMlKjIhGfEdCbA9876543210"
 BAD_OPENAI_KEY: str = "not-a-key"
 OLD_FILE_LANGUAGES: tuple[str, ...] = ("ru", "en")   # channels.json до решения 21: у канала два языка
+CAPTURE_OPTION: str = "capture"
+FD_CAPTURE: str = "fd"
+FD_CAPTURE_PROBLEM: str = "окно Tk под --capture=fd ломает стандартные каналы Tcl: нужен перехват из pytest.ini"
 
 
-def _open(paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]) -> Iterator[SetupWindow]:
-    """Окно создаётся при приостановленном перехвате вывода pytest.
+def _open(paths: LivecraftPaths, pytestconfig: pytest.Config) -> Iterator[SetupWindow]:
+    """Окно создаётся и прячется; после теста разрушается, если его не закрыл сам тест.
 
-    На Windows pytest перехватывает вывод подменой дескрипторов 0–2, а вместе с ними — стандартных описателей
-    процесса. Tcl при создании интерпретатора берёт эти описатели в свои стандартные каналы; pytest потом
-    закрывает подменные файлы, Windows отдаёт их номера другим файлам, и следующее окно время от времени не
-    читает init.tcl («couldn't read file … No error»). На время создания окна перехват выключен, и Tcl
-    видит настоящие описатели консоли — как при боевом запуске. Всё остальное в тестах идёт с перехватом.
+    Tcl берёт описатели ОС стандартных потоков своими стандартными каналами один раз на поток и держит их до
+    конца процесса. Перехват pytest на уровне дескрипторов (--capture=fd) на каждой паузе и возобновлении
+    делает dup2 на 0–2 и тем закрывает эти описатели; Windows отдаёт их номера следующим открытым файлам, и
+    очередное окно не читает init.tcl. Поэтому pytest.ini в корне ставит перехват на уровне sys, а под
+    --capture=fd окно не создаётся: тест падает с этой причиной, а не случайной TclError в другом тесте.
     """
-    with capsys.disabled():
-        window: SetupWindow = SetupWindow(paths)
+    assert pytestconfig.getoption(CAPTURE_OPTION) != FD_CAPTURE, FD_CAPTURE_PROBLEM
+    window: SetupWindow = SetupWindow(paths)
     window.root.withdraw()
     try:
         yield window
@@ -67,24 +70,24 @@ def _open(paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]) -> Iterator
 
 
 @pytest.fixture
-def window(ready_paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]) -> Iterator[SetupWindow]:
+def window(ready_paths: LivecraftPaths, pytestconfig: pytest.Config) -> Iterator[SetupWindow]:
     """Окно на готовом корне: поставочный сейф на все поля, настройки поставки, каналы примера."""
-    yield from _open(ready_paths, capsys)
+    yield from _open(ready_paths, pytestconfig)
 
 
 @pytest.fixture
-def two_languages_window(ready_paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]) -> Iterator[SetupWindow]:
+def two_languages_window(ready_paths: LivecraftPaths, pytestconfig: pytest.Config) -> Iterator[SetupWindow]:
     """Окно на своём channels.json старого вида: у второго канала два языка (совместимость, §14 решение 21)."""
     data: dict[str, Any] = json.loads(ready_paths.channels_file.read_text(encoding="utf-8"))
     data["channels"][1]["languages"] = list(OLD_FILE_LANGUAGES)
     ready_paths.channels_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    yield from _open(ready_paths, capsys)
+    yield from _open(ready_paths, pytestconfig)
 
 
 @pytest.fixture
-def bare_window(livecraft_paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]) -> Iterator[SetupWindow]:
+def bare_window(livecraft_paths: LivecraftPaths, pytestconfig: pytest.Config) -> Iterator[SetupWindow]:
     """Окно на чистой установке: ни сейфа, ни конфигов."""
-    yield from _open(livecraft_paths, capsys)
+    yield from _open(livecraft_paths, pytestconfig)
 
 
 def _widgets(root: tk.Misc) -> Iterator[tk.Misc]:
@@ -418,10 +421,10 @@ def test_the_readiness_line_on_a_clean_root_lists_the_problems(
     assert bare_window.readiness_line.cget("text") == "\n".join(problems)
 
 
-def test_saving_refreshes_the_readiness_line(ready_paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]) -> None:
+def test_saving_refreshes_the_readiness_line(ready_paths: LivecraftPaths, pytestconfig: pytest.Config) -> None:
     """Каналов нет — не готово; канал добавлен и сохранён — строка готовности обновилась сама."""
     ready_paths.channels_file.unlink()
-    for window in _open(ready_paths, capsys):
+    for window in _open(ready_paths, pytestconfig):
         assert window.readiness_line.cget("text") != msg.SETUP_READY
         tab: ChannelsTab = window.channels_tab
         _fill_channel(tab, account_name="Канал", handle="@kanal_hu", google_account="owner@gmail.com", languages="hu")
@@ -487,11 +490,11 @@ def test_the_close_button_of_the_window_goes_through_the_question(window: SetupW
 
 
 def test_a_broken_own_vault_file_opens_the_keys_tab_for_replacement(
-    ready_paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]
+    ready_paths: LivecraftPaths, pytestconfig: pytest.Config
 ) -> None:
     """Свой файл ключей повреждён: вкладка открыта со строками и говорит, что сохранение его заменит (D9)."""
     ready_paths.vault_local_file.write_bytes(b"\xff\xfe\x00vault\x80\x81")
-    for window in _open(ready_paths, capsys):
+    for window in _open(ready_paths, pytestconfig):
         tab: KeysTab = window.keys_tab
         assert tab.panel is not None
         assert tab.panel.local_state is LocalVaultState.BROKEN
@@ -502,11 +505,11 @@ def test_a_broken_own_vault_file_opens_the_keys_tab_for_replacement(
 
 
 def test_a_broken_supplied_vault_file_is_named_on_the_keys_tab(
-    ready_paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]
+    ready_paths: LivecraftPaths, pytestconfig: pytest.Config
 ) -> None:
     """Файл программы повреждён: вкладка называет файл и действие и не даёт править; окно открывается."""
     ready_paths.vault_file.write_bytes(b"\xff\xfe\x00vault\x80\x81")
-    for window in _open(ready_paths, capsys):
+    for window in _open(ready_paths, pytestconfig):
         tab: KeysTab = window.keys_tab
         assert tab.panel is None
         text: str = tab.notice.cget("text")
@@ -1084,10 +1087,10 @@ def test_saving_new_form_languages_updates_the_marks_without_reopening(window: S
 
 
 def test_without_readable_settings_the_list_is_full_and_unmarked(
-    ready_paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]
+    ready_paths: LivecraftPaths, pytestconfig: pytest.Config
 ) -> None:
     ready_paths.config_file.write_text("{", encoding="utf-8")
-    for window in _open(ready_paths, capsys):
+    for window in _open(ready_paths, pytestconfig):
         tab: ChannelsTab = window.channels_tab
         assert not tab.catalog.has_form
         assert len(_box_values(tab)) == len(LanguageCatalog.load(()).options)
