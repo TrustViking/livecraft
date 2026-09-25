@@ -1031,6 +1031,12 @@ def test_the_table_shows_language_names(window: SetupWindow) -> None:
     tab: ChannelsTab = window.channels_tab
     column: int = list(tab.tree.cget("columns")).index("languages")
     assert tab.tree.item("0", "values")[column] == "украинский"
+    assert tab.tree.item("1", "values")[column] == "русский"
+
+
+def test_the_table_shows_every_language_of_an_old_file(two_languages_window: SetupWindow) -> None:
+    tab: ChannelsTab = two_languages_window.channels_tab
+    column: int = list(tab.tree.cget("columns")).index("languages")
     assert tab.tree.item("1", "values")[column] == "русский, английский"
 
 

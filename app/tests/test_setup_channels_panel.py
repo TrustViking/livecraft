@@ -53,7 +53,7 @@ def test_the_panel_opens_on_the_channels_of_the_file(ready_paths: LivecraftPaths
 def test_the_drafts_show_the_channels_as_text(ready_paths: LivecraftPaths) -> None:
     drafts: tuple[ChannelDraft, ...] = ChannelsPanel.from_paths(ready_paths).drafts
     assert drafts[1] == ChannelDraft(
-        account_name="Канал RU", handle="@kanal_ru", google_account="you@gmail.com", languages="ru, en",
+        account_name="Канал RU", handle="@kanal_ru", google_account="you@gmail.com", languages="ru",
         privacy="unlisted",
     )
 

@@ -107,7 +107,7 @@ def test_the_shipped_settings_file_loads(tmp_path: Path) -> None:
 def test_the_channels_example_loads() -> None:
     channels: tuple[ChannelConfig, ...] = load_channels(REPO_CHANNELS_EXAMPLE)
     assert [channel.handle for channel in channels] == ["@kanal_ua", "@kanal_ru"]
-    assert channels[1].languages == ("ru", "en")
+    assert channels[1].languages == ("ru",)
     assert channels[0].privacy is Privacy.PUBLIC and channels[1].privacy is Privacy.UNLISTED
     assert all(channel.platform is Platform.YOUTUBE for channel in channels)
 
@@ -728,7 +728,7 @@ def config() -> LivecraftConfig:
 
 
 def test_served_languages_are_the_union_of_channel_languages(config: LivecraftConfig) -> None:
-    assert config.served_languages == frozenset({"uk", "ru", "en"})
+    assert config.served_languages == frozenset({"uk", "ru"})
 
 
 @pytest.mark.parametrize("handle", ["@kanal_ua", "kanal_ua", "@KANAL_UA", "Kanal_Ua"])

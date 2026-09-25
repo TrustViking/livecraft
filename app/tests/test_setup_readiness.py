@@ -92,7 +92,7 @@ def test_channels_are_read_without_settings(livecraft_paths: LivecraftPaths) -> 
     readiness: Readiness = Readiness.check(livecraft_paths)
     assert readiness.channels is not None and len(readiness.channels) == 2
     assert readiness.settings is None and readiness.settings_error is not None
-    assert readiness.summary_lines[-1] == msg.READINESS_CHANNELS_LINE.format(count=2, languages="en, ru, uk")
+    assert readiness.summary_lines[-1] == msg.READINESS_CHANNELS_LINE.format(count=2, languages="ru, uk")
 
 
 def test_the_config_property_joins_both_files(ready_paths: LivecraftPaths) -> None:
@@ -168,7 +168,7 @@ def test_the_summary_names_every_field_and_its_origin(ready_paths: LivecraftPath
     assert lines[0] == msg.READINESS_SUMMARY_TITLE
     for field in SecretField.current():
         assert msg.READINESS_FIELD_LINE.format(label=field.human_label, origin=msg.VAULT_ORIGIN_SUPPLIED) in lines
-    assert lines[-1] == msg.READINESS_CHANNELS_LINE.format(count=2, languages="en, ru, uk")
+    assert lines[-1] == msg.READINESS_CHANNELS_LINE.format(count=2, languages="ru, uk")
 
 
 def test_the_summary_of_an_empty_vault_says_no_for_every_field(livecraft_paths: LivecraftPaths) -> None:
@@ -333,7 +333,7 @@ def _set_form_url(paths: LivecraftPaths, url: str) -> None:
 def test_the_summary_says_the_form_is_not_configured_on_the_shipped_settings(ready_paths: LivecraftPaths) -> None:
     lines: tuple[str, ...] = Readiness.check(ready_paths).summary_lines
     assert msg.READINESS_FIELD_LINE.format(label=msg.FORM_URL_LABEL, origin=msg.READINESS_FORM_NOT_CONFIGURED) in lines
-    assert lines[-1] == msg.READINESS_CHANNELS_LINE.format(count=2, languages="en, ru, uk")
+    assert lines[-1] == msg.READINESS_CHANNELS_LINE.format(count=2, languages="ru, uk")
 
 
 @pytest.mark.parametrize("url", ["https://docs.google.com]/forms/x", "https://[bad"])

@@ -3,6 +3,6 @@
     {"platform": "youtube", "account_name": "Канал UA", "handle": "@kanal_ua", "google_account": "you@gmail.com",
      "languages": ["uk"], "privacy": "public"},
     {"platform": "youtube", "account_name": "Канал RU", "handle": "@kanal_ru", "google_account": "you@gmail.com",
-     "languages": ["ru", "en"], "privacy": "unlisted"}
+     "languages": ["ru"], "privacy": "unlisted"}
   ]
 }

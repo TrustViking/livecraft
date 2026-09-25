@@ -505,7 +505,7 @@ def test_a_ready_root_prints_the_summary_and_exits_0(
     assert run_cli([]) == int(ExitCode.OK)
     out: str = capsys.readouterr().out
     assert msg.READINESS_SUMMARY_TITLE in out
-    assert msg.READINESS_CHANNELS_LINE.format(count=2, languages="en, ru, uk") in out
+    assert msg.READINESS_CHANNELS_LINE.format(count=2, languages="ru, uk") in out
     assert msg.SETUP_REQUIRED not in out
 
 
