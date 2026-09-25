@@ -37,13 +37,7 @@ from app.texts.composer import DescriptionParts
 from app.texts.description_marks import ALLOWED_BULLET_MARKERS, PLAIN_BULLET_PATTERN, CtaLexicon
 from app.texts.official_links import OfficialLinksBlocks
 from app.texts.paragraphs import has_duplicate_paragraphs, normalize_multiline_text
-from app.texts.tail import (
-    EmbeddedTail,
-    TrailingTail,
-    clean_double_bullet_markers,
-    dedupe_cta_lines,
-    merge_hashtag_lines,
-)
+from app.texts.tail import EmbeddedTail, TailFragments, TrailingTail, clean_double_bullet_markers
 
 if TYPE_CHECKING:
     from app.llm.merges.attempt import MergeRules
@@ -100,38 +94,36 @@ class SanitizedDescription:
         embedded: EmbeddedTail = EmbeddedTail.of(LINE_BREAK.join(lines[: trailing.body_end_index]).strip(), cta)
         body, body_changes = sanitize_urls_in_text(embedded.body_text)
         body = cls._without_final_cta(clean_double_bullet_markers(body), cta, language, source_label)
-        cta_lines: tuple[str, ...] = dedupe_cta_lines((*embedded.fragments.cta_lines, *trailing.fragments.cta_lines))
-        cta_text, cta_changes = sanitize_urls_in_text(LINE_BREAK.join(cta_lines).strip())
-        urls: tuple[str, ...] = dedupe_nonempty((*embedded.fragments.source_urls, *trailing.fragments.source_urls))
-        hashtags: str = merge_hashtag_lines((*embedded.fragments.hashtag_lines, *trailing.fragments.hashtag_lines))
-        parts: DescriptionParts = DescriptionParts(
-            body=body,
-            hashtags_line=hashtags,
-            recommended_urls=tuple(url for url in urls if is_youtube_url(url)),
-            official_urls=tuple(url for url in urls if not is_youtube_url(url)),
-            cta=cta_text,
-        )
-        sanitized: SanitizedDescription = cls(
-            body=body,
-            cta_text=cta_text,
-            hashtags_line=hashtags,
-            source_urls=urls,
-            url_change_count=(
-                trailing.fragments.url_change_count + embedded.fragments.url_change_count + body_changes + cta_changes
-            ),
-            hashtags_split_from_cta=(
-                embedded.fragments.hashtags_split_from_cta or trailing.fragments.hashtags_split_from_cta
-            ),
-            tail_layout=parts.layout,
-            malformed_source_urls_dropped=(
-                trailing.fragments.malformed_urls_dropped + embedded.fragments.malformed_urls_dropped
-            ),
-        )
+        fragments: TailFragments = embedded.fragments.followed_by(trailing.fragments)
+        cta_text, cta_changes = sanitize_urls_in_text(LINE_BREAK.join(fragments.cta_lines).strip())
+        sanitized: SanitizedDescription = cls._assembled(body, cta_text, fragments, body_changes + cta_changes)
         for line in sanitized.tail_lines(language, source_label):
             LOGGER.info("%s", line)
         sanitized.drop_cta(language, source_label)
         LOGGER.info("%s", sanitized.summary_line(language, source_label))
         return sanitized
+
+    @classmethod
+    def _assembled(cls, body: str, cta_text: str, fragments: TailFragments, text_changes: int) -> SanitizedDescription:
+        """Итог санации из тела, призыва и снятого хвоста; `text_changes` — ссылки, изменённые в теле и призыве."""
+        urls: tuple[str, ...] = fragments.source_urls
+        parts: DescriptionParts = DescriptionParts(
+            body=body,
+            hashtags_line=fragments.hashtags_line,
+            recommended_urls=tuple(url for url in urls if is_youtube_url(url)),
+            official_urls=tuple(url for url in urls if not is_youtube_url(url)),
+            cta=cta_text,
+        )
+        return cls(
+            body=body,
+            cta_text=cta_text,
+            hashtags_line=fragments.hashtags_line,
+            source_urls=urls,
+            url_change_count=fragments.url_change_count + text_changes,
+            hashtags_split_from_cta=fragments.hashtags_split_from_cta,
+            tail_layout=parts.layout,
+            malformed_source_urls_dropped=fragments.malformed_urls_dropped,
+        )
 
     @staticmethod
     def _without_final_cta(body: str, cta: CtaLexicon, language: str, source_label: str) -> str:

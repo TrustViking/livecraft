@@ -100,6 +100,23 @@ class TailFragments:
     url_change_count: int = 0
     malformed_urls_dropped: int = 0
 
+    def followed_by(self, later: TailFragments) -> TailFragments:
+        """Фрагменты этого хвоста, затем `later` (у санации донора — сначала внутренние, потом хвост в конце):
+        призывы и ссылки — без повторов, в порядке первого появления; флаг — «или»; счётчики — сумма."""
+        return TailFragments(
+            cta_lines=dedupe_cta_lines((*self.cta_lines, *later.cta_lines)),
+            hashtag_lines=(*self.hashtag_lines, *later.hashtag_lines),
+            hashtags_split_from_cta=self.hashtags_split_from_cta or later.hashtags_split_from_cta,
+            source_urls=dedupe_nonempty((*self.source_urls, *later.source_urls)),
+            url_change_count=self.url_change_count + later.url_change_count,
+            malformed_urls_dropped=self.malformed_urls_dropped + later.malformed_urls_dropped,
+        )
+
+    @property
+    def hashtags_line(self) -> str:
+        """Хештеги всех строк одной строкой (`merge_hashtag_lines`)."""
+        return merge_hashtag_lines(self.hashtag_lines)
+
 
 @dataclass(frozen=True)
 class UrlTail:

@@ -13,8 +13,9 @@
 `_is_complete_source_url` → `is_complete_source_url`, `_sanitize_source_url` → `SourceUrl.of`, `_sanitize_urls_in_text`
 → `sanitize_urls_in_text`, `_dedupe_nonempty` → `dedupe_nonempty`), `app\\core\\url_utils.py`
 (`normalize_official_link_display`, `is_social_platform_host`, `SOCIAL_PLATFORM_HOSTS`) и `text_utils.py::is_youtube_url`.
-`SourceUrl` — значение, а не правило: строку лога о ссылке YouTube без id пишет вызывающий объект. Шаблоны ссылок —
-единственные в программе, из `app\\texts\\description_marks.py`.
+`SourceUrl` — значение, а не правило: строку лога о ссылке YouTube без id пишет вызывающий объект. Шаблоны ссылок
+`URL_PATTERN` и `URL_LINE_PATTERN` (`app\\core\\constants.py` донора) — единственные в программе и объявлены здесь:
+`app\\core` не зависит от других пакетов `app`, разметка описания и чистка текста берут шаблоны отсюда.
 """
 from __future__ import annotations
 
@@ -25,8 +26,10 @@ from typing import Final
 from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.core.sheet_text import normalize_youtube_link
-from app.texts.description_marks import URL_LINE_PATTERN, URL_PATTERN
 
+# Ссылка http(s) в тексте и строка, которая целиком — одна ссылка.
+URL_PATTERN: Final[re.Pattern[str]] = re.compile(r"https?://\S+", flags=re.IGNORECASE)
+URL_LINE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^https?://\S+$", re.IGNORECASE)
 YOUTUBE_HOSTS: Final[frozenset[str]] = frozenset(
     {"youtu.be", "www.youtu.be", "youtube.com", "www.youtube.com", "m.youtube.com"}
 )

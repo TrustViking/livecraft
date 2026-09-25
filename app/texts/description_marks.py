@@ -6,6 +6,7 @@
 `app\\llm\\merges\\merge_text_utils.py` (`_bullet_marker_for_line`, `_extract_named_entities`).
 Префиксы и подсказки призывов — ресурсы `lexicon_cta_prefixes.txt` и `lexicon_cta_hints.txt` (побайтно из
 restreamer); `CtaLexicon` читает их сам, у донора они были глобальными константами.
+Шаблоны ссылок `URL_PATTERN` и `URL_LINE_PATTERN` объявлены в `app\\core\\url_text.py` и отсюда только берутся.
 """
 from __future__ import annotations
 
@@ -14,6 +15,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Final
 
+# `URL_PATTERN` здесь не используется — остаётся для прежних импортёров разметки (фасад, CLAUDE.md §11).
+from app.core.url_text import URL_LINE_PATTERN, URL_PATTERN
 from app.resources.loader import TextResource
 from app.texts.paragraphs import starts_with_any_prefix
 
@@ -26,8 +29,6 @@ PLAIN_BULLET_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?:[-*\u2022\u25aa\u25e6\u2023\u2013\u2014]|(?:\d+[.)]))\s+\S+", flags=re.UNICODE
 )
 
-URL_PATTERN: Final[re.Pattern[str]] = re.compile(r"https?://\S+", flags=re.IGNORECASE)
-URL_LINE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^https?://\S+$", re.IGNORECASE)
 # Смысловое слово: не короче трёх букв или цифр латиницы и кириллицы.
 SEMANTIC_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"[0-9A-Za-zА-Яа-яЁёІіЇїЄєҐґ]{3,}", flags=re.UNICODE)
 # Имя собственное: два и больше слов подряд с заглавной буквы, в каждом не меньше трёх букв.

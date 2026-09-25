@@ -6,6 +6,7 @@ import pytest
 from app.texts.description_marks import CtaLexicon
 from app.texts.tail import (
     EmbeddedTail,
+    TailFragments,
     TailReader,
     TextTail,
     TrailingTail,
@@ -155,3 +156,37 @@ def test_embedded_tail_is_taken_from_each_paragraph() -> None:
 def test_embedded_tail_of_a_plain_paragraph_changes_nothing() -> None:
     embedded: EmbeddedTail = EmbeddedTail.of("Some description text.", CTA)
     assert embedded.body_text == "Some description text." and embedded.fragments == EmbeddedTail.of("x", CTA).fragments
+
+
+# --- объединение фрагментов
+
+
+def test_fragments_followed_by_keep_the_earlier_first_and_drop_repeats() -> None:
+    embedded: TailFragments = TailFragments(
+        cta_lines=("Join  us",),
+        hashtag_lines=("#AI #news",),
+        source_urls=("https://example.org", "https://youtu.be/aaaaaaaaaaa"),
+        url_change_count=2,
+        malformed_urls_dropped=1,
+    )
+    trailing: TailFragments = TailFragments(
+        cta_lines=("join us", "Share"),
+        hashtag_lines=("#ai #Ukraine",),
+        hashtags_split_from_cta=True,
+        source_urls=(" https://example.org", "https://example.com"),
+        url_change_count=3,
+        malformed_urls_dropped=4,
+    )
+    joined: TailFragments = embedded.followed_by(trailing)
+    assert joined.cta_lines == ("Join us", "Share")
+    assert joined.hashtag_lines == ("#AI #news", "#ai #Ukraine")
+    assert joined.hashtags_line == "#AI #news #Ukraine"
+    assert joined.hashtags_split_from_cta
+    assert joined.source_urls == ("https://example.org", "https://youtu.be/aaaaaaaaaaa", "https://example.com")
+    assert (joined.url_change_count, joined.malformed_urls_dropped) == (5, 5)
+    assert trailing.followed_by(embedded).cta_lines == ("join us", "Share")
+
+
+def test_empty_fragments_join_to_empty_fragments() -> None:
+    assert TailFragments().followed_by(TailFragments()) == TailFragments()
+    assert TailFragments().hashtags_line == ""

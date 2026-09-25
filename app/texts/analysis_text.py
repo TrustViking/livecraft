@@ -14,7 +14,8 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
-URL_PATTERN: Final[re.Pattern[str]] = re.compile(r"https?://\S+", flags=re.IGNORECASE)
+from app.core.url_text import URL_PATTERN
+
 HASHTAG_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?<!\w)#[^\s#]+", flags=re.UNICODE)
 SEMANTIC_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"[0-9A-Za-zА-Яа-яЁёІіЇїЄєҐґ]{3,}", flags=re.UNICODE)
 HEADING_LINE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\s*🌐\s*[^\s:][^:\n]*:\s*$")
