@@ -9,7 +9,11 @@
   профиль повтора выбирает итог отвергнутой попытки (`MergeAttemptResult.next_retry`); квота — стоп слота и запуска;
   прочий сбой запроса — `unexpected_error` и обычный повтор; строки `merge_llm_primary_attempt`, `merge_llm_retry`,
   `merge_llm_response_invalid`, `merge_branch_ready`, `merge_provider_summary`, `merge_llm_final_failure` — ключи донора,
-  контекст — `slot=<slot_id> language=<язык>` вместо `branch`, `date_key`, `slot_key`.
+  контекст — `slot=<slot_id> language=<язык>` вместо `branch`, `date_key`, `slot_key`;
+- `pipeline\\slot_processing.py` (строки 456–495) и `publish\\slot_publish_texts.py`: принятое описание проходит санацию
+  (`publication.py::MergePublication`); блок с повтором абзацев или призывом в начале не публикуется — слот получает тексты
+  источников, строка `merge_publish_gate_blocked` (`target=package`). Успех merge и настоящие блоки в счётчиках — по
+  принятому ответу, как у донора: они считаются до санации.
 
 Отличия от донора (решения Коворка к 3.13): виновата настройка модели — merge останавливается до конца запуска, слот
 получает тексты источников (у донора исключение роняло весь прогон); предел абзацев тела и пределы пунктов в подсказке
@@ -28,6 +32,7 @@ from app.llm.merges.check import MergeAttemptLabel
 from app.llm.merges.description import MergedDescription
 from app.llm.merges.layout import DescriptionLayout
 from app.llm.merges.prompt import MergePrompt, MergePromptRefusal
+from app.llm.merges.publication import MergePublication
 from app.llm.merges.retry import RetryProfile
 from app.llm.merges.rules import (
     MIN_DESCRIBED_SOURCES,
@@ -177,6 +182,8 @@ class AttemptHistory:
 class MergeOutcome:
     """Итог merge слота: тексты (модели или источников), попытки, причины последней неудачи, причина пропуска.
 
+    `answer_accepted` — ответ модели принят проверкой (по нему, как у донора, считаются успех merge и настоящие блоки);
+    `publish_blocked` — принятый ответ не прошёл проверку перед публикацией, и слот получил тексты источников.
     Тексты — ещё без правил площадки: подгонку под YouTube делает `SlotTexts.for_youtube` по месту сборки слота.
     """
 
@@ -190,9 +197,12 @@ class MergeOutcome:
     reject_codes: tuple[str, ...] = ()
     skipped_reason: MergeSkipReason | None = None
     paragraph_recoveries: int = 0
+    answer_accepted: bool = False
+    publish_blocked: bool = False
 
     @property
     def merged(self) -> bool:
+        """Слот получил тексты модели (ответ принят и прошёл проверку перед публикацией)."""
         return self.texts.origin is SlotTextOrigin.MERGED
 
     @property
@@ -201,8 +211,8 @@ class MergeOutcome:
 
     @property
     def is_final_failure(self) -> bool:
-        """Модель спрашивали, а текстов модели нет."""
-        return self.attempts > 0 and not self.merged
+        """Модель спрашивали, а принятого ответа нет (блок перед публикацией — не провал merge, как у донора)."""
+        return self.attempts > 0 and not self.answer_accepted
 
     @property
     def is_candidate(self) -> bool:
@@ -214,9 +224,10 @@ class MergeOutcome:
         """Строка `merge_attempt_outcome` — ключи донора плюс происхождение текстов и причины; без текстов."""
         return (
             f"merge_attempt_outcome slot={self.slot_id} language={self.language} source_count={self.source_count} "
-            f"success={_flag(self.merged)} merge_success={int(self.merged)} "
+            f"success={_flag(self.answer_accepted)} merge_success={int(self.answer_accepted)} "
             f"validation_rejected={self.rejected_attempts} retry_used={self.retries} "
-            f"final_failure={int(self.is_final_failure)} texts={self.texts.origin.value} "
+            f"final_failure={int(self.is_final_failure)} publish_blocked={_flag(self.publish_blocked)} "
+            f"texts={self.texts.origin.value} "
             f"reject_codes={CODES_JOINER.join(self.reject_codes) or LOG_NONE} "
             f"skipped={self.skipped_reason.value if self.skipped_reason is not None else LOG_NONE}"
         )
@@ -340,7 +351,8 @@ class MergeJob:
             run.stop(MergeStopReason.QUOTA)
 
     def _merged(self, history: AttemptHistory, accepted: AcceptedMerge) -> MergeOutcome:
-        """Ответ принят: строки донора, выравнивание абзацев слота из нескольких источников, тексты модели."""
+        """Ответ принят: строки донора, выравнивание абзацев слота из нескольких источников, санация и проверка перед
+        публикацией; блок не прошёл проверку — тексты источников и строка `merge_publish_gate_blocked`."""
         run: MergeRun = self.merge_run
         LOGGER.info("merge_branch_ready %s generator_model=%s", self.context, run.model)
         LOGGER.info(
@@ -354,8 +366,18 @@ class MergeJob:
             LOGGER.info("%s", enforcement.log_line(self.context))
             description = enforcement.description
             recoveries += int(enforcement.recovery_applied)
-        texts: SlotTexts = SlotTexts(title=accepted.title, description=description.text, origin=SlotTextOrigin.MERGED)
-        return self._result(texts, history, recoveries=recoveries)
+        publication: MergePublication = MergePublication.of(
+            accepted.title, description.text, self.videos, self.language, self.rules
+        )
+        texts: SlotTexts | None = publication.slot_texts
+        if texts is None:
+            LOGGER.warning(
+                "merge_publish_gate_blocked target=package %s has_publish_stage_duplicate=%s "
+                "has_publish_stage_opener_cta=%s fallback=nomerge",
+                self.context, _flag(publication.has_duplicate), _flag(publication.has_opener_cta),
+            )
+            texts = SlotTexts.from_sources(self.videos)
+        return self._result(texts, history, recoveries, accepted=True, blocked=publication.is_blocked)
 
     def _failed(self, history: AttemptHistory) -> MergeOutcome:
         """Ответ не принят ни в одной попытке: строки донора, тексты источников."""
@@ -395,7 +417,14 @@ class MergeJob:
             skipped_reason=reason,
         )
 
-    def _result(self, texts: SlotTexts, history: AttemptHistory, recoveries: int = 0) -> MergeOutcome:
+    def _result(
+        self,
+        texts: SlotTexts,
+        history: AttemptHistory,
+        recoveries: int = 0,
+        accepted: bool = False,
+        blocked: bool = False,
+    ) -> MergeOutcome:
         last: MergeAttemptResult | None = history.last
         return MergeOutcome(
             slot_id=self.slot_id,
@@ -405,8 +434,10 @@ class MergeJob:
             texts=texts,
             attempts=len(history.results),
             rejected_attempts=history.rejected_count,
-            reject_codes=last.codes if last is not None and texts.origin is not SlotTextOrigin.MERGED else (),
+            reject_codes=last.codes if last is not None and not accepted else (),
             paragraph_recoveries=recoveries,
+            answer_accepted=accepted,
+            publish_blocked=blocked,
         )
 
     @property

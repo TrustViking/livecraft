@@ -8,12 +8,24 @@
 Одно отличие от донора — исправление его ошибки: `urlsplit` отвергает негодный адрес (`https://[bad`) исключением
 `ValueError`. Донор ловил его в `strip_tracking_params` и `normalize_display_url`, но не в `_normalize_link_candidate`:
 такая строка в описании источника или в ответе модели роняла весь merge слота. Здесь негодный адрес — не ссылка.
+
+Для санации после LLM (задача 3.14) перенесены `app\\publish\\sanitizers\\url_selector.py` (`_sanitize_url` → `sanitize_url`,
+`_is_complete_source_url` → `is_complete_source_url`, `_sanitize_source_url` → `SourceUrl.of`, `_sanitize_urls_in_text`
+→ `sanitize_urls_in_text`, `_dedupe_nonempty` → `dedupe_nonempty`), `app\\core\\url_utils.py`
+(`normalize_official_link_display`, `is_social_platform_host`, `SOCIAL_PLATFORM_HOSTS`) и `text_utils.py::is_youtube_url`.
+`SourceUrl` — значение, а не правило: строку лога о ссылке YouTube без id пишет вызывающий объект. Шаблоны ссылок —
+единственные в программе, из `app\\texts\\description_marks.py`.
 """
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Final
 from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit, urlunsplit
+
+from app.core.sheet_text import normalize_youtube_link
+from app.texts.description_marks import URL_LINE_PATTERN, URL_PATTERN
 
 YOUTUBE_HOSTS: Final[frozenset[str]] = frozenset(
     {"youtu.be", "www.youtu.be", "youtube.com", "www.youtube.com", "m.youtube.com"}
@@ -118,3 +130,157 @@ def normalize_link_candidate(url: str) -> str | None:
     if stripped is None:
         return None
     return normalize_display_url(urlunsplit((stripped.scheme, stripped.netloc, stripped.path, stripped.query, "")))
+
+
+# --- ссылки санации после LLM (restreamer `app\publish\sanitizers\url_selector.py`, `app\core\url_utils.py`)
+
+# Соцсети: у их ссылок путь — сам адрес (страница, пост), поэтому в блоке официальных ссылок он сохраняется.
+SOCIAL_PLATFORM_HOSTS: Final[frozenset[str]] = frozenset(
+    {
+        "x.com",
+        "twitter.com",
+        "t.me",
+        "telegram.me",
+        "facebook.com",
+        "fb.com",
+        "instagram.com",
+        "threads.net",
+        "linkedin.com",
+        "tiktok.com",
+        "reddit.com",
+        "vk.com",
+    }
+)
+SOCIAL_SUBDOMAIN_MIN_PARTS: Final[int] = 3
+# Обёртка ссылки в тексте: открывающие знаки слева, закрывающие и знаки препинания справа — сохраняются при чистке.
+URL_WRAP_OPENERS: Final[str] = "<(["
+URL_WRAP_CLOSERS: Final[str] = ">)].,;"
+HOST_DOT: Final[str] = "."
+HOST_DOUBLE_DOT: Final[str] = ".."
+WHITESPACE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s")
+YOUTUBE_DROP_LOG: Final[str] = "non_authoritative_youtube_tail_url_dropped reason=youtube_normalization_failed raw={raw!r}"
+
+
+def is_youtube_url(url: str) -> bool:
+    """Ссылка (без обрамления) ведёт на YouTube; негодный адрес — нет (`text_utils.py::is_youtube_url` донора)."""
+    cleaned: str = str(url or "").strip().strip(LINK_EDGE_CHARS).rstrip(LINK_TRAILING_PUNCTUATION)
+    if not cleaned:
+        return False
+    parts: SplitResult | None = split_url(cleaned)
+    return parts is not None and is_youtube_host(parts.netloc)
+
+
+def is_social_platform_host(host: str) -> bool:
+    """Хост — соцсеть из списка, в том числе поддомен (`m.facebook.com`, `mobile.twitter.com`)."""
+    normalized_host: str = str(host or "").strip().lower()
+    if normalized_host.startswith(WWW_PREFIX):
+        normalized_host = normalized_host[len(WWW_PREFIX) :]
+    if normalized_host in SOCIAL_PLATFORM_HOSTS:
+        return True
+    parts: list[str] = normalized_host.split(HOST_DOT)
+    return len(parts) >= SOCIAL_SUBDOMAIN_MIN_PARTS and HOST_DOT.join(parts[-2:]) in SOCIAL_PLATFORM_HOSTS
+
+
+def normalize_official_link_display(url: str) -> str:
+    """Вид ссылки в блоке официальных ссылок: сайт — схема и хост без `www.`; соцсеть — адрес без меток слежения;
+    не http(s), без хоста или негодный адрес — как есть."""
+    raw_url: str = str(url or "").strip()
+    if not raw_url:
+        return raw_url
+    parts: SplitResult | None = split_url(raw_url)
+    if parts is None or parts.scheme not in WEB_SCHEMES or not parts.netloc:
+        return raw_url
+    host: str = parts.netloc.lower().strip()
+    if host.startswith(WWW_PREFIX):
+        host = host[len(WWW_PREFIX) :]
+    if not host:
+        return raw_url
+    if is_social_platform_host(host):
+        return strip_tracking_params(raw_url)
+    return f"{parts.scheme}://{host}"
+
+
+def sanitize_url(url: str) -> str:
+    """Ссылка из текста без меток слежения, корень — без `/`; обёртка (`<([`, `>)].,;`) сохраняется; не ссылка — как есть.
+    Негодный адрес (`https://[bad`) — как есть, как любая не-ссылка (у донора — исключение)."""
+    raw_url: str = str(url or "").strip()
+    if not raw_url:
+        return ""
+    prefix: str = ""
+    suffix: str = ""
+    while raw_url and raw_url[0] in URL_WRAP_OPENERS:
+        prefix += raw_url[0]
+        raw_url = raw_url[1:]
+    while raw_url and raw_url[-1] in URL_WRAP_CLOSERS:
+        suffix = raw_url[-1] + suffix
+        raw_url = raw_url[:-1]
+    if not raw_url:
+        return prefix + suffix
+    parts: SplitResult | None = split_url(raw_url)
+    if parts is None or parts.scheme not in WEB_SCHEMES or not parts.netloc:
+        return prefix + raw_url + suffix
+    return prefix + normalize_display_url(strip_tracking_params(raw_url)) + suffix
+
+
+def is_complete_source_url(url: str) -> bool:
+    """Полная ссылка http(s): одна строка без пробелов, хост с точкой, без пустых частей имени; негодный адрес — нет."""
+    cleaned_url: str = str(url or "").strip().strip(LINK_EDGE_CHARS).rstrip(LINK_TRAILING_PUNCTUATION)
+    if not cleaned_url or not URL_LINE_PATTERN.fullmatch(cleaned_url):
+        return False
+    parts: SplitResult | None = split_url(cleaned_url)
+    if parts is None or parts.scheme not in WEB_SCHEMES or not parts.netloc:
+        return False
+    host: str = parts.netloc.strip().lower()
+    if HOST_DOT not in host or host.endswith(HOST_DOT) or HOST_DOUBLE_DOT in host:
+        return False
+    return not WHITESPACE_PATTERN.search(cleaned_url)
+
+
+@dataclass(frozen=True)
+class SourceUrl:
+    """Ссылка источника после чистки (`_sanitize_source_url` донора): `url` None — не ссылка или неполная.
+    `youtube_dropped` — ссылка YouTube, из которой не извлёкся id: вызывающий пишет `log_line`."""
+
+    raw: str
+    url: str | None
+    youtube_dropped: bool = False
+
+    @classmethod
+    def of(cls, raw: str) -> SourceUrl:
+        sanitized: str = sanitize_url(raw).strip()
+        if not sanitized or not is_complete_source_url(sanitized):
+            return cls(raw=raw, url=None)
+        if not is_youtube_url(sanitized):
+            return cls(raw=raw, url=sanitized)
+        youtube: str | None = normalize_youtube_link(sanitized)
+        if youtube is None:
+            return cls(raw=sanitized, url=None, youtube_dropped=True)
+        return cls(raw=raw, url=youtube)
+
+    @property
+    def log_line(self) -> str:
+        return YOUTUBE_DROP_LOG.format(raw=self.raw)
+
+
+def sanitize_urls_in_text(text: str) -> tuple[str, int]:
+    """Каждая ссылка текста — через `sanitize_url`; вместе с текстом — сколько ссылок изменилось."""
+    changes: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        raw_url: str = match.group(0)
+        sanitized: str = sanitize_url(raw_url)
+        if sanitized != raw_url:
+            changes.append(raw_url)
+        return sanitized
+
+    return URL_PATTERN.sub(replace, str(text or "")), len(changes)
+
+
+def dedupe_nonempty(values: Iterable[str]) -> tuple[str, ...]:
+    """Значения без краёв, без пустых и без повторов — в порядке первого появления."""
+    kept: dict[str, None] = {}
+    for value in values:
+        cleaned: str = str(value or "").strip()
+        if cleaned:
+            kept.setdefault(cleaned, None)
+    return tuple(kept)

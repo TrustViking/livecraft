@@ -77,7 +77,7 @@ class MergeTally:
 
     def record(self, outcome: MergeOutcome) -> None:
         """Учесть итог одного слота."""
-        self.merge_success += int(outcome.merged)
+        self.merge_success += int(outcome.answer_accepted)
         self.validation_rejected += outcome.rejected_attempts
         self.retry_used += outcome.retries
         self.final_failure += int(outcome.is_final_failure)
@@ -86,7 +86,7 @@ class MergeTally:
             return
         day: MergeDayBlocks = self.days.setdefault(outcome.date, MergeDayBlocks())
         day.candidates += 1
-        if outcome.merged:
+        if outcome.answer_accepted:
             day.real += 1
         else:
             day.fallback += 1

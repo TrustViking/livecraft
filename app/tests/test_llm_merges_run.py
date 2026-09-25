@@ -28,7 +28,9 @@ def outcome(
     skipped: MergeSkipReason | None = None,
     recoveries: int = 0,
     sources: int = 3,
+    blocked: bool = False,
 ) -> MergeOutcome:
+    """Итог слота; ответ принят, если тексты — от модели или блок не прошёл проверку перед публикацией."""
     return MergeOutcome(
         slot_id=f"{date}_1900_en",
         date=date,
@@ -39,6 +41,8 @@ def outcome(
         rejected_attempts=rejected,
         skipped_reason=skipped,
         paragraph_recoveries=recoveries,
+        answer_accepted=texts.origin is SlotTextOrigin.MERGED or blocked,
+        publish_blocked=blocked,
     )
 
 
@@ -67,6 +71,13 @@ def test_the_tally_counts_like_the_donor_summary() -> None:
     assert tally.paragraph_recovery_used == 2
     assert (tally.merge_candidate_blocks, tally.real_merge_blocks, tally.fallback_merge_blocks) == (3, 1, 2)
     assert tally.had_real_merge_blocks
+
+
+def test_a_blocked_publication_counts_as_a_merge_success_like_the_donor() -> None:
+    tally: MergeTally = MergeTally()
+    tally.record(outcome(FROM_SOURCES, blocked=True))
+    assert (tally.merge_success, tally.final_failure, tally.real_merge_blocks, tally.fallback_merge_blocks) == (1, 0, 1, 0)
+    assert tally.days["16-10-2026"].status is MergeArtifactStatus.FULL
 
 
 def test_a_slot_that_needed_no_merge_is_not_a_candidate() -> None:

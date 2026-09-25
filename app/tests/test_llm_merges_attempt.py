@@ -349,3 +349,8 @@ def test_no_answer_text_reaches_the_log(llm_log: LogCollector) -> None:
     joined: str = "\n".join(llm_log.messages())
     for fragment in (STRONG_HOOK[:40], STRONG_BULLETS[0], STRONG_CLOSE[:40], "Paragraph number", "not json at all", HOOK):
         assert fragment not in joined
+
+
+def test_merge_rules_carry_the_publication_headings() -> None:
+    assert RULES.headings.official_links("uk") == "🌐 Офіційні ресурси:"
+    assert RULES.headings.recommended_materials("en") == "Recommended materials:"

@@ -20,5 +20,8 @@
 `MergeAttemptResult` сам выбирает профиль повтора; `MergeRules` — правила merge одним объектом на запуск; схема ответа
 `MERGE_RESPONSE_SCHEMA`), `job.py` (`MergeJob` — merge слота с повторами, итог `MergeOutcome`: тексты модели или
 источников), `run.py` (`MergeRun` — нейросеть, модель, настройки, счётчики `MergeTally` и остановка по квоте или настройке).
+Шестой слой (задача 3.14) — санация принятого ответа: `publication.py` (`SanitizedDescription` — хвост, ссылки, призыв;
+`PublishGate` — проверка перед публикацией; `MergePublication` — окончательные название и описание слота или блок),
+`links.py::AuthoritativeLinks` — официальные ссылки описания из источников и хвоста ответа.
 Модель merge видит только через разъём `app\\llm\\backend.py::LlmBackend`.
 """

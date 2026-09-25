@@ -34,6 +34,7 @@ from app.llm.merges.reject import MergeReject, MergeRejectCode
 from app.llm.merges.retry import RetryFacts, RetryProfile
 from app.llm.merges.rules import MIN_BULLETS_EXTRA_OVER_SOURCES, MIN_BULLETS_FLOOR
 from app.observability.logging_setup import get_logger
+from app.texts.composer import PublishHeadings
 from app.texts.description_marks import bullet_marker_for_line
 
 if TYPE_CHECKING:
@@ -76,15 +77,16 @@ def _flag(value: bool) -> str:
 
 @dataclass(frozen=True)
 class MergeRules:
-    """Всё, чем пользуется merge, одним объектом на запуск: правила проверки (в них правила качества и подсказки
-    официальных ссылок) и тексты промта."""
+    """Всё, чем пользуется merge, одним объектом на запуск: правила проверки (в них правила качества, призывы,
+    негодный тезис и подсказки официальных ссылок), тексты промта и заголовки блоков описания для санации."""
 
     check: MergeCheckRules
     texts: MergePromptTexts
+    headings: PublishHeadings
 
     @classmethod
     def load(cls, detector: TextLanguageDetector | None = None) -> MergeRules:
-        return cls(check=MergeCheckRules.load(detector), texts=MergePromptTexts.load())
+        return cls(check=MergeCheckRules.load(detector), texts=MergePromptTexts.load(), headings=PublishHeadings.load())
 
 
 @dataclass(frozen=True)

@@ -13,7 +13,7 @@ from app.llm.merges.description import MergedDescription
 from app.llm.merges.job import MergeJob, MergeOutcome, MergeSkipReason, ParagraphEnforcement
 from app.llm.merges.prompt import MergePrompt
 from app.llm.merges.retry import RetryFacts, RetryProfile, RetrySignal
-from app.llm.merges.run import MergeRun, MergeStopReason
+from app.llm.merges.run import MergeRun, MergeStopReason, MergeTally
 from app.slots.builder import SlotGroup
 from app.slots.slot import SlotKey
 from app.slots.texts import SlotTextOrigin, SlotTexts
@@ -313,7 +313,8 @@ def test_the_outcome_line_has_counts_and_no_texts() -> None:
     outcome: MergeOutcome = MergeJob(group, merge_run).run()
     assert outcome.log_line == (
         f"merge_attempt_outcome slot={group.key.slot_id} language=en source_count=3 success=yes merge_success=1 "
-        "validation_rejected=1 retry_used=1 final_failure=0 texts=merged reject_codes=none skipped=none"
+        "validation_rejected=1 retry_used=1 final_failure=0 publish_blocked=no texts=merged reject_codes=none "
+        "skipped=none"
     )
 
 
@@ -326,3 +327,56 @@ def test_no_model_answer_or_source_text_reaches_the_log(llm_log: LogCollector) -
     fragments.extend(body[:40] for _, body in EXPANDED_SOURCES)
     for fragment in fragments:
         assert fragment not in joined
+
+
+# --- санация и проверка перед публикацией
+
+
+# Принятый ответ из сверки 3.13 (слот uk из четырёх источников): после санации тезис повторяется — блок не публикуется.
+BLOCKED_TITLE: str = "Прямий ефір з NASA"
+BLOCKED_ANSWER: str = (
+    "Сьогодні говоримо про 🌐🌐 🔔 нові санкції, їхні 📌📌 терміни 🌐🌐 та 🚨 реакцію партнерів у Брюсселі. "
+    "#подія 💥💥 ☀ 🔹🔹 ☀ 🚨🚨\n\nУ цьому стрімі ви побачите:\n⚖ міксований текст у пункті\n"
+    "🔹 Віталій Орлов коментує реакцію громади\n🔹 бюджетні правки та голосування\n🎤 проверка через google docs\n"
+    "🔹 бюджетні правки та голосування\n🌐 перевірка домену news.bbc.co.uk\n\n"
+    "Напишіть у коментарях свою думку #расследование"
+)
+BLOCKED_SOURCES: tuple[tuple[str, str], ...] = (
+    EXPANDED_SOURCES[0],
+    ("Lviv grid repair logistics", ""),
+    ("Geneva relief corridor desk", "From Geneva, Marta Leone outlines the aid corridor timetable, WHO cargo counts, "
+     "and donor pledges."),
+    ("Brussels sanctions vote briefing", "Офіційний сайт: <https://example.org/contact> ;\r\n"
+     "From Geneva, Marta Leone outlines the aid corridor timetable, WHO cargo counts, and donor pledges."),
+)
+
+
+def uk_group(pairs: tuple[tuple[str, str], ...]) -> SlotGroup:
+    videos: tuple[SourceVideo, ...] = tuple(
+        merge_video(index + 2, title, body, "uk") for index, (title, body) in enumerate(pairs)
+    )
+    return SlotGroup.of(SlotKey(start=START, language="uk"), videos)
+
+
+def test_an_accepted_answer_is_sanitized_before_it_becomes_the_slot_texts(llm_log: LogCollector) -> None:
+    merge_run, _ = run_with(answer(STRONG_ANSWER))
+    outcome: MergeOutcome = MergeJob(group_of(), merge_run).run()
+    assert outcome.merged and outcome.answer_accepted and not outcome.publish_blocked
+    applied: list[str] = lines_starting(llm_log, "publish_sanitation_applied=yes")
+    assert len(applied) == 1 and "lang=en source=primary_success " in applied[0]
+    assert lines_starting(llm_log, "merge_publish_gate_blocked") == []
+
+
+def test_a_blocked_publication_gives_source_texts_and_still_counts_as_a_merge_success(llm_log: LogCollector) -> None:
+    merge_run, backend = run_with(answer(BLOCKED_ANSWER, BLOCKED_TITLE))
+    group: SlotGroup = uk_group(BLOCKED_SOURCES)
+    outcome: MergeOutcome = MergeJob(group, merge_run).run()
+    assert outcome.answer_accepted and outcome.publish_blocked and not outcome.merged and len(backend.requests) == 1
+    assert outcome.texts == SlotTexts.from_sources(group.videos) and not outcome.is_final_failure
+    assert lines_starting(llm_log, "merge_publish_gate_blocked") == [
+        f"merge_publish_gate_blocked target=package slot={group.key.slot_id} language=uk "
+        "has_publish_stage_duplicate=yes has_publish_stage_opener_cta=no fallback=nomerge"
+    ]
+    assert "success=yes merge_success=1 " in outcome.log_line and "publish_blocked=yes texts=source_composed " in outcome.log_line
+    tally: MergeTally = merge_run.tally
+    assert (tally.merge_success, tally.final_failure, tally.real_merge_blocks, tally.fallback_merge_blocks) == (1, 0, 1, 0)
