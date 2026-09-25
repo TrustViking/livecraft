@@ -275,6 +275,11 @@
 - `app\config\loader.py::_is_language_code` и `app\texts\composer.py` (строка 76) проверяют одну форму кода; `LANGUAGE_CODE_LENGTH = 2` объявлен в обоих модулях.
 - Решение: значение кода языка — один объект в `app\core` (форма и справочник), им пользуются конфиг и тексты. Задача R3.5b; E8 поймает копию константы.
 
+**N19 ✔ Строка готовности в окне настройщика при повреждённом своём файле** (после R1.1b).
+- `app\setup\app.py::SetupWindow.refresh_readiness` читает сейф через `Readiness.check`, то есть через `load()`: при повреждённом `vault.local.dat` внутри окна виден совет «Откройте «Livecraft — настройка»…». Совет верный, но в самом окне лишний; после первого сохранения строка уходит.
+- Решение: строка окна — `Readiness.window_line` (R5.3) без совета открыть окно. Там же — `KeysPanel` и окно читают сейф одним путём (`load_for_setup`).
+- Мелочь для R2.2a: неиспользуемый `import shutil` в `app\tests\test_main.py:7`.
+
 **D9 ✔ Повреждённый личный файл ключей — тупик** (найден Коворком 25-09-2026 при подготовке R1.1).
 - `app\secretsafe\store.py::VaultStore._read_file` на повреждённом `vault.local.dat` бросает `VaultFormatError`; запуск останавливается кодом 2 (решение 1.5a) и советует ввести свои значения заново в настройщике.
 - Но `app\setup\panels\keys_panel.py::KeysPanel.from_store` читает тот же `load()`, вкладка «Ключи и ссылки» получает ошибку и выключает правку (`app\setup\tabs\keys_tab.py::KeysTab._load`), а `Readiness.for_mode` не открывает окно (`is_fixable_in_setup` ложно). Совет ведёт в тупик; выйти можно, только удалив файл руками.
@@ -680,23 +685,23 @@
 Перед выдачей Коворк сверяет раздел ФАКТЫ с кодом после приёмки R1.1. Числа могут немного сдвинуться; Codex объясняет расхождение в отчёте.
 
 ```text
-ПРОЕКТ: D:\_projects\livecraft, ветка feature/livecraft. Промт составил Коворк по коду на 25-09-2026 (снимок 50b4217, сверен с кодом после R1.1). Перед началом прочитай CLAUDE.md целиком; §0 (ООП), §6 (инварианты), §7.4 (секреты) и §11 (стандарты) обязательны без исключений. Прочитай REFACTORING_STANDARD.md, разделы 5 и 6: там точные определения правил и устройство замка; ниже — то, что нужно для этой задачи.
+ПРОЕКТ: D:\_projects\livecraft, ветка feature/livecraft. Промт составил Коворк по коду на 25-09-2026 (код 0f2d47c — после R1.1a, R1.1a-2 и R1.1b; числа сверены Коворком). Перед началом прочитай CLAUDE.md целиком; §0 (ООП), §6 (инварианты), §7.4 (секреты) и §11 (стандарты) обязательны без исключений. Прочитай REFACTORING_STANDARD.md, разделы 5 и 6: там точные определения правил и устройство замка; ниже — то, что нужно для этой задачи.
 
 ЗАДАЧА: в репозитории появляется замок эталона кода — команда python -m app.tools.code_standard и тест app\tests\test_code_standard.py с реестром долгов, который может только сокращаться; в этой задаче — каркас замка и правила формы функций и классов E1, E2, E3, E4, E12, E13, E18, E19, E21.
 ЗАЧЕМ: этап R (REFACTORING.md, REFACTORING_STANDARD.md). Эталон ООП должен проверяться одной командой и не откатываться: каждая следующая задача R снимает названные долги реестра, новый код без долгов. Правила E5–E11, E14–E17, E20 добавит следующая задача R2.1b на этом же каркасе.
 
-ФАКТЫ ИЗ КОДА (снимок 50b4217; R1.1 мог сдвинуть числа на единицы):
+ФАКТЫ ИЗ КОДА (код 0f2d47c, разбор ast Коворка; расхождение с отчётом замка — найти причину):
 - app\tools\ сейчас держит пробники llm_probe.py, sheets_probe.py, source_probe.py; в поставку app\tools\ не идёт. Пакета app\tools\code_standard\ нет.
 - app\ui\messages_ru.py — все тексты для человека, модуль ничего не импортирует из app.
 - app\tests\test_module_definitions.py::find_duplicate_definitions, _app_modules, _is_overload и три теста — проверка «имя верхнего уровня определено в модуле дважды»; @overload и вложенные имена не считаются; тест обходит весь app, включая app\tests. Сейчас нарушений 0.
 - Ожидаемые числа по правилам (разбор ast, только app без app\tests):
   E1 свободные функции: признак (а) 25, (б) 35, (в) 7 (функции могут попадать под несколько признаков);
-  E2 статические методы: 59 в 40 классах;
+  E2 статические методы: 57 в 39 классах (R1.1b свёл два разбора base64 в crypto.py в Base64Record);
   E3 определения длиннее 30 строк: 9 — safe_trim.py::safe_trim_right 57, json_text.py::extract_json_object_candidates 34, check.py::MergeDiagnostics.of 34, main.py::run_cli 33, openai.py::LlmExchange._call 33, paths.py::build_paths 32, tail.py::EmbeddedTail.of 32, publication.py::MergePublication.of 32, official_links.py::OfficialLinksBlocks.of 31;
   E4 больше 4 параметров: 7 — errors.py::LlmRequestError.__init__ 6, keys_tab.py::KeyRowView.__init__ 6, backend.py::LlmRequest.from_settings 5, check.py::MergeCheckRequest.of 5, job.py::MergeJob._result 5, publication.py::MergePublication.of 5, selection.py::ModelChoice._chosen 5;
   E12 пустые обёртки: 7 — (а) publication.py::PublishGate.has_duplicate_paragraphs, description_marks.py::starts_with_cta_prefix; (б) resources\loader.py::TextResource.lines, TextResource.data; (в) description_marks.py::CtaLexicon.starts_with_prefix, tail.py::TailFragments.hashtags_line, prompt.py::MergePrompt.language_name;
   E13 кортежи-результаты: 16, из них 2 — ключи сортировки (они в ИСКЛЮЧЕНИЯ), в реестр — 14;
-  E18 модули длиннее 400 строк: 4 — config\loader.py 876, llm\merges\description.py 595, job.py 458, check.py 425 (app\ui\messages_ru.py — исключение стандарта); классы больше 20 членов: 8 — Readiness 32, ChannelsTab 26, MergedDescription 25, LivecraftPaths 25, _ConfigParser 24, LanguageProfile 22, MergeJob 21, QualityDiagnostics 21;
+  E18 модули длиннее 400 строк: 4 — config\loader.py 902, llm\merges\description.py 595, job.py 458, check.py 425 (app\ui\messages_ru.py — исключение стандарта); классы больше 20 членов: 8 — Readiness 32, ChannelsTab 26, MergedDescription 25, LivecraftPaths 25, _ConfigParser 24, LanguageProfile 22, MergeJob 21, QualityDiagnostics 21;
   E19 код в __init__.py: 1 — app\setup\tabs\__init__.py;
   E21: 0 (по всему app, включая app\tests).
 
@@ -829,3 +834,4 @@ DO NOT TOUCH: всё, что не в SCOPE LOCK, в том числе D:\_projec
 - Промт R2.1a после приёмки R1.1 сверяется ещё раз: R1.1 правит `crypto.py`, `store.py`, `auth.py`, `loader.py` и сдвигает E5 и E7.
 - Промт R1.1 перевыдан Коворком по коду `f7aa825`: прежний Codex не выполнял (в репозитории нет ни коммита, ни правок). Добавлен D9; D4 сужен до `VaultFormatError` (см. D9).
 - По замечаниям Артура (25-09-2026) R1.1 разрезан до M: R1.1a (D1, D2, D3, D5, D6, D7) и R1.1b (D4, D9); всего 43 задачи. Уточнение D5: настройщик предлагает и коды вне справочника (`LanguageCatalog._unknown` — коды формы, `LanguageCatalog.including` — коды из `channels.json`); после R1.1a загрузчик отклоняет их проблемой поля `languages`, пометка в списке — R7.1b. Живой `secrets\channels.json` (ru, uk, ru, en, uk, uk) новое правило проходит. Голые `urlsplit` в merge (`links.py:92,95,147`, `description.py:480`) получают адреса только после `normalize_link_candidate` — не дефект, структурно закрывает R3.3a.
+- После R1.1b (`0f2d47c`) Коворк пересчитал раздел ФАКТЫ промта R2.1a: изменились E2 (57 в 39 классах), длина `config\loader.py` (902 строки), E5 (996 строк-литералов) и E7 (39 мест: из `crypto.py` и `store.py` ушли все `raise VaultFormatError` с литералом, в `crypto.py` остались два `VaultDecryptError`). E1 (25 / 35 / 7), E3, E4, E12, E13, E18 (классы), E19 и E21 — без изменений.
