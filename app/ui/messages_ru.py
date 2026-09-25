@@ -126,7 +126,7 @@ CONFIG_CHANNELS_FIELDS: Final[tuple[str, ...]] = (
     "  privacy — видимость эфиров: {privacy};",
     "  platform — {platform}.",
 )
-CONFIG_LANGUAGES_RULE: Final[str] = 'непустой список кодов строчными буквами без повторов, например ["uk"] или ["uk", "ru"]'
+CONFIG_LANGUAGES_RULE: Final[str] = 'непустой список двухбуквенных кодов ISO 639-1 без повторов, например ["uk"]'
 # Точные шаблоны файлов: идут в лог (DEBUG), когда файл сломан; окно настройщика открывается на шаблоне настроек.
 # В код как умолчания не идут.
 # Шаблон настроек совпадает с поставочным secrets\livecraft.json — это проверяет тест.
@@ -242,6 +242,9 @@ CONFIG_PROBLEM_GOOGLE_ACCOUNT: Final[str] = (
 CONFIG_PROBLEM_PLATFORM_UNKNOWN: Final[str] = "неизвестная площадка «{value}»; допустимо: {allowed}"
 CONFIG_PROBLEM_LANGUAGES: Final[str] = "нужен " + CONFIG_LANGUAGES_RULE
 CONFIG_PROBLEM_LANGUAGE_DUPLICATE: Final[str] = "язык «{value}» указан дважды"
+CONFIG_PROBLEM_LANGUAGE_UNKNOWN: Final[str] = (
+    "«{value}» — не код языка: нужен двухбуквенный код ISO 639-1 строчными буквами, например uk, en, ru"
+)
 
 # --- один экземпляр на машину (CLAUDE.md §6, инвариант 12): замок занят — работать нельзя
 LOCK_REJECTED: Final[str] = (
@@ -272,7 +275,9 @@ VAULT_NOT_READY: Final[str] = "Не хватает ключей и ссылок:
 
 # --- настройщик, вкладка «Ключи и ссылки» (CLAUDE.md §8.2, п.1): что не так с введённым значением.
 # Само введённое значение в строки не подставляется: это секрет, и он не должен попасть ни в один вывод (§7.4).
-SETUP_INPUT_EMPTY: Final[str] = "пусто: чтобы убрать своё значение, нажмите «Сбросить к поставке»"
+# Пустой ввод: у строки со своим значением есть кнопка сброса, {button} — её подпись (KeyRow.reset_label).
+SETUP_INPUT_EMPTY: Final[str] = "пусто — введите значение"
+SETUP_INPUT_EMPTY_RESET: Final[str] = "пусто: чтобы убрать своё значение, нажмите «{button}»"
 SETUP_INPUT_OPENAI_API_KEY: Final[str] = (
     "ключ OpenAI начинается с sk-, пишется без пробелов и переводов строк и длиной не меньше {minimum} символов"
 )
@@ -445,6 +450,10 @@ AUTH_BROWSER_DONE: Final[str] = "Вход выполнен. Вернитесь �
 AUTH_REASON_TEXT: Final[dict[str, str]] = {
     "client_secret_missing": "нет файла client_secret.json рядом с программой",
     "token_unreadable": "файл входа в Google не читается; удалите его и войдите заново",
+    "token_unwritable": (
+        "файл входа в Google не удаётся записать или удалить — проверьте, что папка программы доступна "
+        "для записи и файл не занят другой программой"
+    ),
     "flow_failed": "браузер не вернул разрешение",
     "refresh_failed": "не удалось обновить вход (нет связи с Google)",
     "login_required": "нужен вход в Google: входа ещё не было или он отозван",
@@ -555,6 +564,9 @@ SOURCE_PROBE_MORE: Final[str] = "{shown} … и ещё {more}"
 SOURCE_PROBE_NONE: Final[str] = "нет"
 SOURCE_PROBE_PREVIEW_OK: Final[str] = "  обложка: {width}×{height}, {kilobytes} КБ — годится для YouTube"
 SOURCE_PROBE_PREVIEW_BAD: Final[str] = "  обложка: не годится — {reason}"
+SOURCE_PROBE_PREVIEW_SKIPPED: Final[str] = (
+    "  обложка: не скачивалась — язык не определился, в запуске такой источник не идёт"
+)
 SOURCE_PROBE_FAILED: Final[str] = "  отказ: {reason}"
 SOURCE_PROBE_DETAIL: Final[str] = "  подробно: {detail}"
 SOURCE_PROBE_SUMMARY: Final[str] = "Источников: {total}, получено: {ok}, отказов: {failed}."

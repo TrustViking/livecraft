@@ -40,7 +40,18 @@ def _assert_invalid(entered: SecretInput) -> None:
 def test_empty_input_is_a_problem_in_every_field(field: SecretField, raw: str) -> None:
     entered: SecretInput = _input(field, raw)
     _assert_invalid(entered)
+    assert entered.is_empty
     assert entered.problem == msg.SETUP_INPUT_EMPTY
+
+
+@pytest.mark.parametrize("raw", ["A2:F", "  A2:F  ", "x"])
+def test_input_with_text_is_not_empty(raw: str) -> None:
+    assert not _input(SecretField.SHEETS_RANGE, raw).is_empty
+
+
+def test_the_empty_input_text_names_no_button() -> None:
+    """Без своего значения сбросить нечего: текст просит ввод и не называет кнопку, которой у строки нет."""
+    assert "«" not in msg.SETUP_INPUT_EMPTY
 
 
 @pytest.mark.parametrize(

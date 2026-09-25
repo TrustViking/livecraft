@@ -646,7 +646,7 @@ def test_only_own_gives_an_own_layer_and_an_empty_supplied_one(store: VaultStore
 
 
 def test_own_over_supplied_keeps_the_supplied_layer_whole(store: VaultStore) -> None:
-    """Под личным значением поставочное не теряется: без него не посчитать «Сбросить к поставке»."""
+    """Под личным значением поставочное не теряется: без него не посчитать «Вернуть значение программы»."""
     _write_supplied(store, SUPPLIED_VALUES)
     store.save_local(_own_vault(OWN_VALUES))
     loaded: VaultLoad = store.load()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from typing import Any
 
 import pytest
@@ -116,12 +117,27 @@ def test_a_whole_pause_becomes_a_number(ready_paths: LivecraftPaths) -> None:
     assert changed.settings.youtube_pause_seconds == 2.0
 
 
-@pytest.mark.parametrize("text", ["nan", "inf", "-inf", "Infinity", "полсекунды", ""])
+@pytest.mark.parametrize("text", ["nan", "inf", "-inf", "Infinity"])
 def test_a_pause_that_is_not_a_finite_number_is_a_problem(ready_paths: LivecraftPaths, text: str) -> None:
+    """nan и бесконечность черновик отдаёт числом: точный текст о конечности называет загрузчик."""
+    edit: SettingsPanelEdit = _rejected(SettingsPanel.from_paths(ready_paths), youtube_pause_seconds=text)
+    assert edit.problem is not None
+    assert (edit.problem.key, edit.problem.text) == ("youtube_pause_seconds", msg.CONFIG_PROBLEM_NUMBER_FINITE)
+
+
+@pytest.mark.parametrize("text", ["abc", "полсекунды", ""])
+def test_a_pause_that_is_not_a_number_is_a_problem(ready_paths: LivecraftPaths, text: str) -> None:
     edit: SettingsPanelEdit = _rejected(SettingsPanel.from_paths(ready_paths), youtube_pause_seconds=text)
     assert edit.problem is not None
     assert edit.problem.key == "youtube_pause_seconds"
     assert edit.problem.text == msg.CONFIG_PROBLEM_NUMBER_MIN.format(minimum=0.0)
+
+
+def test_the_draft_leaves_the_finiteness_rule_to_the_loader(ready_paths: LivecraftPaths) -> None:
+    """Правило конечности одно — у загрузчика: черновик отдаёт nan числом, а не текстом."""
+    draft: SettingsDraft = dataclasses.replace(SettingsPanel.from_paths(ready_paths).draft, youtube_pause_seconds="nan")
+    value: Any = draft.to_data(_shipped().form)["youtube_pause_seconds"]
+    assert isinstance(value, float) and math.isnan(value)
 
 
 def test_an_unknown_timezone_is_a_problem(ready_paths: LivecraftPaths) -> None:
@@ -157,7 +173,16 @@ def test_a_form_url_is_applied_with_spaces_trimmed(ready_paths: LivecraftPaths) 
     assert changed.is_dirty
 
 
-@pytest.mark.parametrize("text", ["http://forms.gle/AbCdEf123456", "https://example.com/forms/x", "не ссылка"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "http://forms.gle/AbCdEf123456",
+        "https://example.com/forms/x",
+        "не ссылка",
+        "https://docs.google.com]/forms/x",   # urlsplit бросает ValueError — проблема поля, а не падение
+        "https://[bad",
+    ],
+)
 def test_a_bad_form_url_is_a_problem_of_the_field(ready_paths: LivecraftPaths, text: str) -> None:
     edit: SettingsPanelEdit = _rejected(SettingsPanel.from_paths(ready_paths), form_url=text)
     assert edit.problem is not None

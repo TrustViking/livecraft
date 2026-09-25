@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import dataclasses
 
+import pytest
+
 from app.config.loader import (
     ChannelConfig,
     Platform,
@@ -107,7 +109,22 @@ def test_uppercase_languages_are_a_problem_named_by_the_loader(ready_paths: Live
     assert not edit.is_applied
     assert edit.panel is panel
     assert edit.problem is not None
-    assert (edit.problem.key, edit.problem.text) == ("languages", msg.CONFIG_PROBLEM_LANGUAGES)
+    assert (edit.problem.key, edit.problem.text) == (
+        "languages", msg.CONFIG_PROBLEM_LANGUAGE_UNKNOWN.format(value="UK")
+    )
+
+
+@pytest.mark.parametrize("code", ["ua", "uk-ua"])
+def test_a_language_outside_iso_639_1_is_a_problem_named_by_the_loader(ready_paths: LivecraftPaths, code: str) -> None:
+    """Код вне справочника (из старого файла или из формы) отклоняет загрузчик — проблемой поля, не исключением."""
+    panel: ChannelsPanel = ChannelsPanel.from_paths(ready_paths)
+    edit: ChannelsPanelEdit = panel.add(_draft(languages=code))
+    assert not edit.is_applied
+    assert edit.panel is panel
+    assert edit.problem is not None
+    assert (edit.problem.key, edit.problem.text) == (
+        "languages", msg.CONFIG_PROBLEM_LANGUAGE_UNKNOWN.format(value=code)
+    )
 
 
 def test_languages_split_on_commas_and_spaces(ready_paths: LivecraftPaths) -> None:

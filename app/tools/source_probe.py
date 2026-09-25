@@ -98,15 +98,23 @@ class SourceProbeReport:
 
     @property
     def _outcome_lines(self) -> tuple[str, ...]:
-        """Отказ — причина и подробность yt-dlp; удача — строка языка и строка обложки."""
+        """Отказ — причина и подробность yt-dlp; удача — строка языка и строка обложки (или почему её нет)."""
         failure: SourceFailureReason | None = self.fetched.failure
         if failure is not None:
             return (
                 msg.SOURCE_PROBE_FAILED.format(reason=failure.human),
                 msg.SOURCE_PROBE_DETAIL.format(detail=self.fetched.detail),
             )
-        preview: tuple[str, ...] = (self._preview_line(self.preview),) if self.preview is not None else ()
-        return (*self._language_lines, *preview)
+        return (*self._language_lines, *self._preview_lines)
+
+    @property
+    def _preview_lines(self) -> tuple[str, ...]:
+        """Язык не определился — обложку не качали, как в боевом запуске; иначе — строка обложки, если она есть."""
+        if self.decision is not None and not self.decision.is_resolved:
+            return (msg.SOURCE_PROBE_PREVIEW_SKIPPED,)
+        if self.preview is None:
+            return ()
+        return (self._preview_line(self.preview),)
 
     @property
     def _language_lines(self) -> tuple[str, ...]:
@@ -165,7 +173,10 @@ class SourceProbe:
         return int(ProbeExit.ERRORS if failed else ProbeExit.OK)
 
     def _probe(self, raw: str) -> SourceProbeReport | None:
-        """Одна ссылка: нормализовать, спросить yt-dlp, решить язык, скачать обложку, напечатать; не YouTube — None."""
+        """Одна ссылка: нормализовать, спросить yt-dlp, решить язык, скачать обложку, напечатать; не YouTube — None.
+
+        Обложка качается только источнику с решённым языком — так же, как `SourceCatalog` в боевом запуске.
+        """
         link: str | None = normalize_youtube_link(raw)
         if link is None:
             LOGGER.warning("source_probe_bad_link raw=%r", raw)
@@ -176,7 +187,8 @@ class SourceProbe:
         decision: LanguageDecision | None = None
         if fetched.is_ok and fetched.metadata is not None:
             decision = self.resolver.resolve(fetched.metadata)
-            preview = self.downloader.preview(fetched.metadata.thumbnail_url)
+            if decision.is_resolved:
+                preview = self.downloader.preview(fetched.metadata.thumbnail_url)
         LOGGER.info("source_probe link=%s %s", link, fetched.log_line)
         report: SourceProbeReport = SourceProbeReport(fetched=fetched, preview=preview, decision=decision)
         for line in report.lines:

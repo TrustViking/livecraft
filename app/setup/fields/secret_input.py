@@ -38,6 +38,11 @@ class SecretInput:
         return self.raw.strip()
 
     @property
+    def is_empty(self) -> bool:
+        """Ввод без пробелов по краям пуст: вписывать нечего."""
+        return not self.text
+
+    @property
     def normalized(self) -> str | None:
         """Значение для сейфа после правил поля; ввод негоден — None."""
         if self.problem is not None:
@@ -49,7 +54,7 @@ class SecretInput:
         """Что не так с вводом — русской строкой без самого значения; всё в порядке — None."""
         if self.field.is_legacy:
             return msg.SETUP_INPUT_LEGACY_FIELD      # устаревшее поле не вводится: правила у него нет
-        if not self.text:
+        if self.is_empty:
             return msg.SETUP_INPUT_EMPTY
         rule: Callable[[SecretInput], str | None] = _FIELD_RULES[self.field]
         return rule(self)

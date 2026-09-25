@@ -27,6 +27,7 @@ from app.config.loader import (
     Privacy,
     ReasoningEffort,
     ServiceTier,
+    SettingProblem,
     ShippedSettings,
     load_channels,
     load_livecraft_config,
@@ -488,6 +489,9 @@ FORM_LONG: str = "https://docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform"
 FORM_SHORT: str = "https://forms.gle/AbCdEf123456"
 
 
+UNPARSABLE_FORM_URLS: tuple[str, ...] = ("https://docs.google.com]/forms/x", "https://[bad")
+
+
 def _settings_with_form_url(tmp_path: Path, url: Any) -> Path:
     data: dict[str, Any] = _settings_data()
     data["form"]["url"] = url
@@ -533,6 +537,8 @@ def test_a_good_form_url_is_read_as_is(tmp_path: Path, url: str) -> None:
         f" {FORM_SHORT}",                                                  # пробел по краю
         "   ",                                                             # одни пробелы — не «пусто»
         "docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform",           # без схемы
+        UNPARSABLE_FORM_URLS[0],                                           # urlsplit бросает ValueError
+        UNPARSABLE_FORM_URLS[1],
     ],
 )
 def test_a_bad_form_url_is_an_error_at_form_url(tmp_path: Path, url: str) -> None:
@@ -541,6 +547,24 @@ def test_a_bad_form_url_is_an_error_at_form_url(tmp_path: Path, url: str) -> Non
     assert raised.value.key_path == "form.url"
     assert raised.value.problem == msg.CONFIG_PROBLEM_FORM_URL
     assert raised.value.kind is ConfigProblem.INVALID
+
+
+@pytest.mark.parametrize("url", UNPARSABLE_FORM_URLS)
+def test_an_unparsable_form_url_is_a_problem_of_the_field_not_an_exception(url: str) -> None:
+    form: FormSettings = dataclasses.replace(SHIPPED_SETTINGS.settings.form, url=url)
+    assert (form.url_problem, form.problem) == (
+        SettingProblem(key="url", text=msg.CONFIG_PROBLEM_FORM_URL),
+        SettingProblem(key="url", text=msg.CONFIG_PROBLEM_FORM_URL),
+    )
+
+
+@pytest.mark.parametrize("url", UNPARSABLE_FORM_URLS)
+def test_parse_settings_turns_an_unparsable_form_url_into_a_config_error(url: str) -> None:
+    data: dict[str, Any] = _settings_data()
+    data["form"]["url"] = url
+    with pytest.raises(ConfigError) as raised:
+        parse_settings(data, SHIPPED_SETTINGS_FILE)
+    assert (raised.value.key_path, raised.value.problem) == ("form.url", msg.CONFIG_PROBLEM_FORM_URL)
 
 
 @pytest.mark.parametrize("value", [None, 5, [], {}, True])
@@ -635,6 +659,27 @@ def test_a_bad_google_account_is_an_error(tmp_path: Path, account: str) -> None:
 def test_bad_languages_are_an_error(tmp_path: Path, languages: Any) -> None:
     error: ConfigError = _channels_error(tmp_path, {"channels": [_channel(languages=languages)]})
     assert error.key_path == "channels[0].languages"
+
+
+@pytest.mark.parametrize("code", ["uk", "en", "ru"])
+def test_an_iso_639_1_code_is_a_language(tmp_path: Path, code: str) -> None:
+    path: Path = _write(tmp_path / "channels.json", {"channels": [_channel(languages=[code])]})
+    assert load_channels(path)[0].languages == (code,)
+
+
+@pytest.mark.parametrize("code", ["uk-ua", "ukr", "UK", " uk", "xx", "", 5])
+def test_a_code_outside_iso_639_1_is_named_in_the_problem(tmp_path: Path, code: Any) -> None:
+    """Код вне справочника канал молча оставил бы без слотов: проблема называет само значение."""
+    error: ConfigError = _channels_error(tmp_path, {"channels": [_channel(languages=["uk", code])]})
+    assert error.key_path == "channels[0].languages"
+    assert error.problem == msg.CONFIG_PROBLEM_LANGUAGE_UNKNOWN.format(value=code)
+    assert f"«{code}»" in error.problem
+
+
+@pytest.mark.parametrize("languages", [[], "uk", None, {"uk": 1}])
+def test_languages_that_are_not_a_list_keep_the_list_rule(tmp_path: Path, languages: Any) -> None:
+    error: ConfigError = _channels_error(tmp_path, {"channels": [_channel(languages=languages)]})
+    assert (error.key_path, error.problem) == ("channels[0].languages", msg.CONFIG_PROBLEM_LANGUAGES)
 
 
 @pytest.mark.parametrize("platform", ["facebook", "rumble", "YouTube", ""])

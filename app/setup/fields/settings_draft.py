@@ -8,7 +8,6 @@
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -88,14 +87,14 @@ class SettingsDraft:
 
     @property
     def _pause_seconds(self) -> float | str:
-        """Пауза — конечное число, запятая допустима; nan, inf и не число уходят текстом — на ошибку загрузчика."""
+        """Пауза числом, запятая допустима; nan и бесконечность — тоже числом, не число — текстом.
+
+        Конечность и минимум проверяет только загрузчик: у него точный текст на каждый случай.
+        """
         try:
-            value: float = float(self.youtube_pause_seconds.strip().replace(DECIMAL_COMMA, DECIMAL_POINT))
+            return float(self.youtube_pause_seconds.strip().replace(DECIMAL_COMMA, DECIMAL_POINT))
         except ValueError:
             return self.youtube_pause_seconds
-        if not math.isfinite(value):
-            return self.youtube_pause_seconds
-        return value
 
     @staticmethod
     def _integer(text: str) -> int | str:

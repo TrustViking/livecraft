@@ -124,15 +124,39 @@ def test_a_refusal_is_code_1_and_other_links_still_go() -> None:
     assert sum(line.startswith("  язык источника:") for line in lines) == 1   # у отказа языка нет
 
 
-def test_undetected_language_is_named_and_counts_as_a_refusal() -> None:
+def _undetected_language_fetch() -> SourceFetch:
     info: dict[str, Any] = load_info("video_full.json") | {
         "language": None, "title": "Эфир", "description": "", "formats": [], "automatic_captions": {},
     }
-    fetch: SourceFetch = SourceFetch.from_metadata(LINK, SourceMetadata.from_ytdlp(LINK, info))
-    code, lines = run_probe(_FakeFetcher({LINK: fetch}), _FakeGet(_Response(200, png_bytes((64, 36)))), [LINK])
+    return SourceFetch.from_metadata(LINK, SourceMetadata.from_ytdlp(LINK, info))
+
+
+def test_undetected_language_is_named_and_counts_as_a_refusal() -> None:
+    code, lines = run_probe(
+        _FakeFetcher({LINK: _undetected_language_fetch()}), _FakeGet(_Response(200, png_bytes((64, 36)))), [LINK]
+    )
     assert code == ProbeExit.ERRORS
     assert msg.SOURCE_PROBE_SOURCE_LANGUAGE_NONE in lines
     assert lines[-1] == msg.SOURCE_PROBE_SUMMARY.format(total=1, ok=0, failed=1)
+
+
+def test_undetected_language_skips_the_preview_as_the_run_does() -> None:
+    """Боевой путь (SourceCatalog) не качает обложку источнику без языка — пробник тоже."""
+    get: _FakeGet = _FakeGet(_Response(200, png_bytes((64, 36))))
+    code, lines = run_probe(_FakeFetcher({LINK: _undetected_language_fetch()}), get, [LINK])
+    assert code == ProbeExit.ERRORS
+    assert get.urls == []                                    # загрузчик обложки не вызывался
+    assert msg.SOURCE_PROBE_PREVIEW_SKIPPED in lines
+    assert not any(line.startswith("  обложка: ") and line != msg.SOURCE_PROBE_PREVIEW_SKIPPED for line in lines)
+    assert lines.index(msg.SOURCE_PROBE_SOURCE_LANGUAGE_NONE) < lines.index(msg.SOURCE_PROBE_PREVIEW_SKIPPED)
+
+
+def test_a_resolved_language_still_downloads_the_preview() -> None:
+    get: _FakeGet = _FakeGet(_Response(200, png_bytes((64, 36))))
+    code, lines = run_probe(_FakeFetcher({LINK: ok_fetch(LINK)}), get, [LINK])
+    assert code == ProbeExit.OK
+    assert len(get.urls) == 1
+    assert msg.SOURCE_PROBE_PREVIEW_SKIPPED not in lines
 
 
 def test_a_link_that_is_not_youtube_is_a_refusal() -> None:

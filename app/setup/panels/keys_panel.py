@@ -78,6 +78,13 @@ class KeyRow:
             reset_label=cls._reset_label(actions, has_supplied),
         )
 
+    @property
+    def empty_input_problem(self) -> str:
+        """Что сказать на пустой ввод: есть сброс своего значения — назвать его настоящую кнопку, нет — просить ввод."""
+        if self.reset_label is None:
+            return msg.SETUP_INPUT_EMPTY
+        return msg.SETUP_INPUT_EMPTY_RESET.format(button=self.reset_label)
+
     @staticmethod
     def _reset_label(actions: frozenset[RowAction], has_supplied: bool) -> str | None:
         if RowAction.RESET not in actions:
@@ -184,9 +191,15 @@ class KeysPanel:
         entered: SecretInput = SecretInput(field=field, raw=raw)
         secret: SecretValue | None = entered.secret
         if secret is None:
-            return KeysPanelEdit(panel=self, problem=entered.problem)
+            return KeysPanelEdit(panel=self, problem=self._input_problem(entered))
         own: Vault = self.own.with_field(field, secret, VaultOrigin.OWN)
         return KeysPanelEdit(panel=self._with_own(own), problem=None)
+
+    def _input_problem(self, entered: SecretInput) -> str | None:
+        """Проблема ввода; пустой ввод в нужное поле называет строка поля — она знает свою кнопку сброса."""
+        if entered.is_empty and not entered.field.is_legacy:
+            return self.row(entered.field).empty_input_problem
+        return entered.problem
 
     def reset(self, field: SecretField) -> KeysPanel:
         """Убрать своё значение поля: под ним снова видно поставочное, а если его нет — поля нет."""

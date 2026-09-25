@@ -336,6 +336,16 @@ def test_the_summary_says_the_form_is_not_configured_on_the_shipped_settings(rea
     assert lines[-1] == msg.READINESS_CHANNELS_LINE.format(count=2, languages="en, ru, uk")
 
 
+@pytest.mark.parametrize("url", ["https://docs.google.com]/forms/x", "https://[bad"])
+def test_an_unparsable_form_url_is_a_settings_problem_not_a_crash(ready_paths: LivecraftPaths, url: str) -> None:
+    _set_form_url(ready_paths, url)
+    readiness: Readiness = Readiness.check(ready_paths)
+    assert readiness.settings is None
+    assert readiness.settings_error is not None
+    assert readiness.settings_error.key_path == "form.url"
+    assert readiness.settings_error.problem == msg.CONFIG_PROBLEM_FORM_URL
+
+
 def test_the_summary_says_the_form_is_configured_and_hides_the_link(ready_paths: LivecraftPaths) -> None:
     _set_form_url(ready_paths, FORM_URL)
     readiness: Readiness = Readiness.check(ready_paths)

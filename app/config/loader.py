@@ -28,9 +28,12 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, ClassVar, Final
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
+import pycountry
+
+from app.core.url_text import split_url
 from app.paths import write_text_atomically
 from app.ui import messages_ru as msg
 
@@ -137,6 +140,8 @@ ACCOUNT_NAME_EDGE_CHAR: Final[str] = " "   # YouTube не отдаёт назв�
 ACCOUNT_NAME_MAX_CHARS: Final[int] = 100   # предел названия канала на YouTube
 # google_account — подсказка аккаунта при входе, а не проверка почты: ровно один «@», части непустые, без пробелов.
 GOOGLE_ACCOUNT_SEPARATOR: Final[str] = "@"
+
+LANGUAGE_CODE_LENGTH: Final[int] = 2   # ISO 639-1
 # Плейсхолдеры шаблона папки превью: папка image\{date}\{language} (§5).
 IMAGE_TEMPLATE_PLACEHOLDERS: Final[tuple[str, ...]] = ("date", "language")
 IMAGE_TEMPLATE_PROBE: Final[str] = "probe"
@@ -292,13 +297,16 @@ class FormSettings:
         Пустая ссылка годна — это «не настроено». Хост сверяется со всем `netloc`, а не только с именем:
         «docs.google.com@чужой.хост» и чужой порт не проходят. Пробелы не прощаются ни внутри, ни по краям:
         в файле ссылка лежит ровно такой, какой уйдёт в пакет. Редирект и viewform разбирает сама форма
-        (задача 4.2), здесь — только чей это адрес.
+        (задача 4.2), здесь — только чей это адрес. Адрес, который не разбирается (`https://[bad`), — та же
+        проблема ссылки, а не исключение: иначе одна негодная строка роняла бы запуск и окно настройки.
         """
         if not self.url:
             return None
         if any(char.isspace() for char in self.url):
             return SettingProblem(key=FORM_URL_KEY, text=msg.CONFIG_PROBLEM_FORM_URL)
-        parts: SplitResult = urlsplit(self.url)
+        parts: SplitResult | None = split_url(self.url)
+        if parts is None:
+            return SettingProblem(key=FORM_URL_KEY, text=msg.CONFIG_PROBLEM_FORM_URL)
         host: str = parts.netloc.lower()
         is_long: bool = host == FORM_LONG_HOST and parts.path.startswith(FORM_LONG_PATH_PREFIX)
         is_short: bool = host == FORM_SHORT_HOST and bool(parts.path.strip(URL_PATH_SEPARATOR))
@@ -576,7 +584,18 @@ def _is_google_account(value: str) -> bool:
 
 
 def _is_language_code(value: Any) -> bool:
-    return isinstance(value, str) and bool(value) and value == value.strip().lower()
+    """Код языка ISO 639-1: ровно две строчные латинские буквы, и справочник pycountry его знает.
+
+    Строчность проверяется отдельно: поиск pycountry регистр не различает и нашёл бы «UK».
+    """
+    is_shaped: bool = (
+        isinstance(value, str)
+        and len(value) == LANGUAGE_CODE_LENGTH
+        and value.isascii()
+        and value.isalpha()
+        and value.islower()
+    )
+    return is_shaped and pycountry.languages.get(alpha_2=value) is not None
 
 
 def _channel_lines(channel: ChannelConfig) -> str:
@@ -865,11 +884,18 @@ class _ConfigParser:
             ) from None
 
     def _languages(self, mapping: dict[str, Any], *, prefix: str) -> tuple[str, ...]:
-        """Коды языков со справочником не сверяются: язык назначает оператор."""
+        """Непустой список кодов ISO 639-1 из справочника pycountry без повторов.
+
+        Код вне справочника («uk-ua», «ukr», «xx») канал молча оставил бы без слотов, поэтому он — проблема
+        поля с первым негодным значением, а не тихий пропуск.
+        """
         value: Any = mapping["languages"]
         key_path: str = f"{prefix}languages"
-        if not isinstance(value, list) or not value or not all(_is_language_code(item) for item in value):
+        if not isinstance(value, list) or not value:
             raise self._error(key_path, msg.CONFIG_PROBLEM_LANGUAGES)
+        unknown: list[Any] = [item for item in value if not _is_language_code(item)]
+        if unknown:
+            raise self._error(key_path, msg.CONFIG_PROBLEM_LANGUAGE_UNKNOWN.format(value=unknown[0]))
         duplicates: list[str] = sorted({item for item in value if value.count(item) > 1})
         if duplicates:
             raise self._error(key_path, msg.CONFIG_PROBLEM_LANGUAGE_DUPLICATE.format(value=duplicates[0]))

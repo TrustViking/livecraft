@@ -153,9 +153,47 @@ def test_replace_with_bad_input_names_the_problem_and_changes_nothing(store: Vau
     assert edit.panel.rows == before.rows
 
 
-def test_replace_with_empty_input_points_to_reset(store: VaultStore) -> None:
+def test_replace_with_empty_input_without_an_own_value_asks_for_input(store: VaultStore) -> None:
+    """Под строкой только поставочное значение: сброса нет — текст просит ввести значение."""
     edit: KeysPanelEdit = KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, "   ")
     assert edit.problem == msg.SETUP_INPUT_EMPTY
+
+
+def test_replace_with_empty_input_over_the_supply_names_the_return_button(store: VaultStore) -> None:
+    panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE))
+    edit: KeysPanelEdit = panel.replace(SecretField.SHEETS_RANGE, "")
+    assert not edit.is_applied and edit.panel is panel
+    assert edit.problem == msg.SETUP_INPUT_EMPTY_RESET.format(button=msg.SETUP_KEYS_BUTTON_RESET_TO_SUPPLIED)
+    assert "Вернуть значение программы" in edit.problem
+
+
+def test_replace_with_empty_input_without_supply_names_the_delete_button(bare_store: VaultStore) -> None:
+    panel: KeysPanel = _applied(KeysPanel.from_store(bare_store).replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY))
+    edit: KeysPanelEdit = panel.replace(SecretField.OPENAI_API_KEY, " 	 ")
+    assert not edit.is_applied and edit.panel is panel
+    assert edit.problem == msg.SETUP_INPUT_EMPTY_RESET.format(button=msg.SETUP_KEYS_BUTTON_DELETE_OWN)
+    assert "Удалить своё значение" in edit.problem
+
+
+def test_replace_with_empty_input_in_an_empty_field_asks_for_input(bare_store: VaultStore) -> None:
+    edit: KeysPanelEdit = KeysPanel.from_store(bare_store).replace(SecretField.SHEETS_ID, "")
+    assert edit.problem == msg.SETUP_INPUT_EMPTY
+
+
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_empty_input_into_the_legacy_form_url_still_says_it_cannot_be_entered(store: VaultStore, raw: str) -> None:
+    edit: KeysPanelEdit = KeysPanel.from_store(store).replace(SecretField.KEY_FORM_URL, raw)
+    assert edit.problem == msg.SETUP_INPUT_LEGACY_FIELD
+
+
+def test_every_row_names_a_real_button_for_empty_input(store: VaultStore) -> None:
+    """Текст о пустом вводе называет ровно подпись сброса своей строки, а у строки без сброса — никакую."""
+    panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE))
+    for row in panel.rows:
+        if row.reset_label is None:
+            assert row.empty_input_problem == msg.SETUP_INPUT_EMPTY
+        else:
+            assert f"«{row.reset_label}»" in row.empty_input_problem
 
 
 def test_enter_fills_an_empty_field_as_own(bare_store: VaultStore) -> None:

@@ -19,7 +19,7 @@ from app.google.auth import (
     AuthErrorReason,
     GoogleLogin,
 )
-from app.paths import LivecraftPaths
+from app.paths import LivecraftPaths, write_text_atomically
 from app.ui import messages_ru as msg
 
 TOKEN_JSON: str = json.dumps({"token": "x", "refresh_token": "y"})
@@ -295,6 +295,51 @@ def test_save_writes_and_drop_removes_the_token(operator: GoogleLogin) -> None:
     operator.drop()
     operator.drop()                                       # файла уже нет — не ошибка
     assert not operator.token_file.exists()
+
+
+def test_save_goes_through_the_atomic_write(operator: GoogleLogin, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Токен пишется временным файлом и os.replace: оборванная запись не оставит испорченный токен."""
+    calls: list[tuple[Path, str]] = []
+
+    def _recording_write(path: Path, text: str, encoding: str) -> None:
+        calls.append((path, encoding))
+        write_text_atomically(path, text, encoding)
+
+    monkeypatch.setattr(auth_module, "write_text_atomically", _recording_write)
+    operator.save(_FakeCredentials())  # type: ignore[arg-type]
+    assert calls == [(operator.token_file, "utf-8")]
+    assert operator.token_file.read_bytes() == TOKEN_JSON.encode("utf-8")
+    leftovers: list[Path] = [
+        path for path in operator.token_file.parent.iterdir()
+        if path.name.startswith(operator.token_file.name) and path != operator.token_file
+    ]
+    assert leftovers == []                                  # временный файл записи не остался рядом
+
+
+def test_a_save_that_cannot_write_is_token_unwritable(livecraft_paths: LivecraftPaths, operator: GoogleLogin) -> None:
+    """На месте папки токена лежит файл: mkdir падает — причина «не удаётся записать», а не «не читается»."""
+    blocker: Path = livecraft_paths.root / "blocker"
+    blocker.write_text("", encoding="utf-8")
+    login: GoogleLogin = GoogleLogin(
+        client_secret_file=operator.client_secret_file,
+        token_file=blocker / "sheets.token.json",
+        scopes=operator.scopes,
+        login_hint=None,
+        saves_new_login=True,
+    )
+    with pytest.raises(AuthError) as raised:
+        login.save(_FakeCredentials())  # type: ignore[arg-type]
+    assert raised.value.reason is AuthErrorReason.TOKEN_UNWRITABLE
+    assert str(livecraft_paths.root) not in str(raised.value)
+
+
+def test_a_drop_that_cannot_remove_is_token_unwritable(operator: GoogleLogin) -> None:
+    """На месте файла токена папка: удалить её как файл нельзя — причина «не удаётся удалить»."""
+    operator.token_file.mkdir(parents=True)
+    with pytest.raises(AuthError) as raised:
+        operator.drop()
+    assert raised.value.reason is AuthErrorReason.TOKEN_UNWRITABLE
+    assert operator.token_file.is_dir()
 
 
 def test_every_reason_has_a_russian_text() -> None:

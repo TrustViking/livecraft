@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import tkinter as tk
 from collections.abc import Iterator
 from tkinter import font, messagebox, ttk
+from typing import Any
 
 import pytest
 
@@ -42,6 +44,7 @@ from app.ui import messages_ru as msg
 
 OWN_OPENAI_KEY: str = "sk-proj-own-Zy9xWvUtSrQpOnMlKjIhGfEdCbA9876543210"
 BAD_OPENAI_KEY: str = "not-a-key"
+OLD_FILE_LANGUAGES: tuple[str, ...] = ("ru", "en")   # channels.json до решения 21: у канала два языка
 
 
 def _open(paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]) -> Iterator[SetupWindow]:
@@ -66,6 +69,15 @@ def _open(paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]) -> Iterator
 @pytest.fixture
 def window(ready_paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]) -> Iterator[SetupWindow]:
     """Окно на готовом корне: поставочный сейф на все поля, настройки поставки, каналы примера."""
+    yield from _open(ready_paths, capsys)
+
+
+@pytest.fixture
+def two_languages_window(ready_paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]) -> Iterator[SetupWindow]:
+    """Окно на своём channels.json старого вида: у второго канала два языка (совместимость, §14 решение 21)."""
+    data: dict[str, Any] = json.loads(ready_paths.channels_file.read_text(encoding="utf-8"))
+    data["channels"][1]["languages"] = list(OLD_FILE_LANGUAGES)
+    ready_paths.channels_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     yield from _open(ready_paths, capsys)
 
 
@@ -964,9 +976,11 @@ def test_selecting_a_row_shows_the_channel_language(window: SetupWindow) -> None
     assert tab.language_note.text == ""
 
 
-def test_a_channel_with_two_languages_keeps_the_first_on_save(window: SetupWindow, ready_paths: LivecraftPaths) -> None:
-    """Канал примера записан с двумя языками: показан первый, строка о лишних; после сохранения в файле один код."""
-    tab: ChannelsTab = window.channels_tab
+def test_a_channel_with_two_languages_keeps_the_first_on_save(
+    two_languages_window: SetupWindow, ready_paths: LivecraftPaths
+) -> None:
+    """Канал старого файла записан с двумя языками: показан первый, строка о лишних; после сохранения — один код."""
+    tab: ChannelsTab = two_languages_window.channels_tab
     tab.tree.selection_set("1")
     tab.fill_from_selection()
     assert tab.language_text.get() == tab.catalog.label_of("ru")
@@ -977,8 +991,8 @@ def test_a_channel_with_two_languages_keeps_the_first_on_save(window: SetupWindo
     assert load_channels(ready_paths.channels_file)[1].languages == ("ru",)
 
 
-def test_picking_another_language_clears_the_several_languages_line(window: SetupWindow) -> None:
-    tab: ChannelsTab = window.channels_tab
+def test_picking_another_language_clears_the_several_languages_line(two_languages_window: SetupWindow) -> None:
+    tab: ChannelsTab = two_languages_window.channels_tab
     tab.tree.selection_set("1")
     tab.fill_from_selection()
     _pick_language(tab, "en")

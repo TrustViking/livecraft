@@ -21,6 +21,7 @@ OWN_FORM_URL: str = "https://forms.gle/OwnFormCode12345"
 OWN_SHEETS_ID: str = "1own-B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ-own-table"
 SET_FORM_URL: str = "https://docs.google.com/forms/d/e/1FAIpQLSf-already-set/viewform"
 BAD_FORM_URL: str = "http://example.com/forms/secret-form-code"
+UNPARSABLE_FORM_URL: str = "https://[bad"
 
 
 @pytest.fixture
@@ -155,8 +156,10 @@ def test_the_supplied_link_moves_and_the_supplied_vault_stays_untouched(ready_pa
 # --- негодная ссылка
 
 
-def test_a_bad_link_writes_nothing_and_warns(ready_paths: LivecraftPaths) -> None:
-    _save_own(ready_paths, {SecretField.KEY_FORM_URL: BAD_FORM_URL})
+@pytest.mark.parametrize("bad_url", [BAD_FORM_URL, UNPARSABLE_FORM_URL])
+def test_a_bad_link_writes_nothing_and_warns(ready_paths: LivecraftPaths, bad_url: str) -> None:
+    """Ссылка, на которой urlsplit бросает ValueError, — такой же исход INVALID, а не падение каждого запуска."""
+    _save_own(ready_paths, {SecretField.KEY_FORM_URL: bad_url})
     settings_before: bytes = ready_paths.config_file.read_bytes()
     local_before: bytes = ready_paths.vault_local_file.read_bytes()
     result: FormUrlMigrationResult = _planned(ready_paths).run()

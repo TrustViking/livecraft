@@ -28,7 +28,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow, WSGITimeoutError
 
 from app.observability.logging_setup import get_logger
-from app.paths import LivecraftPaths
+from app.paths import LivecraftPaths, write_text_atomically
 from app.ui import messages_ru as msg
 
 LOGGER_NAME: Final[str] = "auth"
@@ -52,7 +52,8 @@ DETAIL_TEMPLATE: Final[str] = "{file}: {problem}"
 
 class AuthErrorReason(str, Enum):
     CLIENT_SECRET_MISSING = "client_secret_missing"
-    TOKEN_UNREADABLE = "token_unreadable"
+    TOKEN_UNREADABLE = "token_unreadable"     # файл токена есть, но не читается или не разбирается
+    TOKEN_UNWRITABLE = "token_unwritable"     # файл токена не удаётся записать или удалить
     FLOW_FAILED = "flow_failed"
     REFRESH_FAILED = "refresh_failed"
     LOGIN_REQUIRED = "login_required"   # нужен браузер, а вызывающий вход запретил (allow_login=False)
@@ -133,19 +134,19 @@ class GoogleLogin:
         return self._log_in(allow_login, on_login)
 
     def save(self, credentials: Credentials) -> None:
-        """Записать токен; единственная запись файла токена."""
+        """Записать токен атомарно; единственная запись файла токена. Оборванная запись оставляет прежний файл."""
         try:
             self.token_file.parent.mkdir(parents=True, exist_ok=True)
-            self.token_file.write_text(credentials.to_json(), encoding=TOKEN_ENCODING)
+            write_text_atomically(self.token_file, credentials.to_json(), TOKEN_ENCODING)
         except OSError as error:
-            raise AuthError(AuthErrorReason.TOKEN_UNREADABLE, self._detail(error)) from error
+            raise AuthError(AuthErrorReason.TOKEN_UNWRITABLE, self._detail(error)) from error
 
     def drop(self) -> None:
         """Удалить файл токена: единственное место удаления (токен ведёт не на тот аккаунт)."""
         try:
             self.token_file.unlink(missing_ok=True)
         except OSError as error:
-            raise AuthError(AuthErrorReason.TOKEN_UNREADABLE, self._detail(error)) from error
+            raise AuthError(AuthErrorReason.TOKEN_UNWRITABLE, self._detail(error)) from error
         LOGGER.info("token_dropped file=%s", self.token_file.name)
 
     def _log_in(self, allow_login: bool, on_login: Callable[[], None] | None) -> Credentials:
