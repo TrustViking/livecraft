@@ -12,7 +12,6 @@ import pytest
 
 from app.config import loader as loader_module
 from app.config.loader import (
-    AUTH_ALL,
     CHANNEL_KEYS,
     FORM_KEYS,
     LLM_KEYS,
@@ -21,7 +20,6 @@ from app.config.loader import (
     ConfigError,
     ConfigProblem,
     FormSettings,
-    LivecraftConfig,
     LivecraftSettings,
     Platform,
     Privacy,
@@ -30,9 +28,7 @@ from app.config.loader import (
     SettingProblem,
     ShippedSettings,
     load_channels,
-    load_livecraft_config,
     load_settings,
-    normalize_handle,
     parse_channels,
     parse_settings,
     render_channels_file,
@@ -110,12 +106,6 @@ def test_the_channels_example_loads() -> None:
     assert channels[1].languages == ("ru",)
     assert channels[0].privacy is Privacy.PUBLIC and channels[1].privacy is Privacy.UNLISTED
     assert all(channel.platform is Platform.YOUTUBE for channel in channels)
-
-
-def test_both_files_load_together(tmp_path: Path) -> None:
-    config: LivecraftConfig = load_livecraft_config(SHIPPED_SETTINGS_FILE, REPO_CHANNELS_EXAMPLE)
-    assert config.settings == load_settings(SHIPPED_SETTINGS_FILE)
-    assert config.channels == load_channels(REPO_CHANNELS_EXAMPLE)
 
 
 # --- поставочный вид livecraft.json: файла в git нет, программа кладёт шаблон сама (§5)
@@ -211,7 +201,6 @@ def test_every_top_level_settings_field_is_required(tmp_path: Path, key: str) ->
     error: ConfigError = _settings_error(tmp_path, data)
     assert error.key_path == key
     assert error.kind is ConfigProblem.FIELD_MISSING
-    assert error.is_template_needed
 
 
 @pytest.mark.parametrize("key", LLM_KEYS)
@@ -255,24 +244,24 @@ def test_every_channel_field_is_required(tmp_path: Path, key: str) -> None:
     assert error.key_path == f"channels[0].{key}" and error.kind is ConfigProblem.FIELD_MISSING
 
 
-def test_a_missing_settings_file_asks_for_the_template(tmp_path: Path) -> None:
+def test_a_missing_settings_file_is_reported_as_missing(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as raised:
         load_settings(tmp_path / "livecraft.json")
-    assert raised.value.kind is ConfigProblem.FILE_MISSING and raised.value.is_template_needed
+    assert raised.value.kind is ConfigProblem.FILE_MISSING
     assert raised.value.key_path == msg.CONFIG_ROOT_KEY
 
 
-def test_a_missing_channels_file_asks_for_the_template(tmp_path: Path) -> None:
+def test_a_missing_channels_file_is_reported_as_missing(tmp_path: Path) -> None:
     with pytest.raises(ConfigError) as raised:
         load_channels(tmp_path / "channels.json")
-    assert raised.value.is_template_needed
+    assert raised.value.kind is ConfigProblem.FILE_MISSING
 
 
-def test_an_invalid_value_does_not_ask_for_the_template(tmp_path: Path) -> None:
+def test_an_invalid_value_is_reported_as_invalid(tmp_path: Path) -> None:
     data: dict[str, Any] = _settings_data()
     data["keep_days"] = 0
     error: ConfigError = _settings_error(tmp_path, data)
-    assert error.kind is ConfigProblem.INVALID and not error.is_template_needed
+    assert error.kind is ConfigProblem.INVALID
 
 
 # --- структура JSON
@@ -719,44 +708,16 @@ def test_the_account_name_is_stored_in_nfc(tmp_path: Path) -> None:
     assert channel.account_name == "Канал й"
 
 
-# --- правила объекта конфига
+# --- ключ канала
 
 
-@pytest.fixture
-def config() -> LivecraftConfig:
-    return load_livecraft_config(SHIPPED_SETTINGS_FILE, REPO_CHANNELS_EXAMPLE)
-
-
-def test_served_languages_are_the_union_of_channel_languages(config: LivecraftConfig) -> None:
-    assert config.served_languages == frozenset({"uk", "ru"})
-
-
-@pytest.mark.parametrize("handle", ["@kanal_ua", "kanal_ua", "@KANAL_UA", "Kanal_Ua"])
-def test_channel_by_handle_ignores_the_at_sign_and_the_case(config: LivecraftConfig, handle: str) -> None:
-    channel: ChannelConfig | None = config.channel_by_handle(handle)
-    assert channel is not None and channel.handle == "@kanal_ua"
-
-
-def test_an_unknown_handle_finds_no_channel(config: LivecraftConfig) -> None:
-    assert config.channel_by_handle("@nobody") is None
-
-
-def test_auth_targets_all_is_every_channel(config: LivecraftConfig) -> None:
-    assert config.auth_targets(AUTH_ALL) == config.channels
-
-
-def test_auth_targets_by_handle_is_one_channel(config: LivecraftConfig) -> None:
-    targets: tuple[ChannelConfig, ...] = config.auth_targets("@Kanal_RU")
-    assert [channel.handle for channel in targets] == ["@kanal_ru"]
-
-
-def test_auth_targets_of_an_unknown_handle_is_empty(config: LivecraftConfig) -> None:
-    assert config.auth_targets("@nobody") == ()
-
-
-def test_the_channel_key_is_the_normalized_handle(config: LivecraftConfig) -> None:
-    assert [channel.key for channel in config.channels] == ["kanal_ua", "kanal_ru"]
-    assert normalize_handle("@Kanal_UA") == "kanal_ua"
+def test_the_channel_key_is_the_normalized_handle(tmp_path: Path) -> None:
+    channels: tuple[ChannelConfig, ...] = load_channels(REPO_CHANNELS_EXAMPLE)
+    assert [channel.key for channel in channels] == ["kanal_ua", "kanal_ru"]
+    mixed: ChannelConfig = load_channels(
+        _write(tmp_path / "channels.json", {"channels": [_channel(handle="@Kanal_UA")]})
+    )[0]
+    assert mixed.key == "kanal_ua"
 
 
 # --- запись каналов: только через render_channels_file

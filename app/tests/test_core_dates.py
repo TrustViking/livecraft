@@ -13,12 +13,9 @@ from app.core.dates import (
     build_slot_id,
     format_date,
     format_datetime_text,
-    format_now_local,
     format_time,
     parse_date,
-    parse_datetime_text,
     parse_iso_start,
-    parse_local_datetime_text_utc,
     parse_time,
 )
 
@@ -56,17 +53,8 @@ def test_time_in_another_shape_is_an_error(bad: str) -> None:
         parse_time(bad)
 
 
-def test_datetime_text_goes_there_and_back() -> None:
-    moment: datetime = datetime(2026, 9, 16, 19, 0)
-    assert parse_datetime_text("16-09-2026 19:00") == moment
-    assert format_datetime_text(moment) == "16-09-2026 19:00"
-
-
-def test_local_datetime_text_becomes_a_moment_in_utc() -> None:
-    """Так читаются моменты из памяти: текст без смещения — местное время машины."""
-    value: datetime = parse_local_datetime_text_utc("16-09-2026 19:00")
-    assert value.tzinfo is timezone.utc
-    assert value == datetime(2026, 9, 16, 19, 0).astimezone(timezone.utc)
+def test_datetime_text_is_date_and_time() -> None:
+    assert format_datetime_text(datetime(2026, 9, 16, 19, 0)) == "16-09-2026 19:00"
 
 
 def test_iso_start_keeps_its_offset() -> None:
@@ -85,10 +73,6 @@ def test_iso_start_without_an_offset_is_an_error(bad: str) -> None:
     """Момент без смещения нельзя сравнить с минутой старта на YouTube — значит это ошибка, а не догадка."""
     with pytest.raises(ValueError):
         parse_iso_start(bad)
-
-
-def test_now_local_is_printed_in_the_datetime_format() -> None:
-    assert parse_datetime_text(format_now_local()) is not None
 
 
 def test_slot_id_is_date_time_language() -> None:

@@ -8,7 +8,6 @@ import pytest
 from app.core.sheet_text import (
     SHEET_DATE_FORMATS,
     SHEET_TIME_FORMATS,
-    column_letters_to_index,
     extract_youtube_video_id,
     is_real_local_time,
     normalize_header_name,
@@ -160,11 +159,3 @@ def test_no_id_is_none(text: str) -> None:
 )
 def test_header_name_keeps_only_letters_and_digits(text: str, expected: str) -> None:
     assert normalize_header_name(text) == expected
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [("A", 1), ("Z", 26), ("AA", 27), ("ab", 28), (" F ", 6), ("", None), ("1", None), ("A1", None), ("Ж", None)],
-)
-def test_column_letters_to_index(text: str, expected: int | None) -> None:
-    assert column_letters_to_index(text) == expected

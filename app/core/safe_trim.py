@@ -1,4 +1,4 @@
-"""Безопасная обрезка текста справа и выравнивание хвоста (CLAUDE.md §2: `core\\safe_trim.py` restreamer).
+"""Безопасная обрезка текста справа (CLAUDE.md §2: `core\\safe_trim.py` restreamer).
 
 Перенос донора как есть: обрезка ищет границу предложения (не раньше 60 % предела), затем границу слова
 (не раньше 50 %), затем любой не-словесный символ; не нашлось — текст целиком отбрасывается (`drop_long_token`).
@@ -20,29 +20,14 @@ class SafeTrimResult:
     text: str
     trimmed: bool
     reason: str
-    original_length: int
-    trimmed_length: int
 
 
 def safe_trim_right(text: str, *, max_length: int) -> SafeTrimResult:
     normalized_text: str = str(text or "")
-    original_length: int = len(normalized_text)
     if max_length <= 0:
-        return SafeTrimResult(
-            text="",
-            trimmed=bool(normalized_text),
-            reason="empty_limit",
-            original_length=original_length,
-            trimmed_length=0,
-        )
-    if original_length <= max_length:
-        return SafeTrimResult(
-            text=normalized_text,
-            trimmed=False,
-            reason="not_trimmed",
-            original_length=original_length,
-            trimmed_length=original_length,
-        )
+        return SafeTrimResult(text="", trimmed=bool(normalized_text), reason="empty_limit")
+    if len(normalized_text) <= max_length:
+        return SafeTrimResult(text=normalized_text, trimmed=False, reason="not_trimmed")
 
     sentence_index: int = _find_sentence_boundary(normalized_text, max_length)
     if sentence_index > 0:
@@ -74,32 +59,7 @@ def safe_trim_right(text: str, *, max_length: int) -> SafeTrimResult:
                 reason="symbol_boundary",
             )
 
-    return SafeTrimResult(
-        text="",
-        trimmed=True,
-        reason="drop_long_token",
-        original_length=original_length,
-        trimmed_length=0,
-    )
-
-
-def align_trimmed_suffix(text: str, *, max_length: int) -> str:
-    normalized_text: str = str(text or "")
-    if max_length <= 0:
-        return ""
-    if len(normalized_text) <= max_length:
-        return normalized_text
-    start_index: int = len(normalized_text) - max_length
-    if start_index <= 0:
-        return normalized_text
-    if _cuts_word(normalized_text, start_index):
-        while start_index < len(normalized_text) and _is_word_char(
-            normalized_text[start_index]
-        ):
-            start_index += 1
-        while start_index < len(normalized_text) and normalized_text[start_index].isspace():
-            start_index += 1
-    return normalized_text[start_index:].lstrip()
+    return SafeTrimResult(text="", trimmed=True, reason="drop_long_token")
 
 
 def _build_result(
@@ -109,8 +69,6 @@ def _build_result(
         text=trimmed_text,
         trimmed=trimmed_text != original_text,
         reason=reason,
-        original_length=len(original_text),
-        trimmed_length=len(trimmed_text),
     )
 
 
@@ -141,12 +99,6 @@ def _find_symbol_boundary(text: str, max_length: int) -> int:
         if not _is_word_char(text[index - 1]):
             return index
     return 0
-
-
-def _cuts_word(text: str, start_index: int) -> bool:
-    if start_index <= 0 or start_index >= len(text):
-        return False
-    return _is_word_char(text[start_index - 1]) and _is_word_char(text[start_index])
 
 
 def _is_word_char(value: str) -> bool:

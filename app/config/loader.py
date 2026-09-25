@@ -9,7 +9,7 @@ LLM, контракт формы ключей (§6 инвариант 2), шаб
 модуль сейфа не знает. Ссылка на форму ключей — открытая настройка `form.url` (§14 решение 15): пустая строка —
 «не настроено», и это не ошибка файла.
 
-Файла нет или поля нет — ConfigError с точным ключом; шаблон файла печатает main. Каналы пишет только
+Файла нет или поля нет — ConfigError с точным ключом; шаблон файла main пишет в лог. Каналы пишет только
 save_channels_file (текст — только render_channels_file); прежний файл уходит в channels.previous.json.
 Настройки пишет только save_settings_file (текст — только render_settings_file). Данные JSON объект строит
 сам (`to_data`); настройщик проверяет свои черновики тем же разбором (`parse_settings`, `parse_channels`).
@@ -72,7 +72,7 @@ class ServiceTier(str, Enum):
 
 
 class ConfigProblem(str, Enum):
-    """Что именно не так: по нему ошибка сама решает, нужен ли человеку шаблон файла."""
+    """Что именно не так: нет файла, нет поля или негодное значение («не настроено» против «сломано»)."""
 
     FILE_MISSING = "file_missing"
     FIELD_MISSING = "field_missing"
@@ -80,7 +80,6 @@ class ConfigProblem(str, Enum):
 
 
 CONFIG_ENCODING: Final[str] = "utf-8"
-AUTH_ALL: Final[str] = "all"  # --auth all: все каналы из channels.json
 MIN_LEAD_MINUTES_MINIMUM: Final[int] = 0
 KEEP_DAYS_MINIMUM: Final[int] = 1
 YOUTUBE_PAUSE_SECONDS_MINIMUM: Final[float] = 0.0   # число, можно дробное (0.5)
@@ -170,11 +169,6 @@ class ConfigError(Exception):
         self.problem: str = problem
         self.kind: ConfigProblem = kind
 
-    @property
-    def is_template_needed(self) -> bool:
-        """Нет файла или поля — человеку нужен точный шаблон файла."""
-        return self.kind in (ConfigProblem.FILE_MISSING, ConfigProblem.FIELD_MISSING)
-
 
 @dataclass(frozen=True)
 class SettingProblem:
@@ -182,15 +176,6 @@ class SettingProblem:
 
     key: str
     text: str
-
-
-def normalize_handle(text: str) -> str:
-    """Ключ канала — единственная нормализация ника: без «@», NFC, без различия регистра.
-
-    Чистое преобразование строки (§0). Его дом по §5 — app\\core\\text.py вместе с token_file_stem
-    контура B; пока core\\text.py нет, оно живёт здесь, и при переезде этот модуль станет его импортировать.
-    """
-    return unicodedata.normalize(UNICODE_FORM, text).removeprefix(HANDLE_PREFIX).casefold()
 
 
 @dataclass(frozen=True)
@@ -209,7 +194,8 @@ class ChannelConfig:
 
     @property
     def key(self) -> str:
-        return normalize_handle(self.handle)
+        """Единственная нормализация ника: без «@», NFC, без различия регистра."""
+        return unicodedata.normalize(UNICODE_FORM, self.handle).removeprefix(HANDLE_PREFIX).casefold()
 
     def to_data(self) -> dict[str, Any]:
         """Канал как объект channels.json, поля в порядке CHANNEL_KEYS."""
@@ -427,26 +413,6 @@ class LivecraftConfig:
     settings: LivecraftSettings
     channels: tuple[ChannelConfig, ...]
 
-    @property
-    def served_languages(self) -> frozenset[str]:
-        """Языки, за которые отвечает хотя бы один канал."""
-        return frozenset(language for channel in self.channels for language in channel.languages)
-
-    def channel_by_handle(self, handle: str) -> ChannelConfig | None:
-        """Ник из командной строки — с «@» или без, в любом регистре."""
-        wanted: str = normalize_handle(handle)
-        for channel in self.channels:
-            if channel.key == wanted:
-                return channel
-        return None
-
-    def auth_targets(self, target: str) -> tuple[ChannelConfig, ...]:
-        """Каналы для --auth: `all` — все; ник — один канал; незнакомый ник — пусто (что сказать, решает main)."""
-        if target == AUTH_ALL:
-            return self.channels
-        channel: ChannelConfig | None = self.channel_by_handle(target)
-        return () if channel is None else (channel,)
-
 
 def load_settings(path: Path) -> LivecraftSettings:
     """secrets\\livecraft.json → технические настройки."""
@@ -466,12 +432,6 @@ def parse_settings(raw: Any, path: Path) -> LivecraftSettings:
 def parse_channels(raw: Any, path: Path) -> tuple[ChannelConfig, ...]:
     """Уже прочитанные данные channels.json → каналы. path — только для ConfigError."""
     return _ConfigParser(path).parse_channels(raw)
-
-
-def load_livecraft_config(config_file: Path, channels_file: Path) -> LivecraftConfig:
-    """Каналы читаются первыми: их заполняет человек, ошибка в них вероятнее."""
-    channels: tuple[ChannelConfig, ...] = load_channels(channels_file)
-    return LivecraftConfig(settings=load_settings(config_file), channels=channels)
 
 
 @dataclass(frozen=True)

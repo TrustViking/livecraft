@@ -55,7 +55,6 @@ def metadata(
         youtube_language=youtube_language,
         channel_language=channel_language,
         duration_seconds=None,
-        canonical_url=LINK,
         audio_languages=audio_languages,
         subtitle_languages=subtitle_languages,
         auto_caption_languages=auto_caption_languages,

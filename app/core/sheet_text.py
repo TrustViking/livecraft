@@ -1,7 +1,7 @@
 """Чистые преобразования текста таблицы плана (CLAUDE.md §2, контур A; §5 — `core\\sheet_text.py`).
 
-Перенесено из restreamer как есть по поведению: `planning\\sheet_parser.py` (дата и время ряда, буквы
-колонок), `google\\sheets_client.py::_normalize_header_name` (имя колонки шапки),
+Перенесено из restreamer как есть по поведению: `planning\\sheet_parser.py` (дата и время ряда),
+`google\\sheets_client.py::_normalize_header_name` (имя колонки шапки),
 `ingest\\youtube_metadata.py` (id видео и короткая ссылка). Логирования здесь нет — это чистые функции.
 
 Ни одна функция не знает о рядах, плане и слотах: это разрешённое §0 исключение «чистое преобразование
@@ -33,8 +33,6 @@ SHEET_TIME_FORMATS: Final[tuple[str, ...]] = (
     "%I %p",
 )
 
-COLUMN_LETTERS_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Z]+")
-ALPHABET_SIZE: Final[int] = 26
 HEADER_JUNK_PATTERN: Final[re.Pattern[str]] = re.compile(r"[^a-zа-я0-9]+", flags=re.IGNORECASE)
 
 YOUTUBE_ID_CHARS: Final[str] = r"[A-Za-z0-9_-]"
@@ -96,17 +94,6 @@ def is_real_local_time(value: datetime) -> bool:
         raise ValueError("naive datetime has no zone")
     back: datetime = value.astimezone(timezone.utc).astimezone(zone)
     return back.replace(tzinfo=None, fold=0) == value.replace(tzinfo=None, fold=0)
-
-
-def column_letters_to_index(text: str) -> int | None:
-    """Буквы колонки → номер с 1 (A → 1, AA → 27); не буквы — None."""
-    cleaned: str = str(text or "").strip().upper()
-    if not COLUMN_LETTERS_PATTERN.fullmatch(cleaned):
-        return None
-    index: int = 0
-    for symbol in cleaned:
-        index = index * ALPHABET_SIZE + (ord(symbol) - ord("A") + 1)
-    return index
 
 
 def normalize_header_name(text: str) -> str:

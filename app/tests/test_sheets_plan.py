@@ -117,17 +117,9 @@ def test_future_row_is_admitted_with_short_link_and_kyiv_offset() -> None:
     assert planned.duplicate_of is None
 
 
-def test_admitted_row_gives_date_and_time_text() -> None:
+def test_admitted_row_reads_other_date_and_time_formats() -> None:
     planned: PlanRow = only(SHORT_LINK, "2026-11-05", "7:05 PM")
-    assert planned.date_text == "05-11-2026"
-    assert planned.time_text == "19:05"
-
-
-def test_skipped_row_gives_no_date_and_time_text() -> None:
-    planned: PlanRow = only(SHORT_LINK, "16.09.2026", "19:00")
-    assert planned.skip is RowSkipReason.IN_PAST
-    assert planned.date_text is None
-    assert planned.time_text is None
+    assert planned.start == datetime(2026, 11, 5, 19, 5, tzinfo=KYIV)
 
 
 @pytest.mark.parametrize(
@@ -200,7 +192,6 @@ def test_same_video_in_other_spelling_at_the_same_moment_is_a_duplicate_of_the_e
     assert planned[2].skip is RowSkipReason.DUPLICATE
     assert planned[2].duplicate_of == 2
     assert planned[2].link == SHORT_LINK
-    assert planned[2].date_text is None
 
 
 def test_same_video_at_another_moment_is_admitted_twice() -> None:

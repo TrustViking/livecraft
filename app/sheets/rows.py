@@ -11,7 +11,6 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Final
 
-from app.core.dates import format_date, format_time
 from app.ui import messages_ru as msg
 
 if TYPE_CHECKING:      # только для аннотаций: plan.py импортирует этот модуль в рантайме
@@ -85,20 +84,6 @@ class PlanRow:
     def as_duplicate_of(self, kept_row_number: int) -> PlanRow:
         """Этот же ряд, отсеянный как повтор ряда `kept_row_number`; ссылка и момент сохраняются для лога."""
         return replace(self, skip=RowSkipReason.DUPLICATE, duplicate_of=kept_row_number)
-
-    @property
-    def date_text(self) -> str | None:
-        """Дата старта DD-MM-YYYY в зоне момента (§6 инвариант 4); только у допущенного, иначе None."""
-        if not self.is_admitted or self.start is None:
-            return None
-        return format_date(self.start.date())
-
-    @property
-    def time_text(self) -> str | None:
-        """Время старта HH:MM в зоне момента; только у допущенного, иначе None."""
-        if not self.is_admitted or self.start is None:
-            return None
-        return format_time(self.start.time())
 
     @property
     def log_line(self) -> str:

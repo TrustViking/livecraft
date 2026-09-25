@@ -6,7 +6,6 @@
     "app\\config\\loader.py::account_name_problem": 1,
     "app\\config\\loader.py::handle_problem": 1,
     "app\\config\\loader.py::load_channels": 1,
-    "app\\config\\loader.py::load_livecraft_config": 1,
     "app\\config\\loader.py::load_settings": 1,
     "app\\config\\loader.py::normalize_account_name": 1,
     "app\\config\\loader.py::parse_channels": 1,
@@ -15,11 +14,7 @@
     "app\\config\\loader.py::render_settings_file": 1,
     "app\\config\\loader.py::save_channels_file": 1,
     "app\\config\\loader.py::save_settings_file": 1,
-    "app\\core\\dates.py::format_now_local": 1,
-    "app\\core\\dates.py::parse_local_datetime_text_utc": 1,
     "app\\core\\safe_trim.py::_build_result": 1,
-    "app\\core\\safe_trim.py::align_trimmed_suffix": 1,
-    "app\\core\\sheet_text.py::column_letters_to_index": 1,
     "app\\llm\\backends\\openai_errors.py::_text_attr": 1,
     "app\\llm\\backends\\openai_rate_limits.py::_header_items": 1,
     "app\\llm\\backends\\openai_rate_limits.py::parse_reset_seconds": 1,
@@ -124,7 +119,7 @@
     "app\\tools\\source_probe.py::SourceProbeReport._preview_line": 1
   },
   "E3": {
-    "app\\core\\safe_trim.py::safe_trim_right": 57,
+    "app\\core\\safe_trim.py::safe_trim_right": 38,
     "app\\llm\\backends\\openai.py::LlmExchange._call": 33,
     "app\\llm\\json_text.py::extract_json_object_candidates": 34,
     "app\\llm\\merges\\check.py::MergeDiagnostics.of": 34,
@@ -171,7 +166,6 @@
     "app\\core\\safe_trim.py::_find_word_boundary": 1,
     "app\\core\\safe_trim.py::safe_trim_right": 6,
     "app\\core\\sheet_text.py::_parse_first": 2,
-    "app\\core\\sheet_text.py::column_letters_to_index": 1,
     "app\\core\\sheet_text.py::is_real_local_time": 1,
     "app\\core\\sheet_text.py::parse_sheet_datetime": 2,
     "app\\core\\url_text.py::canonical_link_key": 2,
@@ -385,7 +379,7 @@
     "app\\sources\\language.py::normalize_language": 2,
     "app\\sources\\metadata.py::SourceMetadata._audio_languages": 2,
     "app\\sources\\metadata.py::SourceMetadata._log_built": 7,
-    "app\\sources\\metadata.py::SourceMetadata.from_ytdlp": 13,
+    "app\\sources\\metadata.py::SourceMetadata.from_ytdlp": 11,
     "app\\sources\\metadata.py::SourceMetadata.log_line": 13,
     "app\\sources\\preview.py::Preview.from_image_bytes": 3,
     "app\\sources\\preview.py::PreviewDownloader.download": 3,
@@ -614,9 +608,7 @@
     "app\\tools\\llm_probe.py::LlmProbe": 1
   },
   "E15": {
-    "app\\core\\safe_trim.py::align_trimmed_suffix": 1,
     "app\\core\\safe_trim.py::safe_trim_right": 1,
-    "app\\core\\sheet_text.py::column_letters_to_index": 1,
     "app\\core\\sheet_text.py::extract_youtube_video_id": 1,
     "app\\core\\url_text.py::canonical_link_key": 1,
     "app\\core\\url_text.py::dedupe_nonempty": 1,
@@ -706,7 +698,6 @@
     "кольцо: app\\sheets\\plan.py | app\\sheets\\rows.py": 2
   },
   "E17": {
-    "app\\core\\dates.py::format_now_local": 1,
     "app\\llm\\backends\\openai.py::OpenAiClient": 1,
     "app\\llm\\backends\\openai_rate_limits.py::RateLimitSnapshot.from_headers": 1,
     "app\\llm\\backends\\openai_rate_limits.py::RateLimitSnapshot.from_raw_response": 1,
@@ -719,7 +710,7 @@
     "app\\tools\\sheets_probe.py::main": 1
   },
   "E18": {
-    "app\\config\\loader.py": 902,
+    "app\\config\\loader.py": 862,
     "app\\config\\loader.py::_ConfigParser": 24,
     "app\\llm\\merges\\check.py": 425,
     "app\\llm\\merges\\description.py": 595,

@@ -97,7 +97,6 @@ def test_full_answer_gives_every_field() -> None:
     assert metadata.youtube_language == "uk"
     assert metadata.channel_language == "ru"
     assert metadata.duration_seconds == 3723
-    assert metadata.canonical_url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     assert metadata.audio_languages == ("uk", "en")
     assert metadata.subtitle_languages == ("uk", "en")
     assert metadata.auto_caption_languages == ("uk", "ru", "de")
@@ -110,7 +109,6 @@ def test_empty_thumbnail_falls_back_to_hqdefault_by_id(log: _Collector) -> None:
     assert metadata.youtube_language is None
     assert metadata.channel_language is None
     assert metadata.duration_seconds is None
-    assert metadata.canonical_url == OTHER_LINK
     assert metadata.audio_languages == ()
     assert metadata.subtitle_languages == ()
     assert any("source_thumbnail_fallback" in line for line in log.messages(logging.WARNING))
@@ -120,7 +118,6 @@ def test_fallback_takes_the_id_from_the_link_when_the_answer_has_none() -> None:
     info: dict[str, Any] = {"title": "Без id", "thumbnail": ""}
     metadata: SourceMetadata = SourceMetadata.from_ytdlp(LINK, info)
     assert metadata.thumbnail_url == "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
-    assert metadata.canonical_url == LINK
 
 
 def test_no_id_anywhere_leaves_the_thumbnail_empty() -> None:

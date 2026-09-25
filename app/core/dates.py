@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time
 from typing import Final
 
 DATE_FORMAT: Final[str] = "%d-%m-%Y"
@@ -33,16 +33,6 @@ def format_time(value: time) -> str:
     return value.strftime(TIME_FORMAT)
 
 
-def parse_datetime_text(text: str) -> datetime:
-    """DD-MM-YYYY HH:MM → naive datetime (местное время; только для сортировки и отчёта)."""
-    return datetime.strptime(text, DATETIME_FORMAT)
-
-
-def parse_local_datetime_text_utc(text: str) -> datetime:
-    """DD-MM-YYYY HH:MM местного времени машины (так пишутся моменты в памяти) → момент в UTC."""
-    return parse_datetime_text(text).astimezone(timezone.utc)
-
-
 def format_datetime_text(value: datetime) -> str:
     return value.strftime(DATETIME_FORMAT)
 
@@ -53,11 +43,6 @@ def parse_iso_start(text: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"start without UTC offset: {text!r}")
     return value
-
-
-def format_now_local() -> str:
-    """Сейчас по часам машины, в DATETIME_FORMAT."""
-    return format_datetime_text(datetime.now().astimezone())
 
 
 def build_slot_id(date_text: str, time_text: str, language: str) -> str:

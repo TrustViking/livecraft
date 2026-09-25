@@ -54,7 +54,6 @@ class SourceMetadata:
     youtube_language: str | None
     channel_language: str | None
     duration_seconds: int | None
-    canonical_url: str
     audio_languages: tuple[str, ...]
     subtitle_languages: tuple[str, ...]
     auto_caption_languages: tuple[str, ...]
@@ -72,7 +71,6 @@ class SourceMetadata:
             youtube_language=_optional_text(info.get("language")),
             channel_language=_optional_text(info.get("channel_language")),
             duration_seconds=cls._duration(info.get("duration")),
-            canonical_url=_text(info.get("webpage_url") or info.get("original_url") or url) or url,
             audio_languages=cls._audio_languages(info.get("formats")),
             subtitle_languages=_keys(info.get("subtitles")),
             auto_caption_languages=_keys(info.get("automatic_captions")),

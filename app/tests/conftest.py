@@ -29,8 +29,7 @@ from app.config.loader import (
 )
 from app.paths import LivecraftPaths, build_paths, ensure_dirs
 from app.secretsafe.crypto import FORMAT_VERSION, VAULT_KEY_BYTES, EncryptedField, VaultCrypto, VaultFile
-from app.secretsafe.dpapi import Dpapi
-from app.secretsafe.store import VAULT_FILE_ENCODING, ProgramKey, VaultStore
+from app.secretsafe.store import VAULT_FILE_ENCODING
 from app.secretsafe.value import SecretField
 from app.sheets.rows import PlanRow
 from app.sources.language import LanguageProfile
@@ -105,7 +104,6 @@ def ready_source(
         youtube_language=language,
         channel_language=None,
         duration_seconds=None,
-        canonical_url=link,
         audio_languages=(),
         subtitle_languages=(),
         auto_caption_languages=(),
@@ -167,17 +165,6 @@ def now() -> datetime:
 def repo_root() -> Path:
     """Корень репо: нужен тестам, которые читают файлы проекта (.gitattributes, livecraft.bat)."""
     return REPO_ROOT
-
-
-@pytest.fixture
-def vault_store(livecraft_paths: LivecraftPaths) -> VaultStore:
-    """Сейф на временном корне, собранный боевым путём: оба файла из paths, свой ключ и DPAPI этой машины."""
-    return VaultStore(
-        supplied_path=livecraft_paths.vault_file,
-        local_path=livecraft_paths.vault_local_file,
-        program_key=ProgramKey.load(livecraft_paths.program_key_file),
-        dpapi=Dpapi.load(),
-    )
 
 
 @pytest.fixture
