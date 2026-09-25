@@ -2,8 +2,8 @@
 
 `LlmBackend` — протокол: запрос → ответ, проба доступа к модели, расход запуска. Реализации живут в
 `app\\llm\\backends\\` — у каждой свои тарифы, цены, параметры модели и откаты; здесь их нет. Запрос и ответ —
-общие объекты: в запросе только то, что имеет смысл для любой нейросети, в ответе — текст, разобранный JSON,
-расход и заметки реализации о том, что она делала (для лога).
+общие объекты: в запросе только то, что имеет смысл для любой нейросети, в ответе — текст, разобранный JSON и модель,
+которая ответила. Расход реализация сама складывает в `run_usage`, свои откаты сама пишет в лог.
 
 Выбор реализации по настройке появится вместе со второй реализацией; до тех пор единственную создаёт вызывающий.
 """
@@ -14,7 +14,7 @@ from typing import Any, Final, Protocol, runtime_checkable
 
 from app.config.loader import LlmSettings
 from app.llm.errors import LlmRequestError
-from app.llm.usage import RequestUsage, RunUsage
+from app.llm.usage import RunUsage
 
 DEFAULT_TEMPERATURE: Final[float] = 0.0          # детерминированный ответ; модель, которая её не берёт, — без неё
 # Проба доступа к модели (правило пробы restreamer): самый дешёвый настоящий запрос. Любой ответ,
@@ -23,8 +23,6 @@ PROBE_PROMPT: Final[str] = "Reply with OK."
 PROBE_MAX_OUTPUT_TOKENS: Final[int] = 16
 PROBE_TIMEOUT_SEC: Final[float] = 30.0
 PROBE_LABEL: Final[str] = "model_probe"
-NOTES_JOINER: Final[str] = ","
-LOG_NONE: Final[str] = "-"
 
 
 @dataclass(frozen=True)
@@ -75,27 +73,11 @@ class LlmRequest:
 
 @dataclass(frozen=True)
 class LlmResponse:
-    """Ответ модели: текст, JSON (если просили схему), расход, число обращений и заметки реализации.
-
-    `notes` — что реализация делала сверх одного обращения (смена тарифа, больший предел ответа, снятие
-    температуры): только для лога. `hit_max_output` — ответ оборван пределом длины.
-    """
+    """Ответ модели: текст, JSON (если просили схему) и модель, которая ответила. Текст и JSON в `repr` не печатаются."""
 
     text: str = field(repr=False)
     structured: dict[str, Any] | None = field(repr=False)
     model: str
-    incomplete_reason: str
-    usage: RequestUsage | None
-    attempts: int
-    notes: tuple[str, ...] = ()
-    hit_max_output: bool = False
-
-    @property
-    def log_line(self) -> str:
-        return (
-            f"served_model={self.model} attempts={self.attempts} output_chars={len(self.text)} "
-            f"finish_reason={self.incomplete_reason or 'completed'} notes={NOTES_JOINER.join(self.notes) or LOG_NONE}"
-        )
 
 
 @runtime_checkable

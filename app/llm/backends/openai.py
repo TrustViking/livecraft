@@ -16,8 +16,9 @@
     _with_retries       таймаут, обрыв, 5xx, 429 вне flex → повторы по RetryPolicy (§11; у SDK max_retries=0)
     _call               одно обращение
 
-Каждый откат оставляет заметку в `LlmResponse.notes`. В лог уходят модель, тариф, токены, стоимость и
-лимиты — ни текста промта, ни ключа, ни текста ответа.
+Каждый откат пишет свою строку лога (`llm_max_output_retry`, `llm_flex_fallback_to_default`,
+`llm_temperature_unsupported_retry`); расход каждого обращения ложится в `run_usage` клиента. В лог уходят модель,
+тариф, токены, стоимость и лимиты — ни текста промта, ни ключа, ни текста ответа.
 """
 from __future__ import annotations
 
@@ -54,10 +55,6 @@ FLEX_RETRY_DELAYS_SEC: Final[tuple[float, ...]] = (20.0, 40.0, 80.0)
 MAX_OUTPUT_GROWTH: Final[int] = 2                # исчерпан max_output_tokens — один повтор с удвоенным пределом
 DEFAULT_SCHEMA_NAME: Final[str] = "response"     # имя формата json_schema, если схема своего не назвала
 SDK_MAX_RETRIES: Final[int] = 0                  # повторы делает RetryPolicy, а не SDK
-# Заметки обмена для `LlmResponse.notes` — строки лога, не тексты для человека.
-NOTE_FLEX_TO_DEFAULT: Final[str] = "flex→default"
-NOTE_MORE_OUTPUT: Final[str] = f"max_output×{MAX_OUTPUT_GROWTH}"
-NOTE_NO_TEMPERATURE: Final[str] = "no_temperature"
 MILLISECONDS: Final[float] = 1000.0
 COST_FORMAT: Final[str] = "{:.6f}"
 UNKNOWN: Final[str] = "unknown"
@@ -207,7 +204,7 @@ class OpenAiClient:
 
 @dataclass(eq=False)
 class LlmExchange:
-    """Один `complete` или `probe`: текущий запрос (откаты его заменяют), число обращений, заметки, лимиты.
+    """Один `complete` или `probe`: текущий запрос (откаты его заменяют), число обращений, лимиты.
 
     Откат тарифа flex на тариф по умолчанию и снятие температуры — до конца обмена: следующий повтор
     уже не просит flex и не шлёт температуру.
@@ -216,13 +213,12 @@ class LlmExchange:
     client: OpenAiClient
     request: OpenAiRequest
     attempts: int = 0
-    notes: list[str] = field(default_factory=list)
     rate_limits: RateLimitSnapshot | None = None
 
     def run(self) -> LlmResponse:
         reply: OpenAiReply = self._with_flex()
         if reply.hit_max_output:
-            self._fall_back(self.request.with_more_output(), NOTE_MORE_OUTPUT, "llm_max_output_retry")
+            self._fall_back(self.request.with_more_output(), "llm_max_output_retry")
             reply = self._with_flex()
         if not reply.text.strip():
             error: LlmRequestError = LlmRequestError(LlmErrorKind.EMPTY_OUTPUT, backend=BACKEND_NAME)
@@ -234,12 +230,11 @@ class LlmExchange:
         return self._response(self._call())
 
     def _response(self, reply: OpenAiReply) -> LlmResponse:
-        return reply.to_response(self.request, self.attempts, tuple(self.notes))
+        return reply.to_response(self.request)
 
-    def _fall_back(self, request: OpenAiRequest, note: str, event: str) -> None:
-        """Сменить запрос до конца обмена, записать заметку и строку лога."""
+    def _fall_back(self, request: OpenAiRequest, event: str) -> None:
+        """Сменить запрос до конца обмена и записать строку лога."""
         self.request = request
-        self.notes.append(note)
         LOGGER.warning("%s %s", event, self.request.log_line)
 
     def _with_flex(self) -> OpenAiReply:
@@ -259,7 +254,7 @@ class LlmExchange:
         except LlmRequestError as error:
             if error.kind is not LlmErrorKind.RATE_LIMIT:
                 raise
-            self._fall_back(self.request.on_default_tier(), NOTE_FLEX_TO_DEFAULT, "llm_flex_fallback_to_default")
+            self._fall_back(self.request.on_default_tier(), "llm_flex_fallback_to_default")
             return self._with_temperature()
 
     def _with_temperature(self) -> OpenAiReply:
@@ -268,7 +263,7 @@ class LlmExchange:
         except LlmRequestError as error:
             if not (error.is_temperature_unsupported and self.request.sends_temperature):
                 raise
-            self._fall_back(self.request.without_temperature(), NOTE_NO_TEMPERATURE, "llm_temperature_unsupported_retry")
+            self._fall_back(self.request.without_temperature(), "llm_temperature_unsupported_retry")
             return self._with_retries()
 
     def _with_retries(self) -> OpenAiReply:

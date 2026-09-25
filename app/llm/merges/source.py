@@ -3,7 +3,8 @@
 `PreparedSourceDescription` — `_clean_source_description_for_llm` и `_normalize_source_description_text` донора: переводы
 строк приведены, три и больше подряд — в один пустой абзац, дальше — чистка `AnalysisTextReport` (ссылки, хештеги,
 заголовки ссылок, служебный хвост) со счётчиками. Жёсткой обрезки нет (`hard_truncation=disabled`, как у донора).
-`MergeSource` — источник в промте: блок `SOURCE n` и текст для проверки качества (`_source_texts_for_merge_quality`).
+`MergeSource` — источник в промте: блок `SOURCE n` и строка лога. Текст для проверки качества донора
+(`_source_texts_for_merge_quality`) не перенесён: донорская нормализация качества его не читает (`del source_texts`).
 """
 from __future__ import annotations
 
@@ -50,22 +51,17 @@ class PreparedSourceDescription:
             service_paragraphs_dropped=report.service_paragraphs_dropped,
         )
 
-    @property
-    def cleaned_chars(self) -> int:
-        return len(self.text)
-
 
 @dataclass(frozen=True)
 class MergeSource:
     """Источник слота в промте merge.
 
     `description` подготовлено из описания видео, а пустое описание заменено текстом «нет описания» до чистки — как у
-    донора. `has_description` помнит, было ли у видео своё описание: текст для проверки качества его заменой не берёт.
+    донора.
     """
 
     title: str
     description: PreparedSourceDescription
-    has_description: bool
     no_description: str
     row_number: int
 
@@ -77,7 +73,6 @@ class MergeSource:
         return cls(
             title=title.strip(),
             description=PreparedSourceDescription.of(description or texts.no_description, texts.service_hints),
-            has_description=bool(description),
             no_description=texts.no_description,
             row_number=video.row.row_number,
         )
@@ -86,12 +81,6 @@ class MergeSource:
     def prompt_description(self) -> str:
         """Описание в промте: очищенное, а если после чистки пусто — «нет описания»."""
         return self.description.text or self.no_description
-
-    @property
-    def quality_text(self) -> str:
-        """Название и очищенное описание — то, с чем проверка качества сверяет ответ модели."""
-        description: str = self.description.text if self.has_description else ""
-        return f"{self.title}{LINE_BREAK}{description}".strip()
 
     def prompt_block(self, index: int) -> str:
         return LINE_BREAK.join(

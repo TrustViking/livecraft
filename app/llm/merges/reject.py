@@ -5,13 +5,13 @@
 значения кодов — ровно те `reason_code`, которые донорский разбор даёт на путях разбора ответа и проверки покрытия
 (`merge_validation.py::_validate_coverage_preserving_merge_or_raise`), — это держит сверка с донором.
 
-Отказ semantic gate несёт коды гейта (`MergeReject.validation_codes`) после нормализации донора
-(`_normalize_description_validation_reason_codes`): первый из них — `reason_code` донора.
+Отказ semantic gate несёт коды гейта (`MergeReject.validation_codes`) как есть: первый из них — `reason_code` донора.
+Нормализация донора (`_normalize_description_validation_reason_codes`) их не меняет: коды гейта — значения перечисления
+без краёв и повторов, и ни один из них не частный код покрытия источников, который донор сводит к общему.
 """
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -34,13 +34,6 @@ RECOVERABLE_REJECT_CODES: Final[frozenset[str]] = frozenset(
         "paragraph_overflow",
     }
 )
-# Коды гейта, которые донор сводит к общим (`_normalize_description_validation_reason_code`).
-SOURCE_COVERAGE_CODE_PATTERN: Final[re.Pattern[str]] = re.compile(r"semantic_source_\d+_coverage_missing")
-WEAK_SOURCE_COVERAGE: Final[str] = "weak_source_coverage"
-VALIDATION_CODE_ALIASES: Final[dict[str, str]] = {
-    "semantic_source_grounding_too_low": WEAK_SOURCE_COVERAGE,
-    "semantic_too_generic": "overly_generic_body",
-}
 LOG_NONE: Final[str] = "-"
 CODES_JOINER: Final[str] = ","
 DETAIL_MAX_CHARS: Final[int] = 200
@@ -152,7 +145,7 @@ _DESCRIPTION_VALIDATION_CODES: Final[frozenset[MergeRejectCode]] = frozenset(
 class MergeReject:
     """Ответ модели не принят. `detail` — подробность для лога (какие ключи, сколько абзацев), без текста ответа.
 
-    `validation_codes` — причины, которые у отказа свои, а не из его кода: коды semantic gate после нормализации.
+    `validation_codes` — причины, которые у отказа свои, а не из его кода: коды semantic gate.
     `paragraph_count` — сколько абзацев тела насчитал отказ по числу абзацев (недобор, перебор); у прочих None.
     Повтор после перебора называет модели это число (у донора — разбором «got N» из текста исключения).
     """
@@ -164,23 +157,9 @@ class MergeReject:
 
     @classmethod
     def semantic_gate(cls, gate_codes: Sequence[str]) -> MergeReject:
-        """Отказ semantic gate: коды гейта нормализованы как у донора; кодов нет — общий `semantic_gate`."""
-        codes: tuple[str, ...] = cls.normalized_validation_codes(gate_codes)
+        """Отказ semantic gate: коды гейта как пришли; кодов нет — общий `semantic_gate`."""
+        codes: tuple[str, ...] = tuple(gate_codes)
         return cls(MergeRejectCode.SEMANTIC_GATE, validation_codes=codes or (MergeRejectCode.SEMANTIC_GATE.value,))
-
-    @staticmethod
-    def normalized_validation_codes(codes: Sequence[str]) -> tuple[str, ...]:
-        """Коды проверки описания без краёв и пустых, частные — общими (`weak_source_coverage`,
-        `overly_generic_body`), без повторов, в исходном порядке."""
-        normalized: list[str] = []
-        for raw_code in codes:
-            code: str = str(raw_code or "").strip()
-            if SOURCE_COVERAGE_CODE_PATTERN.fullmatch(code):
-                code = WEAK_SOURCE_COVERAGE
-            code = VALIDATION_CODE_ALIASES.get(code, code)
-            if code and code not in normalized:
-                normalized.append(code)
-        return tuple(normalized)
 
     @property
     def reason_codes(self) -> tuple[str, ...]:

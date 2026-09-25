@@ -10,69 +10,6 @@ from app.llm.merges.retry import RetryFacts, RetryMode, RetryProfile, RetrySigna
 
 TEXTS: MergePromptTexts = MergePromptTexts.load()
 NO_TEMPLATES: MergePromptTexts = dataclasses.replace(TEXTS, retry_reinforcements=MappingProxyType({}))
-EXPANDED_SIGNALS: tuple[str, ...] = (
-    "insufficient_expanded_body",
-    "too_few_expanded_bullets",
-    "overly_generic_body",
-    "weak_source_coverage",
-)
-
-
-# --- расширенный профиль (донор: test_merge_contract_retry.py)
-
-
-@pytest.mark.parametrize(
-    ("signal", "focus", "fragment"),
-    [
-        ("insufficient_expanded_body", "body_depth", "post-hook body clearly denser"),
-        ("too_few_expanded_bullets", "bullet_sufficiency", "enough distinct, meaningful bullets"),
-        ("overly_generic_body", "source_specificity", "source-grounded specifics"),
-        ("hook_dominates_body", "hook_restraint", "Keep the hook brief and functional"),
-        ("weak_source_coverage", "source_spread", "Restore distinguishable spread across source lines or topic nodes"),
-    ],
-)
-def test_expanded_retry_profile_targets_expected_weak_points(signal: str, focus: str, fragment: str) -> None:
-    profile: RetryProfile = RetryProfile.expanded(3, (signal,), TEXTS)
-    assert profile.mode is RetryMode.TARGETED
-    assert profile.focus_tags == (focus,)
-    assert fragment in "\n".join(profile.reinforcement_lines)
-
-
-def test_three_source_targeted_retry_adds_combined_reinforcement_lines() -> None:
-    text: str = "\n".join(RetryProfile.expanded(3, EXPANDED_SIGNALS, TEXTS).reinforcement_lines)
-    assert "2 to 3 short agenda tracks" in text
-    assert "cut generic filler bridges" in text
-    assert "umbrella summary" not in text
-
-
-def test_four_source_targeted_retry_adds_structured_source_specific_reinforcement() -> None:
-    text: str = "\n".join(RetryProfile.expanded(4, EXPANDED_SIGNALS, TEXTS).reinforcement_lines)
-    assert "2 to 3 short agenda tracks" in text
-    assert "cut generic filler bridges" in text
-    assert "do not collapse the post-hook body into one umbrella summary" in text
-    assert "Build 2 to 3 meaningful thematic micro-blocks after the hook" in text
-    assert "source-specific density, not just extra length" in text
-    assert "Make every source leave a recognizable trace in the body" in text
-
-
-def test_two_sources_get_only_the_signal_lines() -> None:
-    profile: RetryProfile = RetryProfile.expanded(2, ("overly_generic_body",), TEXTS)
-    assert profile.reinforcement_lines == TEXTS.expanded_retry["overly_generic_body"]
-
-
-def test_unknown_signal_names_the_signals_and_has_no_focus() -> None:
-    profile: RetryProfile = RetryProfile.expanded(2, (" odd ", "odd", "", "hook_dominates_body"), TEXTS)
-    assert profile.reject_signals == ("odd", "odd", "hook_dominates_body")   # повторы снимаются до strip, как у донора
-    assert profile.focus_tags == ()
-    assert profile.focus_label == "none"
-    assert profile.reinforcement_lines[0] == "Previous attempt was rejected: odd, odd, hook_dominates_body."
-
-
-def test_no_signals_are_reported_as_unknown() -> None:
-    profile: RetryProfile = RetryProfile.expanded(2, (), TEXTS)
-    assert profile.reinforcement_lines[0] == "Previous attempt was rejected: unknown."
-    assert profile.reject_signal_label == "none"
-    assert profile.enabled
 
 
 # --- направленные профили
@@ -172,6 +109,7 @@ def test_targeted_profile_without_lines_is_disabled() -> None:
     profile: RetryProfile = RetryProfile(mode=RetryMode.TARGETED, reject_signals=(), focus_tags=(), reinforcement_lines=())
     assert not profile.enabled
     assert profile.instruction_block == ""
+    assert (profile.focus_label, profile.reject_signal_label) == ("none", "none")
 
 
 # --- выбор профиля после отказа (донор: `MergeOrchestrator._select_retry_profile`)

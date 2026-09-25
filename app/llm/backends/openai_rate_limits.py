@@ -102,13 +102,6 @@ class RateLimitSnapshot:
                 break
         return cls.from_headers(headers, clock) if headers else None
 
-    @property
-    def is_empty(self) -> bool:
-        return all(
-            value is None
-            for value in (self.remaining_requests, self.remaining_tokens, self.reset_requests_sec, self.reset_tokens_sec)
-        )
-
     def log_line(self, model: str, label: str) -> str:
         """Строка лога: только найденные значения, обнуления — целыми секундами (как у донора)."""
         parts: list[str] = ["llm_rate_limits", f"model={model or UNKNOWN}", f"label={label or UNKNOWN}"]

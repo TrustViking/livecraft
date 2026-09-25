@@ -83,8 +83,6 @@ ECHO_SENTENCE_MIN_CHARS: Final[int] = 30
 ECHO_SENTENCE_JACCARD: Final[float] = 0.55
 ECHO_JACCARD: Final[float] = 0.60
 HOOK_SENTENCE_PATTERN: Final[re.Pattern[str]] = re.compile(r"[.!?]\s+|\n")
-# Третий абзац-заглушка: проверка эха у донора смотрит только на первые два абзаца.
-ECHO_CHECK_PLACEHOLDER: Final[str] = "Placeholder paragraph for length."
 # Пункт, сросшийся с тезисом в одной строке: конец фразы не ближе 40 знаков от начала строки.
 FUSED_BULLET_MIN_POSITION: Final[int] = 40
 SENTENCE_ENDINGS: Final[tuple[str, ...]] = (". ", "! ", "? ")
@@ -332,12 +330,10 @@ class MergedDescription:
         Первый проход срезает повтор тезиса до первого пункта второго абзаца (нет пункта — берёт третий абзац,
         если он начинается пунктом). Не помогло — второй проход выносит пункт, вклеенный в тезис, в тело.
         """
+        if not self.has_hook_echo_in_body:
+            return None
         paragraphs: list[str] = self.paragraphs
-        if len(paragraphs) < 2:
-            return None
         hook, echo, remaining = paragraphs[0], paragraphs[1], paragraphs[2:]
-        if not MergedDescription(PARAGRAPH_JOINER.join((hook, echo, ECHO_CHECK_PLACEHOLDER))).has_hook_echo_in_body:
-            return None
         first_pass: MergedDescription | None = self._without_echo_prefix(hook, echo, remaining)
         if first_pass is None:
             return None
@@ -425,12 +421,12 @@ class MergedDescription:
 
         Шаги донора по порядку: разбор на блоки → снятие повторов тезиса → служебные строки не того языка —
         канонические → маркеры пунктов → лишние пункты компактного контракта → сборка текста. Любая правка
-        текста — `block_spacing_ok=False` (историческое имя донора) и `normalization_applied`.
+        текста — `block_spacing_ok=False` (историческое имя донора).
         """
         source_text: str = self._trimmed_lines_text
         if not source_text:
             empty: QualityFindings = QualityFindings("", request, True, False, False, BulletNormalization(lines=()))
-            return QualityNormalization(MergedDescription(""), QualityDiagnostics.of(empty, rules), False)
+            return QualityNormalization(MergedDescription(""), QualityDiagnostics.of(empty, rules))
         fix: ServiceLineFix = ServiceLineFix.of(DescriptionBlocks.of(source_text, rules.cta), request.language, rules)
         bullets: BulletNormalization = BulletNormalization.of(fix.blocks.theses_lines)
         trim: CompactTrim = CompactTrim.of(bullets.lines, request.source_count)
@@ -441,8 +437,7 @@ class MergedDescription:
         findings: QualityFindings = QualityFindings(
             rendered, request, spacing_ok, fix.wrong_language_heading_detected, fix.official_links_heading_mismatch, bullets
         )
-        applied: bool = fix.applied or bullets.changed or trim.applied or not spacing_ok
-        return QualityNormalization(MergedDescription(rendered), QualityDiagnostics.of(findings, rules), applied)
+        return QualityNormalization(MergedDescription(rendered), QualityDiagnostics.of(findings, rules))
 
     @property
     def overloaded_bullet_count(self) -> int:

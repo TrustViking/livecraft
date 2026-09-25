@@ -119,10 +119,10 @@ def test_the_summary_line_has_the_donor_keys_in_order() -> None:
 
 def test_the_first_stop_reason_stays(llm_log: LogCollector) -> None:
     merge_run, _ = run_with()
-    assert not merge_run.is_stopped and merge_run.log_line.endswith(" stop_reason=none")
+    assert merge_run.stop_reason is None and merge_run.log_line.endswith(" stop_reason=none")
     merge_run.stop(MergeStopReason.QUOTA)
     merge_run.stop(MergeStopReason.MODEL)
-    assert merge_run.is_stopped and merge_run.stop_reason is MergeStopReason.QUOTA
+    assert merge_run.stop_reason is MergeStopReason.QUOTA
     assert merge_run.log_line.endswith(" stop_reason=quota_exhausted")
     stopped: list[str] = [line for line in llm_log.messages() if line.startswith("merge_run_stopped ")]
     assert stopped == ["merge_run_stopped provider=fake model=gpt-x reason=quota_exhausted"]

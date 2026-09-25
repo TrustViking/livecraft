@@ -58,5 +58,8 @@ def test_headers_are_found_on_the_raw_response_or_inside_it() -> None:
 
 def test_no_ratelimit_headers_is_an_empty_snapshot() -> None:
     snapshot: RateLimitSnapshot = RateLimitSnapshot.from_headers({"content-type": "json"}, fixed_clock)
-    assert snapshot.is_empty
+    found: tuple[object, ...] = (
+        snapshot.remaining_requests, snapshot.remaining_tokens, snapshot.reset_requests_sec, snapshot.reset_tokens_sec
+    )
+    assert found == (None, None, None, None)
     assert snapshot.log_line("", "") == "llm_rate_limits model=unknown label=unknown"

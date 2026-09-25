@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.llm.merges.quality import QualityReasonCode
 from app.llm.merges.reject import RECOVERABLE_REJECT_CODES, MergeReject, MergeRejectCode, MergeRejectStage
 from app.ui import messages_ru as msg
 
@@ -98,36 +99,19 @@ def test_coverage_reject_reason_is_its_own_code(code: MergeRejectCode) -> None:
     assert reject.reason_code == code.value
 
 
-def test_semantic_gate_codes_are_normalized_like_the_donor() -> None:
-    reject: MergeReject = MergeReject.semantic_gate(
-        [
-            " semantic_source_2_coverage_missing ",
-            "script_mix_contamination",
-            "semantic_source_grounding_too_low",
-            "semantic_too_generic",
-            "",
-            "script_mix_contamination",
-            "semantic_source_10_coverage_missing",
-        ]
-    )
+def test_semantic_gate_keeps_the_gate_codes_as_they_came() -> None:
+    gate_codes: tuple[str, ...] = tuple(code.value for code in QualityReasonCode)
+    reject: MergeReject = MergeReject.semantic_gate(list(gate_codes))
     assert reject.code is MergeRejectCode.SEMANTIC_GATE
-    assert reject.validation_codes == ("weak_source_coverage", "script_mix_contamination", "overly_generic_body")
+    assert reject.validation_codes == gate_codes
     assert reject.reason_codes == reject.validation_codes
-    assert reject.reason_code == "weak_source_coverage"
+    assert reject.reason_code == QualityReasonCode.ACCENT_MARKER_OVERFLOW.value
 
 
 def test_semantic_gate_without_codes_falls_back_to_the_gate_code() -> None:
     reject: MergeReject = MergeReject.semantic_gate([])
     assert reject.reason_codes == ("semantic_gate",)
     assert reject.reason_code == "semantic_gate"
-    assert MergeReject.semantic_gate(["  ", ""]).reason_codes == ("semantic_gate",)
-
-
-def test_partial_source_code_names_are_not_normalized() -> None:
-    assert MergeReject.normalized_validation_codes(["semantic_source_x_coverage_missing", "semantic_source_1_coverage"]) == (
-        "semantic_source_x_coverage_missing",
-        "semantic_source_1_coverage",
-    )
 
 
 def test_recoverable_when_any_reason_is_recoverable() -> None:

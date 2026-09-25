@@ -46,8 +46,6 @@ PLAIN_BULLET_MARKER_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?:[-*\u2022\u25aa\u25e6\u2023\u2013\u2014]|(?:\d+[.)]))\s+", flags=re.UNICODE
 )
 WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
-LOG_JOINER: Final[str] = ","
-LOG_NONE: Final[str] = "none"
 
 
 class QualityReasonCode(str, Enum):
@@ -114,7 +112,6 @@ class BulletNormalization:
     accent_marker_types: tuple[str, ...] = ()
     neutral_bullets_count: int = 0
     accent_bullets_count: int = 0
-    changed: bool = False
 
     @classmethod
     def of(cls, theses_lines: tuple[str, ...]) -> BulletNormalization:
@@ -123,7 +120,6 @@ class BulletNormalization:
         accent_count: int = 0
         neutral_count: int = 0
         overflow: bool = False
-        changed: bool = False
         for index, line in enumerate(theses_lines):
             if index == 0 and not is_bullet_line(line):
                 lines.append(WHITESPACE_RUN_PATTERN.sub(" ", str(line or "")).strip())
@@ -140,10 +136,8 @@ class BulletNormalization:
                         accent_types.append(marker)
             if marker == NEUTRAL_BULLET_MARKER:
                 neutral_count += 1
-            normalized_line: str = f"{marker} {content}".strip()
-            changed = changed or normalized_line != str(line or "").strip()
-            lines.append(normalized_line)
-        return cls(tuple(lines), overflow, tuple(accent_types), neutral_count, accent_count, changed)
+            lines.append(f"{marker} {content}".strip())
+        return cls(tuple(lines), overflow, tuple(accent_types), neutral_count, accent_count)
 
     @staticmethod
     def _split_marker(line: str) -> tuple[str, str]:
@@ -198,7 +192,6 @@ class ServiceLineFix:
     blocks: DescriptionBlocks
     wrong_language_heading_detected: bool
     official_links_heading_mismatch: bool
-    applied: bool
 
     @classmethod
     def of(cls, blocks: DescriptionBlocks, language: str, rules: QualityRules) -> ServiceLineFix:
@@ -211,26 +204,24 @@ class ServiceLineFix:
             fixed = replace(fixed, hook="")
         wrong_heading: bool = False
         mismatch: bool = False
-        applied: bool = False
         service: ServiceLanguage = rules.service
         if blocks.lead_in and service.is_wrong(service.detect_service(blocks.lead_in), language):
             lead_in: str = rules.catalog.line(language, ServiceLineKey.LEAD_IN)
             fixed = replace(fixed, theses_lines=(lead_in, *fixed.theses_lines[1:]))
-            wrong_heading = applied = True
+            wrong_heading = True
         if blocks.links_heading:
             expected: str = rules.catalog.line(language, ServiceLineKey.LINKS_HEADING)
             mismatch = blocks.links_heading != expected
             if mismatch or service.is_wrong(service.detect_service(blocks.links_heading), language):
                 fixed = replace(fixed, links_heading=expected)
-                wrong_heading = applied = True
+                wrong_heading = True
         if (
             blocks.cta
             and service.is_short_service_line(blocks.cta)
             and service.is_wrong(service.detect_service(blocks.cta), language)
         ):
             fixed = replace(fixed, cta=rules.catalog.cta_preserving_hashtags(blocks.cta, language))
-            applied = True
-        return cls(fixed, wrong_heading, mismatch, applied)
+        return cls(fixed, wrong_heading, mismatch)
 
 
 @dataclass(frozen=True)
@@ -261,7 +252,6 @@ class QualityDiagnostics:
     cta_language_detected: str
     language_consistency_ok: bool
     wrong_language_heading_detected: bool
-    official_links_heading_mismatch: bool
     script_mix_detected: bool
     script_mix_suspects: tuple[str, ...]
     semantic_gate_status: QualityGateStatus
@@ -290,7 +280,6 @@ class QualityDiagnostics:
             cta_language_detected=service.detect_service(blocks.cta),
             language_consistency_ok=QualityReasonCode.INCONSISTENT_BLOCK_LANGUAGE not in codes,
             wrong_language_heading_detected=findings.wrong_language_heading_detected,
-            official_links_heading_mismatch=findings.official_links_heading_mismatch,
             script_mix_detected=bool(suspects),
             script_mix_suspects=suspects,
             semantic_gate_status=cls._status(codes),
@@ -319,25 +308,6 @@ class QualityDiagnostics:
             return QualityGateStatus.NEEDS_NORMALIZATION
         return QualityGateStatus.OK
 
-    @property
-    def log_line(self) -> str:
-        """Ключи строки `merge_semantic_gate` донора плюс счётчики пунктов; из текста — только подозрительные слова."""
-        return (
-            f"block_language_expected={self.block_language_expected} "
-            f"hook_language_detected={self.hook_language_detected} "
-            f"lead_in_language_detected={self.lead_in_language_detected} "
-            f"links_heading_language_detected={self.links_heading_language_detected} "
-            f"cta_language_detected={self.cta_language_detected} "
-            f"language_consistency_ok={self.language_consistency_ok} "
-            f"wrong_language_heading_detected={self.wrong_language_heading_detected} "
-            f"script_mix_detected={self.script_mix_detected} "
-            f"script_mix_suspects={LOG_JOINER.join(self.script_mix_suspects) or LOG_NONE} "
-            f"neutral_bullets_count={self.neutral_bullets_count} accent_bullets_count={self.accent_bullets_count} "
-            f"accent_overflow={self.accent_overflow} block_spacing_ok={self.block_spacing_ok} "
-            f"semantic_gate_status={self.semantic_gate_status.value} "
-            f"semantic_gate_reason_codes={LOG_JOINER.join(code.value for code in self.semantic_gate_reason_codes) or LOG_NONE}"
-        )
-
 
 def _core_language_mismatch(detected: str, expected: str) -> bool:
     """Язык тезиса явно не язык блока: определён (в том числе `unknown` — как у донора) и блок uk, en или ru."""
@@ -348,8 +318,7 @@ def _core_language_mismatch(detected: str, expected: str) -> bool:
 
 @dataclass(frozen=True)
 class QualityNormalization:
-    """Итог нормализации: описание после неё, диагностика итогового текста, менялось ли что-нибудь."""
+    """Итог нормализации: описание после неё и диагностика итогового текста."""
 
     description: MergedDescription
     diagnostics: QualityDiagnostics
-    normalization_applied: bool

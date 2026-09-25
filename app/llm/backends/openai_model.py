@@ -20,10 +20,6 @@ if TYPE_CHECKING:      # только для аннотаций: openai_response
 TOKENS_PER_PRICE_UNIT: Final[float] = 1_000_000.0       # цены — в долларах за миллион токенов
 COST_DIGITS: Final[int] = 6
 
-# Снимок страницы цен OpenAI (developers.openai.com/api/docs/pricing), тариф Standard, короткий контекст.
-# Перенесён из restreamer `app\llm\model_pricing.py::MODEL_PRICES` как есть — снимок сентября 2026.
-# Страница поменялась — правится руками здесь и только здесь.
-PRICE_SNAPSHOT_DATE: Final[str] = "09-2026"
 # Ответ OpenAI называет модель снимком с датой (`gpt-5.4-2026-03-05`) — цена у неё та же, что у имени без даты.
 SNAPSHOT_SUFFIX_PATTERN: Final[re.Pattern[str]] = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 
@@ -84,6 +80,9 @@ class ModelPrice:
         return total / TOKENS_PER_PRICE_UNIT
 
 
+# Снимок страницы цен OpenAI (developers.openai.com/api/docs/pricing), тариф Standard, короткий контекст.
+# Перенесён из restreamer `app\llm\model_pricing.py::MODEL_PRICES` как есть — снимок сентября 2026.
+# Страница поменялась — правится руками здесь и только здесь.
 MODEL_PRICES: Final[dict[str, ModelPrice]] = {
     "gpt-5.2": ModelPrice(input_usd=1.75, cached_input_usd=0.175, cache_write_usd=1.75, output_usd=14.00),
     "gpt-5.4": ModelPrice(input_usd=2.50, cached_input_usd=0.25, cache_write_usd=2.50, output_usd=15.00),

@@ -16,6 +16,7 @@ from app.llm.backend import PROBE_MAX_OUTPUT_TOKENS, LlmBackend, LlmRequest, Llm
 from app.llm.backends.openai import FLEX_RETRY_DELAYS_SEC, OpenAiClient, OpenAiRequest
 from app.llm.backends.openai_model import ServiceTierRule
 from app.llm.errors import LlmErrorKind, LlmRequestError
+from app.llm.usage import RequestUsage
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
 from app.tests.conftest import (
@@ -36,6 +37,11 @@ SCHEMA: dict[str, Any] = {
     "schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
 }
 DEFAULT_TIER: LlmSettings = dataclasses.replace(LLM_SETTINGS, service_tier=ServiceTier.DEFAULT)
+FALLBACK_EVENTS: tuple[str, ...] = (
+    "llm_flex_fallback_to_default",
+    "llm_max_output_retry",
+    "llm_temperature_unsupported_retry",
+)
 
 
 @pytest.fixture
@@ -58,6 +64,20 @@ def make_client(sdk: FakeLlmSdk, settings: LlmSettings = LLM_SETTINGS) -> tuple[
         key=KEY, settings=settings, sdk=sdk, rng=random.Random(7), sleep=sleeps.append, clock=lambda: 0.0
     )
     return client, sleeps
+
+
+def lines_of(log: LogCollector, event: str) -> list[str]:
+    return [line for line in log.messages() if line.startswith(f"{event} ")]
+
+
+def fallbacks(log: LogCollector) -> list[str]:
+    """События откатов обмена в порядке появления."""
+    return [event for line in log.messages() for event in FALLBACK_EVENTS if line.startswith(f"{event} ")]
+
+
+def finish_reasons(log: LogCollector) -> list[str]:
+    """Причина завершения каждого полученного ответа по строкам `llm_response`."""
+    return [line.rsplit("finish_reason=", 1)[1] for line in lines_of(log, "llm_response")]
 
 
 def request(settings: LlmSettings = LLM_SETTINGS, model: str = "gpt-5.6-sol", schema: dict[str, Any] | None = None) -> LlmRequest:
@@ -129,9 +149,10 @@ def test_answer_text_usage_cost_and_limits(llm_log: LogCollector) -> None:
     response: LlmResponse = client.complete(request(schema=SCHEMA))
     assert response.structured == {"title": "Эфир"}
     assert response.model == "gpt-5.6-sol-2026-08-01"
-    assert response.attempts == 1 and response.notes == () and sleeps == []
-    assert response.usage is not None and response.usage.output_tokens == 100
-    assert response.usage.tier == "flex" and response.usage.label == "merge"
+    assert len(sdk.calls) == 1 and sleeps == [] and fallbacks(llm_log) == []
+    report: RequestUsage = client.run_usage.reports[0]
+    assert (report.output_tokens, report.tier, report.label) == (100, "flex", "merge")
+    assert finish_reasons(llm_log) == ["completed"]
     # sol по flex: (800 * 4.00 + 200 * 0.40 + 100 * 20.00) / 1e6 / 2
     assert client.run_usage.cost_usd == pytest.approx((800 * 4.00 + 200 * 0.40 + 100 * 20.00) / 1e6 / 2)
     assert client.run_usage.requests == 1
@@ -150,19 +171,20 @@ def test_flex_busy_waits_20_40_80_and_then_goes_to_the_default_tier(llm_log: Log
     busy: list[Exception] = [api_error(429, "Resource unavailable", code="resource_unavailable") for _ in range(4)]
     sdk: FakeLlmSdk = FakeLlmSdk(*busy, llm_answer(service_tier="default"))
     client, sleeps = make_client(sdk)
-    response: LlmResponse = client.complete(request())
+    client.complete(request())
     assert sleeps == list(FLEX_RETRY_DELAYS_SEC) == [20.0, 40.0, 80.0]
     assert [call.get("service_tier") for call in sdk.calls] == ["flex", "flex", "flex", "flex", None]
-    assert response.attempts == 5 and response.usage is not None and response.usage.tier == "default"
-    assert response.notes == ("flex→default",)
-    assert sum(1 for line in llm_log.messages() if line.startswith("llm_flex_unavailable")) == 3
-    assert any(line.startswith("llm_flex_fallback_to_default") for line in llm_log.messages())
+    assert client.run_usage.requests == 1 and [report.tier for report in client.run_usage.reports] == ["default"]
+    assert fallbacks(llm_log) == ["llm_flex_fallback_to_default"]
+    assert len(lines_of(llm_log, "llm_flex_unavailable")) == 3
+    assert "service_tier=default" in lines_of(llm_log, "llm_flex_fallback_to_default")[0]
 
 
-def test_flex_recovers_on_the_second_try_without_leaving_flex() -> None:
+def test_flex_recovers_on_the_second_try_without_leaving_flex(llm_log: LogCollector) -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(api_error(429, "Resource unavailable"), llm_answer())
     client, sleeps = make_client(sdk)
-    assert client.complete(request()).notes == ()
+    client.complete(request())
+    assert fallbacks(llm_log) == [] and [report.tier for report in client.run_usage.reports] == ["flex"]
     assert sleeps == [20.0]
     assert [call["service_tier"] for call in sdk.calls] == ["flex", "flex"]
 
@@ -174,25 +196,29 @@ def test_flex_quota_is_not_waited_out() -> None:
     assert caught.value.kind is LlmErrorKind.QUOTA and sleeps == []
 
 
-def test_max_output_hit_is_retried_once_with_double_limit() -> None:
+def test_max_output_hit_is_retried_once_with_double_limit(llm_log: LogCollector) -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(
         llm_answer('{"title": "обр', incomplete="max_output_tokens"), llm_answer('{"title": "целое"}')
     )
     client, _ = make_client(sdk, DEFAULT_TIER)
     response: LlmResponse = client.complete(request(DEFAULT_TIER, schema=SCHEMA))
     assert [call["max_output_tokens"] for call in sdk.calls] == [8000, 16000]
-    assert response.structured == {"title": "целое"} and response.attempts == 2
-    assert response.notes == ("max_output×2",) and not response.hit_max_output
+    assert response.structured == {"title": "целое"}
+    assert fallbacks(llm_log) == ["llm_max_output_retry"]
+    assert "max_output_tokens=16000" in lines_of(llm_log, "llm_max_output_retry")[0]
+    assert finish_reasons(llm_log) == ["max_output_tokens", "completed"]
     assert client.run_usage.requests == 2                    # оплачены оба ответа
 
 
-def test_max_output_hit_twice_is_returned_as_is() -> None:
+def test_max_output_hit_twice_is_returned_as_is(llm_log: LogCollector) -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(
         llm_answer("часть", incomplete="max_output_tokens"), llm_answer("часть 2", incomplete="max_output_tokens")
     )
     client, _ = make_client(sdk, DEFAULT_TIER)
     response: LlmResponse = client.complete(request(DEFAULT_TIER))
-    assert len(sdk.calls) == 2 and response.hit_max_output and response.text == "часть 2"
+    assert len(sdk.calls) == 2 and response.text == "часть 2"
+    assert fallbacks(llm_log) == ["llm_max_output_retry"]
+    assert finish_reasons(llm_log) == ["max_output_tokens", "max_output_tokens"]
 
 
 def test_empty_answer_is_an_error() -> None:
@@ -205,11 +231,11 @@ def test_empty_answer_is_an_error() -> None:
 def test_network_failures_are_retried_by_the_policy() -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(timeout_error(), api_error(500, "boom"), api_error(429, "slow down"), llm_answer())
     client, sleeps = make_client(sdk, DEFAULT_TIER)
-    response: LlmResponse = client.complete(request(DEFAULT_TIER))
+    assert client.complete(request(DEFAULT_TIER)).text == "OK"
     policy: RetryPolicy = RetryPolicy()
     rng: random.Random = random.Random(7)
     assert sleeps == [policy.delay_sec(number, rng) for number in (1, 2, 3)]
-    assert response.attempts == 4
+    assert len(sdk.calls) == 4 and client.run_usage.requests == 1
 
 
 def test_retries_end_with_the_last_error() -> None:
@@ -230,16 +256,17 @@ def test_configuration_errors_are_not_retried() -> None:
     assert caught.value.kind is LlmErrorKind.MODEL_NOT_FOUND and len(sdk.calls) == 1 and sleeps == []
 
 
-def test_temperature_unsupported_is_retried_without_it() -> None:
+def test_temperature_unsupported_is_retried_without_it(llm_log: LogCollector) -> None:
     refusal: Exception = api_error(
         400, "Unsupported parameter: 'temperature' is not supported with this model.", code="unsupported_parameter",
         param="temperature",
     )
     sdk: FakeLlmSdk = FakeLlmSdk(refusal, llm_answer(model="o3"))
     client, _ = make_client(sdk, DEFAULT_TIER)
-    response: LlmResponse = client.complete(request(DEFAULT_TIER, model="o3"))
+    client.complete(request(DEFAULT_TIER, model="o3"))
     assert [("temperature" in call) for call in sdk.calls] == [True, False]
-    assert response.notes == ("no_temperature",)
+    assert fallbacks(llm_log) == ["llm_temperature_unsupported_retry"]
+    assert "temperature=no" in lines_of(llm_log, "llm_temperature_unsupported_retry")[0]
 
 
 def test_temperature_refusal_without_temperature_is_raised() -> None:

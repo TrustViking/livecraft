@@ -55,7 +55,7 @@ class FakeBackend:
             total_tokens=4, response_id="r", model=model_name, tier="", label=label, cost_usd=0.0,
         )
         self.run_usage.add(usage)
-        return LlmResponse(text="OK", structured=None, model=model_name, incomplete_reason="", usage=usage, attempts=1)
+        return LlmResponse(text="OK", structured=None, model=model_name)
 
 
 def test_the_fake_is_an_llm_backend() -> None:
@@ -112,13 +112,10 @@ def test_the_request_from_settings_and_the_probe() -> None:
     assert LlmRequest.probe("model-a", 900).timeout_sec == 30.0
 
 
-def test_the_response_log_line_carries_the_notes_but_no_text() -> None:
-    response: LlmResponse = LlmResponse(
-        text="секретный ответ", structured=None, model="m", incomplete_reason="", usage=None, attempts=2,
-        notes=("one", "two"),
-    )
-    assert "notes=one,two" in response.log_line and "секретный" not in response.log_line
-    assert "секретный" not in repr(response)
+def test_the_response_carries_text_json_and_model_and_hides_the_text() -> None:
+    assert {item.name for item in dataclasses.fields(LlmResponse)} == {"text", "structured", "model"}
+    response: LlmResponse = LlmResponse(text="секретный ответ", structured={"title": "секретный"}, model="m")
+    assert "секретный" not in repr(response) and "m" in repr(response)
 
 
 @pytest.mark.parametrize("module", NEUTRAL_MODULES)

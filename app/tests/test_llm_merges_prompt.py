@@ -37,7 +37,6 @@ RESOURCE_SHA256: dict[str, str] = {
     "merge_prompt_speaker_anchor.txt": "12665dd348d8e4bfd2a82ae01bdaa67dde308ab5fe8522a324cbd34930c22af9",
     "merge_prompt_structural_rules.txt": "123a4cfe49349a5c3f0e2cb6e85fb73b035f8884b9fd15b13c2b51e6c502ee0e",
     "merge_prompt_title_description.txt": "4dd9552cb82cce599a21d8cfd194dc099a3316d393d03ce55c10905dd60ec3fe",
-    "merge_retry_expanded_lines.json": "0ad7d959adea6eb04ea53226902546290e5513b71c73ef1bc310026e57b542ad",
     "merge_retry_fallback_lines.json": "cb931f522265218139641bb84ee148afebbfdde2f8de4297a7c0e51a45ab2f48",
     "merge_retry_reinforcements.json": "7bcda0878b67330d8cc01c179359dffd49b97e1733fd4a1727573489d62df545",
 }
@@ -243,10 +242,12 @@ def test_compact_contract_is_read_from_templates_and_exposes_4_7_range() -> None
     assert "compact bullet range 4-7" in text
 
 
-def test_compact_prompt_ignores_expanded_retry_profile() -> None:
-    retry: RetryProfile = RetryProfile.expanded(3, ("insufficient_expanded_body",), TEXTS)
+def test_compact_prompt_keeps_the_compact_contract_under_a_targeted_retry() -> None:
+    facts: RetryFacts = RetryFacts(source_count=2, actual_paragraphs=6, max_paragraphs=4)
+    retry: RetryProfile = RetryProfile.targeted(RetrySignal.PARAGRAPH_OVERFLOW, facts, TEXTS)
     text: str = build("en", two_videos(), donor_test_texts(), retry).text
-    assert "EXPANDED RETRY FOCUS" not in text
+    assert retry.enabled and text.endswith(retry.instruction_block)
+    assert "Use the expanded merge contract" not in text
     assert "Use the compact merge contract for 1 to 2 source items." in text
 
 
@@ -409,11 +410,6 @@ def test_braces_in_source_text_do_not_break_the_template() -> None:
     videos = (merge_video(2, "A {title}", "Body {language_name} {0}"), merge_video(3, "B", "Other body"))
     text: str = build("en", videos, TEXTS).text
     assert "TITLE: A {title}\nDESCRIPTION: Body {language_name} {0}" in text
-
-
-def test_source_texts_for_quality_follow_the_sources() -> None:
-    videos = (merge_video(2, "One", "Body https://x.example"), merge_video(3, "Two", ""))
-    assert build("en", videos, TEXTS).source_texts_for_quality == ("One\nBody", "Two")
 
 
 def test_contract_is_chosen_by_the_prompt_descriptions() -> None:

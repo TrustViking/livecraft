@@ -147,10 +147,6 @@ class MergeRun:
         LOGGER.error("merge_run_stopped provider=%s model=%s reason=%s", self.backend.name, self.model, reason.value)
 
     @property
-    def is_stopped(self) -> bool:
-        return self.stop_reason is not None
-
-    @property
     def log_line(self) -> str:
         """Итог запуска: строка донора и причина остановки."""
         stop: str = self.stop_reason.value if self.stop_reason is not None else LOG_NONE

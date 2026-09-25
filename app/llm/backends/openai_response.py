@@ -167,15 +167,10 @@ class OpenAiReply:
             return None
         return self.usage.to_request_usage(request.model, request.request.label)
 
-    def to_response(self, request: OpenAiRequest, attempts: int, notes: tuple[str, ...]) -> LlmResponse:
-        """Общий ответ разъёма: JSON разбирается, только если запрос просил схему."""
+    def to_response(self, request: OpenAiRequest) -> LlmResponse:
+        """Общий ответ разъёма: JSON разбирается, только если запрос просил схему; модель — названная ответом."""
         return LlmResponse(
             text=self.text,
             structured=parse_json_object(self.text) if request.request.is_structured else None,
             model=self.usage.model if self.usage is not None and self.usage.model else request.model.name,
-            incomplete_reason=self.incomplete_reason,
-            usage=self.request_usage(request),
-            attempts=attempts,
-            notes=notes,
-            hit_max_output=self.hit_max_output,
         )

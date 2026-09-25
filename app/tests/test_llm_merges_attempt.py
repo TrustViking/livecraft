@@ -92,9 +92,6 @@ class QueueBackend:
             text=reply,
             structured=payload if isinstance(payload, dict) else None,
             model=request.model_name,
-            incomplete_reason="",
-            usage=None,
-            attempts=1,
         )
 
     def probe(self, model_name: str) -> LlmResponse | LlmRequestError:

@@ -49,7 +49,6 @@ def test_description_keeps_full_text_without_links_hashtags_or_truncation() -> N
     assert prepared.urls_removed == 2
     assert prepared.hashtags_removed == 2
     assert prepared.service_paragraphs_dropped == 1
-    assert prepared.cleaned_chars == len(prepared.text)
 
 
 def test_line_breaks_are_normalized_before_counting() -> None:
@@ -75,23 +74,16 @@ def test_source_takes_title_row_and_prepared_description() -> None:
     assert source.prompt_block(2) == "SOURCE 2\nTITLE: Title 1\nDESCRIPTION: Paragraph one.\n\nParagraph two."
 
 
-def test_empty_description_becomes_no_description_in_prompt_but_not_in_quality_text() -> None:
+def test_empty_description_becomes_no_description_in_prompt() -> None:
     source: MergeSource = MergeSource.of(merge_video(2, "Title", "   "), TEXTS)
     assert source.prompt_description == TEXTS.no_description
-    assert source.has_description is False
-    assert source.quality_text == "Title"
+    assert source.prompt_block(1) == f"SOURCE 1\nTITLE: Title\nDESCRIPTION: {TEXTS.no_description}"
 
 
-def test_description_that_cleans_to_nothing_falls_back_in_prompt_only() -> None:
+def test_description_that_cleans_to_nothing_falls_back_in_prompt() -> None:
     source: MergeSource = MergeSource.of(merge_video(2, "Title", "https://only.link #tag"), TEXTS)
     assert source.description.text == ""
     assert source.prompt_description == TEXTS.no_description
-    assert source.quality_text == "Title"
-
-
-def test_quality_text_is_title_and_cleaned_description() -> None:
-    source: MergeSource = MergeSource.of(merge_video(2, "Title", "Body https://x.example text."), TEXTS)
-    assert source.quality_text == "Title\nBody text."
 
 
 def test_log_line_has_counters_and_no_source_text() -> None:

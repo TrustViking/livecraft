@@ -492,6 +492,17 @@ def test_log_lines_have_donor_keys_and_no_description_text() -> None:
     assert "official_links_fill_applied=no" in style and "named_entities_metric=informational" in style
 
 
+def test_gate_line_carries_the_gate_verdict() -> None:
+    mixed: str = f"{HOOK}\n\n{bullets(['budget amendments', 'бюджетні поправки'])}"
+    _, gate = normalized_check(mixed, pairs=(("One", "Body."),)).diagnostics.log_lines(LABEL)
+    assert "block_language_expected=en " in gate and "script_mix_detected=yes " in gate
+    assert gate.endswith("semantic_gate_status=hard_reject semantic_gate_reason_codes=script_mix_contamination")
+    _, clean = normalized_check(f"{HOOK}\n\n{bullets(['budget amendments'])}", pairs=(("One", "Body."),)).diagnostics.log_lines(
+        LABEL
+    )
+    assert "script_mix_suspects=none " in clean and "semantic_gate_reason_codes=" in clean
+
+
 # --- каждый код шага CHECK достижим проверкой на своём входе
 CHECK_REACHABILITY_CASES: list[tuple[str, MergeRejectCode]] = [
     ("per_source", MergeRejectCode.PER_SOURCE_ENUMERATION),

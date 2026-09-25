@@ -20,7 +20,7 @@ TWO_PARAGRAPHS: str = "Paragraph one.\n\nParagraph two."
 
 
 def response(text: str = "", structured: dict[str, object] | None = None) -> LlmResponse:
-    return LlmResponse(text=text, structured=structured, model="gpt-test", incomplete_reason="", usage=None, attempts=1)
+    return LlmResponse(text=text, structured=structured, model="gpt-test")
 
 
 def parse(text: str, max_body_paragraphs: int = 4) -> MergeAnswer | MergeReject:

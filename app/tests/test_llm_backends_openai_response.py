@@ -94,11 +94,12 @@ def test_the_reply_text_comes_from_output_text_or_from_the_output_items() -> Non
 def test_the_reply_becomes_the_common_response() -> None:
     reply: OpenAiReply = OpenAiReply.of(llm_answer('{"title": "Эфир"}', incomplete="MAX_OUTPUT_TOKENS").parse())
     assert reply.hit_max_output and reply.incomplete_reason == "max_output_tokens"
-    response: LlmResponse = reply.to_response(openai_request({"schema": {}}), 3, ("flex→default",))
-    assert response.structured == {"title": "Эфир"} and response.hit_max_output
-    assert response.attempts == 3 and response.notes == ("flex→default",)
-    assert response.usage is not None and response.usage.label == "merge"
-    plain: LlmResponse = OpenAiReply.of(llm_answer('{"title": "x"}', model="").parse()).to_response(openai_request(), 1, ())
+    response: LlmResponse = reply.to_response(openai_request({"schema": {}}))
+    assert response.structured == {"title": "Эфир"} and response.text == '{"title": "Эфир"}'
+    assert response.model == "gpt-5.6-sol-2026-08-01"                  # модель — названная ответом
+    usage: RequestUsage | None = reply.request_usage(openai_request({"schema": {}}))
+    assert usage is not None and (usage.label, usage.tier) == ("merge", "flex")
+    plain: LlmResponse = OpenAiReply.of(llm_answer('{"title": "x"}', model="").parse()).to_response(openai_request())
     assert plain.structured is None and plain.model == "gpt-5.6-sol"    # ответ не назвал модель — запрошенная
 
 

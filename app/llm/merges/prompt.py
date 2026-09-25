@@ -143,11 +143,6 @@ class MergePrompt:
         ).strip()
 
     @property
-    def source_texts_for_quality(self) -> tuple[str, ...]:
-        """Название и очищенное описание каждого источника — для проверки качества ответа."""
-        return tuple(source.quality_text for source in self.sources)
-
-    @property
     def log_lines(self) -> tuple[str, ...]:
         """Строки лога донора: `merge_source_text_prepared` на источник, `merge_prompt_sources_ready`,
         `merge_prompt_contract_selected` — счётчики и контракт, без текста источников."""

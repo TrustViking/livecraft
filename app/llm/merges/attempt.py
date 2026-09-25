@@ -4,8 +4,9 @@
 донорские: запрос со схемой ответа `merge_summary_v2` и температурой 0 → предварительная проверка переполнения абзацев и
 разбор ответа (`MergeAnswer.parse`, предел абзацев — из контракта промта этой попытки, решение Коворка к 3.13) → ссылки
 источников и ссылки ответа (`MergeCheckRequest.of`) → починка смешанного алфавита (строка `merge_script_mix_repaired`) →
-нормализация качества с числом источников → диагностика (строка `merge_bullet_count_mismatch` при расхождении, две строки
-стиля) → проверка покрытия с восстановлением форматирования → строка `merge_llm_response_valid`.
+нормализация качества с числом источников → диагностика (две строки стиля) → проверка покрытия с восстановлением
+форматирования → строка `merge_llm_response_valid`. Строки донора о расхождении числа пунктов здесь нет: донор сравнивает
+число пунктов текста с числом пунктов того же текста по тому же правилу, и расхождения не бывает.
 
 Итог попытки — значение `MergeAttemptResult`: принятый ответ, отказ или сбой запроса. Сбой запроса — `LlmRequestError`,
 его разъём бросает; попытка перехватывает только его и возвращает значением. Какой повтор следующий, решает сам итог
@@ -17,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final
 
@@ -35,7 +35,6 @@ from app.llm.merges.retry import RetryFacts, RetryProfile
 from app.llm.merges.rules import MIN_BULLETS_EXTRA_OVER_SOURCES, MIN_BULLETS_FLOOR
 from app.observability.logging_setup import get_logger
 from app.texts.composer import PublishHeadings
-from app.texts.description_marks import bullet_marker_for_line
 
 if TYPE_CHECKING:
     from app.config.loader import LlmSettings
@@ -65,7 +64,6 @@ UNEXPECTED_CODE: Final[str] = MergeRejectCode.UNEXPECTED.value
 # Перегруженных пунктов, когда описания отвергнутой попытки нет, и абзацев перебора, когда число не известно (донор).
 OVERLOADED_COUNT_UNKNOWN: Final[int] = 1
 OVERFLOW_PARAGRAPHS_UNKNOWN: Final[int] = 8
-LINE_BREAK: Final[str] = "\n"
 STAGE_PRIMARY: Final[str] = "primary"
 YES: Final[str] = "yes"
 NO: Final[str] = "no"
@@ -273,18 +271,7 @@ class MergeAttempt:
         return replace(result, accepted=accepted)
 
     def _log_diagnostics(self, check: MergeCheck) -> None:
-        """Расхождение числа пунктов по строкам текста и по диагностике; строки стиля и semantic gate."""
-        raw_bullets: int = _bullet_line_count(check.description.text.split(LINE_BREAK))
-        if raw_bullets != check.diagnostics.bullet_points_count:
-            LOGGER.info(
-                "merge_bullet_count_mismatch %s raw_bullets=%d normalized_bullets=%d",
-                self.label.prefix, raw_bullets, check.diagnostics.bullet_points_count,
-            )
+        """Строки стиля и semantic gate."""
         for line in check.diagnostics.log_lines(self.label):
             LOGGER.info("%s", line)
-
-
-def _bullet_line_count(lines: Sequence[str]) -> int:
-    """Строк с маркером пункта в начале."""
-    return sum(1 for line in lines if bullet_marker_for_line(line))
 

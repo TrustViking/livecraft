@@ -342,7 +342,6 @@ def test_quality_normalized_returns_a_new_description() -> None:
         QualityRequest(language="en"), QualityRules.load()
     )
     assert result.description.text == "Hook paragraph with enough words here.\n\n🔹 one point\n🔹 two point"
-    assert result.normalization_applied is True
 
 
 # --- правила проверки покрытия (задача 3.12b): ссылки, эмодзи, повторы строк и абзацев, призыв в начале

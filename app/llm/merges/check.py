@@ -385,7 +385,7 @@ class FormattingRecovery:
         """`_normalize_formatting_only_description` донора: эмодзи снимаются, затем нормализация качества."""
         description: MergedDescription = MergedDescription(str(check.description.text or "").strip())
         actions: list[str] = []
-        if MergeRejectCode.EXCESSIVE_EMOJI_USAGE.value in MergeReject.normalized_validation_codes(reject.reason_codes):
+        if MergeRejectCode.EXCESSIVE_EMOJI_USAGE.value in reject.reason_codes:
             stripped, changed = description.without_non_structural_emoji()
             if changed:
                 description = stripped

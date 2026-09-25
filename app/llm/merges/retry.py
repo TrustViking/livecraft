@@ -2,8 +2,8 @@
 
 `RetryProfile.targeted` — восемь `_targeted_*_retry_profile` донора: сигнал отказа задаёт строки (боевой шаблон
 `merge_retry_reinforcements.json`, при его отсутствии — запасные строки донора) и подстановки из `RetryFacts`.
-`RetryProfile.expanded` — `_build_expanded_retry_profile` (строки только встроенные, по первому сигналу, плюс строки для
-трёх и четырёх источников), `RetryProfile.standard` — `_standard_expanded_retry_profile` (инструкции нет).
+`RetryProfile.standard` — обычный повтор донора (инструкции нет). Расширенный профиль донора с его встроенными строками
+зовут только тесты донора: в боевой путь он не входит и не перенесён.
 Блок инструкции (`instruction_block`) — `_retry_instruction_block`: промт дописывает его последним (`MergePrompt.text`).
 Какой профиль после отказа — `RetryProfile.after_reject`: первый сигнал в порядке донора (`SIGNAL_ORDER`,
 `merge_orchestrator.py::_select_retry_profile`), иначе обычный повтор с сигналами отказа.
@@ -21,26 +21,7 @@ from app.llm.merges.prompt_texts import MergePromptTexts
 INSTRUCTION_HEADER: Final[str] = "RETRY INSTRUCTION:"
 LABEL_JOINER: Final[str] = ","
 NONE_LABEL: Final[str] = "none"
-SIGNALS_JOINER: Final[str] = ", "
-UNKNOWN_SIGNALS: Final[str] = "unknown"
 LINE_BREAK: Final[str] = "\n"
-
-# Ключи `merge_retry_expanded_lines.json` помимо сигналов.
-EXPANDED_UNKNOWN_KEY: Final[str] = "unknown"
-EXPANDED_THREE_PLUS_KEY: Final[str] = "three_plus_sources"
-EXPANDED_FOUR_PLUS_KEY: Final[str] = "four_plus_sources"
-EXPANDED_THREE_PLUS_SOURCES: Final[int] = 3
-EXPANDED_FOUR_PLUS_SOURCES: Final[int] = 4
-REJECT_SIGNALS_PLACEHOLDER: Final[str] = "{reject_signals}"
-
-# Первый сигнал расширенного профиля → метка фокуса (донор: ветки `_build_expanded_retry_profile`).
-EXPANDED_FOCUS_TAGS: Final[dict[str, str]] = {
-    "insufficient_expanded_body": "body_depth",
-    "too_few_expanded_bullets": "bullet_sufficiency",
-    "overly_generic_body": "source_specificity",
-    "hook_dominates_body": "hook_restraint",
-    "weak_source_coverage": "source_spread",
-}
 
 
 class RetryMode(str, Enum):
@@ -183,33 +164,6 @@ class RetryProfile:
             reject_signals=signal.reject_signals,
             focus_tags=signal.focus_tags,
             reinforcement_lines=texts.reinforcement_lines(signal.value, facts.placeholders(signal)),
-        )
-
-    @classmethod
-    def expanded(cls, source_count: int, reject_signals: Iterable[str], texts: MergePromptTexts) -> RetryProfile:
-        """Расширенный профиль: строки по первому сигналу (неизвестный — общие строки с перечнем сигналов), затем строки
-        для трёх и для четырёх источников. Сигналы — без повторов (по исходному виду) и без пустых после `strip`."""
-        signals: tuple[str, ...] = tuple(
-            cleaned for raw in _unique_in_order(str(signal or "") for signal in reject_signals) if (cleaned := raw.strip())
-        )
-        primary: str = signals[0] if signals else ""
-        focus: str | None = EXPANDED_FOCUS_TAGS.get(primary)
-        base: tuple[str, ...]
-        if focus is not None:
-            base = texts.expanded_retry[primary]
-        else:
-            joined: str = SIGNALS_JOINER.join(signals) or UNKNOWN_SIGNALS
-            base = tuple(line.replace(REJECT_SIGNALS_PLACEHOLDER, joined) for line in texts.expanded_retry[EXPANDED_UNKNOWN_KEY])
-        extra: tuple[str, ...] = ()
-        if source_count >= EXPANDED_THREE_PLUS_SOURCES:
-            extra = texts.expanded_retry[EXPANDED_THREE_PLUS_KEY]
-        if source_count >= EXPANDED_FOUR_PLUS_SOURCES:
-            extra = extra + texts.expanded_retry[EXPANDED_FOUR_PLUS_KEY]
-        return cls(
-            mode=RetryMode.TARGETED,
-            reject_signals=signals,
-            focus_tags=(focus,) if focus is not None else (),
-            reinforcement_lines=base + extra,
         )
 
     @classmethod

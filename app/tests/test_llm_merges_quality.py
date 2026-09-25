@@ -59,7 +59,7 @@ def test_short_service_lines_are_normalized_to_expected_language() -> None:
     assert "Дивіться ефір і діліться думками. #подія" in result.description.text
     assert result.diagnostics.semantic_gate_status is QualityGateStatus.NEEDS_NORMALIZATION
     assert result.diagnostics.wrong_language_heading_detected is True
-    assert result.diagnostics.official_links_heading_mismatch is True
+    assert QualityReasonCode.OFFICIAL_LINKS_HEADING_MISMATCH in result.diagnostics.semantic_gate_reason_codes
 
 
 # --- донор: test_accent_marker_cap_is_enforced_and_overflow_is_logged
@@ -80,22 +80,22 @@ def test_accent_marker_cap_is_enforced() -> None:
 
 # --- донор: test_block_spacing_is_stabilized
 def test_block_spacing_is_stabilized() -> None:
-    result: QualityNormalization = normalized(
+    source: str = (
         "This hook stays factual and readable with enough context!\n"
         "In this stream you'll see:\n"
         "🎤 Pastor Vitaliy Orlov comments on the community response\n"
         "🔹 relief updates continue\n"
         "🌐 Official links:\n"
         "https://example.org\n"
-        "Watch the stream and share your thoughts. #update",
-        "en",
+        "Watch the stream and share your thoughts. #update"
     )
+    result: QualityNormalization = normalized(source, "en")
     assert "\n\nIn this stream you'll see:\n" in result.description.text
     assert "\n\n🌐 Official links:\nhttps://example.org\n\n" in result.description.text
     assert "🎤 Pastor Vitaliy Orlov comments on the community response" in result.description.text
     assert result.diagnostics.block_spacing_ok is False
     assert QualityReasonCode.MISSING_BLOCK_SPACING in result.diagnostics.semantic_gate_reason_codes
-    assert result.normalization_applied is True
+    assert result.description.text != source
 
 
 # --- донор: test_script_mix_guard_rejects_cyrillic_contamination_inside_english_body
@@ -203,7 +203,7 @@ def test_eight_bullets_two_sources_trimmed_to_seven(caplog: pytest.LogCaptureFix
     assert len(bullet_lines(result.description.text)) == 7
     assert all(text in result.description.text for text in texts[:7])
     assert texts[7] not in result.description.text
-    assert result.normalization_applied is True
+    assert result.description.text != description
     assert [record.getMessage() for record in caplog.records] == [
         "merge_compact_bullet_trimmed source_count=2 bullets_before=8 bullets_after=7 cap=7"
     ]
@@ -213,8 +213,7 @@ def test_seven_bullets_two_sources_unchanged() -> None:
     description, texts = compact_description(7)
     result: QualityNormalization = normalized(description, "en", source_count=2)
     assert len(bullet_lines(result.description.text)) == 7
-    assert all(text in result.description.text for text in texts)
-    assert result.normalization_applied is False
+    assert result.description.text == description
 
 
 def test_eight_bullets_three_sources_unchanged() -> None:
@@ -260,20 +259,17 @@ def test_compact_trim_keeps_non_bullet_lines_in_place() -> None:
 def test_plain_marker_is_replaced_without_losing_the_first_word(line: str, expected: str) -> None:
     bullets: BulletNormalization = BulletNormalization.of(("Lead-in:", line))
     assert bullets.lines == ("Lead-in:", expected)
-    assert bullets.changed is True
 
 
 def test_first_non_bullet_line_only_collapses_spaces() -> None:
     bullets: BulletNormalization = BulletNormalization.of(("In  this   stream:", "🔹 point"))
     assert bullets.lines == ("In this stream:", "🔹 point")
-    assert bullets.changed is False
     assert bullets.neutral_bullets_count == 1
 
 
 def test_single_cta_paragraph_is_not_repeated_as_hook_and_cta() -> None:
     result: QualityNormalization = normalized("Subscribe to the channel and leave a comment below #stream", "en")
     assert result.description.text == "Subscribe to the channel and leave a comment below #stream"
-    assert result.normalization_applied is False
 
 
 def test_second_paragraph_repeating_the_hook_keeps_one_hook() -> None:
@@ -286,7 +282,6 @@ def test_second_paragraph_repeating_the_hook_keeps_one_hook() -> None:
 def test_clean_description_is_ok_and_unchanged() -> None:
     result: QualityNormalization = normalized(CLEAN_EN, "en")
     assert result.description.text == CLEAN_EN
-    assert result.normalization_applied is False
     assert result.diagnostics.semantic_gate_status is QualityGateStatus.OK
     assert result.diagnostics.semantic_gate_reason_codes == ()
 
@@ -318,7 +313,6 @@ def test_reason_codes_keep_donor_order() -> None:
 def test_empty_description_is_not_normalized_but_title_is_checked() -> None:
     result: QualityNormalization = normalized(" \r\n ", "ru", title="Проверка FЕКРИС")
     assert result.description.text == ""
-    assert result.normalization_applied is False
     assert result.diagnostics.block_spacing_ok is True
     assert result.diagnostics.hook_language_detected == "none"
     assert result.diagnostics.script_mix_suspects == ("FЕКРИС",)
@@ -327,18 +321,6 @@ def test_empty_description_is_not_normalized_but_title_is_checked() -> None:
 def test_windows_line_breaks_are_normalized() -> None:
     result: QualityNormalization = normalized(CLEAN_EN.replace("\n", "\r\n"), "en")
     assert result.description.text == CLEAN_EN
-
-
-def test_log_line_has_donor_keys_and_no_description_text() -> None:
-    result: QualityNormalization = normalized(CLEAN_EN.replace("budget amendments", "бюджетні поправки"), "en")
-    line: str = result.diagnostics.log_line
-    assert "semantic_gate_status=hard_reject" in line
-    assert "semantic_gate_reason_codes=script_mix_contamination" in line
-    assert "block_language_expected=en" in line
-    for text_line in CLEAN_EN.splitlines():
-        if len(text_line) > 12:
-            assert text_line not in line
-    assert "script_mix_suspects=none" in normalized(CLEAN_EN, "en").diagnostics.log_line
 
 
 def test_normalization_never_raises_on_arbitrary_text() -> None:

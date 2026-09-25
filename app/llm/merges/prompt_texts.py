@@ -5,8 +5,7 @@
 `merge_prompt_structural_rules.txt`, `merge_prompt_no_description.txt`, `merge_prompt_contracts.json`,
 `merge_retry_reinforcements.json` — значения побайтно. Тексты, которые донор держал в коде (политики ссылок и
 смешения тем, строка-якорь спикеров, запасные строки повтора), — ресурсы `merge_policy_*`, `merge_prompt_speaker_anchor.txt`,
-`merge_retry_fallback_lines.json`, `merge_retry_expanded_lines.json` без правки строк. Первая строка `.txt` и ключ
-`source` в `.json` — откуда перенесено.
+`merge_retry_fallback_lines.json` без правки строк. Первая строка `.txt` и ключ `source` в `.json` — откуда перенесено.
 
 Подстановка `{ключ}` в контракт и строки повтора — правило донора `_format_template_placeholders`: `replace` по ключам
 в порядке их перечисления и `strip` итога, а не `str.format` (в шаблонах бывают фигурные скобки не для подстановки).
@@ -31,7 +30,6 @@ LINK_POLICY_RESOURCE: Final[str] = "merge_policy_link.txt"
 CROSS_DOMAIN_POLICY_RESOURCE: Final[str] = "merge_policy_cross_domain.txt"
 RETRY_REINFORCEMENTS_RESOURCE: Final[str] = "merge_retry_reinforcements.json"
 RETRY_FALLBACKS_RESOURCE: Final[str] = "merge_retry_fallback_lines.json"
-EXPANDED_RETRY_RESOURCE: Final[str] = "merge_retry_expanded_lines.json"
 SERVICE_HINTS_RESOURCE: Final[str] = "merge_service_hints.txt"
 SOURCE_LINE_PREFIX: Final[str] = "#"
 JSON_VALUE_KEY: Final[str] = "value"
@@ -59,8 +57,7 @@ class MergePromptTexts:
     """Все тексты, из которых собирается промт merge и инструкция повтора.
 
     `contracts` и `retry_reinforcements` — боевые шаблоны как есть (края срезаются в момент применения, как у донора);
-    `retry_fallbacks` — строки повтора на случай, когда в `retry_reinforcements` нет сигнала; `expanded_retry` — строки
-    расширенного профиля повтора по сигналу плюс `unknown`, `three_plus_sources`, `four_plus_sources`.
+    `retry_fallbacks` — строки повтора на случай, когда в `retry_reinforcements` нет сигнала.
     """
 
     title_description: str
@@ -72,7 +69,6 @@ class MergePromptTexts:
     cross_domain_policy: str
     speaker_anchor: str
     retry_fallbacks: Mapping[str, tuple[str, ...]]
-    expanded_retry: Mapping[str, tuple[str, ...]]
     service_hints: tuple[str, ...]
 
     @classmethod
@@ -90,7 +86,6 @@ class MergePromptTexts:
             cross_domain_policy=cls._resource_text(CROSS_DOMAIN_POLICY_RESOURCE),
             speaker_anchor=cls._resource_text(SPEAKER_ANCHOR_RESOURCE),
             retry_fallbacks=cls._resource_lines(RETRY_FALLBACKS_RESOURCE),
-            expanded_retry=cls._resource_lines(EXPANDED_RETRY_RESOURCE),
             service_hints=TextResource(SERVICE_HINTS_RESOURCE).lines,
         )
 
