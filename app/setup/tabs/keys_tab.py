@@ -234,7 +234,8 @@ class KeysTab:
                 view.hide()
 
     def _load(self) -> None:
-        """Прочитать оба файла сейфа в модель; файл чужого формата — причина вместо строк."""
+        """Прочитать оба файла сейфа в модель. Свой повреждённый файл вкладку не закрывает — модель откроется
+        с пустым личным слоем; повреждён файл программы — причина вместо строк."""
         try:
             self.panel = KeysPanel.from_store(VaultStore.open(self.paths))
         except VaultFormatError as error:
@@ -244,7 +245,7 @@ class KeysTab:
     def _show(self) -> None:
         """Перерисовать вкладку по модели: оговорки сверху и строки полей; модели нет — только причина."""
         if self.panel is None:
-            self.notice.configure(text=msg.VAULT_FILE_BROKEN.format(error=self.load_error))
+            self.notice.configure(text=self.load_error.human)
             self.rows_frame.pack_forget()
             return
         self.notice.configure(text=NOTICE_JOINER.join(self.panel.notices))

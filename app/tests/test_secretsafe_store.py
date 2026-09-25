@@ -22,6 +22,7 @@ from app.secretsafe.crypto import (
     VaultCrypto,
     VaultFile,
     VaultFormatError,
+    VaultFormatReason,
 )
 from app.secretsafe.dpapi import Dpapi, DpapiUnavailable
 from app.secretsafe.store import (
@@ -34,6 +35,7 @@ from app.secretsafe.store import (
 )
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
+from app.ui import messages_ru as msg
 
 SUPPLIED_VALUES: dict[SecretField, str] = {
     SecretField.OPENAI_API_KEY: "sk-proj-supplied-Ab3dEfGhIjKlMnOpQrStUvWxYz0123456789",
@@ -538,6 +540,9 @@ def test_a_format_error_of_the_local_file_names_the_file(store: VaultStore) -> N
         store.load()
     assert store.local_path.name in str(raised.value)
     assert isinstance(raised.value.__cause__, VaultFormatError)     # причина сохранена через from
+    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.UNSUPPORTED_VERSION, VaultSource.LOCAL)
+    assert raised.value.detail == raised.value.__cause__.detail
+    assert raised.value.advice == msg.VAULT_FILE_ADVICE_LOCAL
 
 
 def test_a_format_error_of_the_supplied_file_names_the_file(store: VaultStore) -> None:
@@ -545,6 +550,8 @@ def test_a_format_error_of_the_supplied_file_names_the_file(store: VaultStore) -
     with pytest.raises(VaultFormatError) as raised:
         store.load()
     assert store.supplied_path.name in str(raised.value)
+    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.DAMAGED, VaultSource.SUPPLIED)
+    assert raised.value.advice == msg.VAULT_FILE_ADVICE_SUPPLIED
 
 
 def test_the_format_error_names_only_the_file_not_the_folder(store: VaultStore) -> None:
@@ -569,6 +576,7 @@ def test_a_local_file_that_is_not_utf8_is_a_format_error(store: VaultStore) -> N
     assert store.local_path.name in str(raised.value)
     assert str(store.local_path.parent) not in str(raised.value)
     assert isinstance(raised.value.__cause__, UnicodeDecodeError)
+    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.NOT_TEXT, VaultSource.LOCAL)
 
 
 def test_a_supplied_file_that_is_not_utf8_is_a_format_error(store: VaultStore) -> None:
@@ -588,6 +596,8 @@ def test_a_local_file_that_does_not_open_is_a_format_error_not_absent(store: Vau
     assert store.local_path.name in str(raised.value)
     assert str(store.local_path.parent) not in str(raised.value)
     assert isinstance(raised.value.__cause__, OSError)
+    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.FILE_UNREADABLE, VaultSource.LOCAL)
+    assert raised.value.detail not in str(raised.value)
 
 
 def test_a_supplied_file_that_does_not_open_is_a_format_error(store: VaultStore) -> None:
@@ -601,6 +611,86 @@ def test_a_missing_local_file_is_still_absent(store: VaultStore) -> None:
     _write_supplied(store, SUPPLIED_VALUES)
     assert not store.local_path.exists()
     assert store.load().local_state is LocalVaultState.ABSENT
+
+
+# --- чтение для настройщика: повреждённый личный файл — не тупик (D9)
+
+
+def test_the_local_states_are_the_four_named_ones() -> None:
+    assert [state.value for state in LocalVaultState] == ["absent", "read", "unreadable", "broken"]
+
+
+@pytest.mark.parametrize("broken", ["not_utf8", "not_json", "folder"])
+def test_load_still_refuses_a_broken_local_file(store: VaultStore, broken: str) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    _break_local(store, broken)
+    with pytest.raises(VaultFormatError) as raised:
+        store.load()
+    assert raised.value.source is VaultSource.LOCAL and raised.value.is_replaceable
+
+
+@pytest.mark.parametrize("broken", ["not_utf8", "not_json", "folder"])
+def test_load_for_setup_gives_the_supplied_layer_over_an_empty_broken_own_one(
+    store: VaultStore, broken: str
+) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    _break_local(store, broken)
+    load: VaultLoad = store.load_for_setup()
+    assert load.local_state is LocalVaultState.BROKEN
+    assert not load.is_local_unreadable
+    assert load.own.entries == {}
+    assert load.vault.is_ready
+    for field, value in SUPPLIED_VALUES.items():
+        assert load.vault.origin_of(field) is VaultOrigin.SUPPLIED
+        assert load.supplied.get(field) == _secret(field, value)
+
+
+def test_load_for_setup_logs_the_broken_local_file_without_values(
+    store: VaultStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    _break_local(store, "not_json")
+    with caplog.at_level("INFO", logger="livecraft"):
+        store.load_for_setup()
+    lines: list[str] = [record.getMessage() for record in caplog.records]
+    broken: list[str] = [line for line in lines if line.startswith("vault_local_broken")]
+    assert len(broken) == 1
+    assert "source=local" in broken[0] and f"reason={VaultFormatReason.DAMAGED.value}" in broken[0]
+    assert any(line.startswith("vault_loaded") and "local=broken" in line for line in lines)
+    assert all(value not in line for line in lines for value in SUPPLIED_VALUES.values())
+
+
+def test_load_for_setup_reads_a_whole_local_file_as_load_does(store: VaultStore) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.save_local(_own_vault(OWN_VALUES))
+    assert store.load_for_setup() == store.load()
+
+
+def test_load_for_setup_refuses_a_broken_supplied_file(store: VaultStore) -> None:
+    store.supplied_path.write_text("не json", encoding=VAULT_FILE_ENCODING)
+    with pytest.raises(VaultFormatError) as raised:
+        store.load_for_setup()
+    assert raised.value.source is VaultSource.SUPPLIED and not raised.value.is_replaceable
+    assert raised.value.advice == msg.VAULT_FILE_ADVICE_SUPPLIED
+
+
+def test_saving_over_a_broken_local_file_replaces_it(store: VaultStore) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    _break_local(store, "not_json")
+    store.save_local(_own_vault(OWN_VALUES))
+    load: VaultLoad = store.load()
+    assert load.local_state is LocalVaultState.READ
+    assert load.own.get(SecretField.SHEETS_ID) == _secret(SecretField.SHEETS_ID, OWN_VALUES[SecretField.SHEETS_ID])
+
+
+def _break_local(store: VaultStore, how: str) -> None:
+    """Повредить личный файл: не текст, не JSON или папка на его месте."""
+    if how == "not_utf8":
+        store.local_path.write_bytes(NOT_UTF8_BYTES)
+    elif how == "not_json":
+        store.local_path.write_text("{", encoding=VAULT_FILE_ENCODING)
+    else:
+        store.local_path.mkdir()
 
 
 # --- VaultStore.open собирает объект из путей установки

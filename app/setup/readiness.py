@@ -76,8 +76,9 @@ class ModeReadiness:
 
     Первая часть режима — его основа: в режиме А из таблицы берутся все слоты, и без чтения таблицы не
     делается ничего. Поэтому не готовая основа — это «не готово ничего», даже если у остальных частей
-    всё настроено. `is_fixable_in_setup` — ложь, когда файл ключей и ссылок повреждён: окно правку такого
-    файла не позволяет, открывать его незачем.
+    всё настроено. `is_fixable_in_setup` — ложь, когда повреждён файл ключей и ссылок, пришедший с программой:
+    его заменяет только установка, и окно открывать незачем. Повреждённый личный файл окно заменяет первым
+    сохранением — тогда истина.
     """
 
     mode: RunMode
@@ -218,7 +219,7 @@ class Readiness:
         return ModeReadiness(
             mode=mode,
             parts=tuple(self.part(part) for part in mode.parts(no_llm)),
-            is_fixable_in_setup=self.vault_error is None,
+            is_fixable_in_setup=self.vault_error is None or self.vault_error.is_replaceable,
         )
 
     @property
@@ -226,7 +227,7 @@ class Readiness:
         """Что мешает полной настройке — строками для оператора (окно, --check, --status): конфиги, потом сейф."""
         lines: list[str] = [self._config_problem(error) for error in self.config_errors]
         if self.vault_error is not None:
-            lines.append(msg.VAULT_FILE_BROKEN.format(error=self.vault_error))
+            lines.append(self.vault_error.human)
         elif self.vault is not None and self.vault.admission_reason is not None:
             lines.append(self.vault.admission_reason)
         return tuple(lines)
@@ -282,7 +283,7 @@ class Readiness:
 
     def _vault_gaps(self, fields: tuple[SecretField, ...]) -> tuple[str, ...]:
         if self.vault_error is not None:
-            return (msg.READINESS_GAP_VAULT_BROKEN.format(error=self.vault_error),)
+            return (msg.READINESS_GAP_VAULT_BROKEN.format(problem=self.vault_error.problem),)
         vault: Vault = Vault.empty() if self.vault is None else self.vault
         return tuple(
             msg.READINESS_GAP_IN_SETUP.format(what=field.human_label, tab=msg.SETUP_TAB_KEYS)

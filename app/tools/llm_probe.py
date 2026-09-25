@@ -129,7 +129,7 @@ class LlmProbe:
         self.say(msg.LLM_PROBE_TITLE)
         readiness: Readiness = Readiness.check(self.paths)
         if readiness.vault_error is not None:
-            return self._refuse(msg.VAULT_FILE_BROKEN.format(error=readiness.vault_error))
+            return self._refuse(readiness.vault_error.human)
         vault: Vault = readiness.vault if readiness.vault is not None else Vault.empty()
         install_secret_filter(vault)                 # до первого обращения к OpenAI (§7.4)
         for warning in readiness.warnings:

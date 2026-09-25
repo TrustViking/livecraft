@@ -103,7 +103,7 @@ class SheetsProbe:
             loaded: VaultLoad = VaultStore.open(self.paths).load()
             settings: LivecraftSettings = load_settings(self.paths.config_file)
         except VaultFormatError as error:
-            return self._refuse(msg.VAULT_FILE_BROKEN.format(error=error))
+            return self._refuse(error.human)
         except ConfigError as error:
             return self._refuse(str(error))
         install_secret_filter(loaded.vault)          # до первого обращения к Google (§7.4)

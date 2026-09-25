@@ -122,6 +122,21 @@ def test_probe_without_vault_is_code_2_and_does_not_open_google(
     assert SecretField.SHEETS_ID.human_label in "\n".join(lines)
 
 
+def test_probe_with_a_broken_vault_file_names_it_in_russian_and_is_code_2(
+    ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Файл ключей повреждён: имя файла, причина и действие по-русски; английской подробности нет (D4)."""
+    ready_paths.vault_local_file.write_text("{не json", encoding="utf-8")
+    logins: list[GoogleLogin] = patch_open(monkeypatch, _FakeReader(values=VALUES))
+    code, lines = run_probe(ready_paths)
+    assert code == ProbeExit.CONFIG and logins == []
+    assert lines[-1] == msg.SETUP_REQUIRED
+    refusal: str = lines[-2]
+    assert ready_paths.vault_local_file.name in refusal and msg.VAULT_FILE_ADVICE_LOCAL in refusal
+    assert "JSON" not in refusal
+    assert str(ready_paths.vault_local_file.parent) not in refusal
+
+
 def test_probe_without_settings_is_code_2(ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch) -> None:
     ready_paths.config_file.unlink()
     logins: list[GoogleLogin] = patch_open(monkeypatch, _FakeReader(values=VALUES))

@@ -552,20 +552,51 @@ def test_an_unreadable_own_vault_is_announced_and_the_run_goes_on(
     ) in out
 
 
-def test_a_broken_own_vault_file_stops_the_run_with_code_2(
+def test_a_broken_own_vault_file_opens_the_setup_window_with_code_2(
     ready_root: LivecraftPaths,
     capsys: pytest.CaptureFixture[str],
     window_calls: list[LivecraftPaths],
 ) -> None:
-    """Повреждённый vault.local.dat — не «файла нет»: отказ с именем файла, без отката на поставку (§16)."""
+    """Повреждённый vault.local.dat — не «файла нет» и не тупик: код 2 без отката на поставку (§16)
+    и окно настройщика, где первое сохранение заменит файл (D9)."""
     ready_root.vault_local_file.write_bytes(b"\xff\xfe\x00vault\x80\x81")
     assert run_cli([]) == int(ExitCode.CONFIG)
     out: str = capsys.readouterr().out
     assert ready_root.vault_local_file.name in out
-    assert msg.SETUP_OPENING not in out                 # окно правку повреждённого файла не позволяет
-    assert window_calls == []
+    assert msg.SETUP_OPENING in out
+    assert window_calls == [ready_root]
     assert msg.VAULT_LOCAL_UNREADABLE not in out
     assert "ВНИМАНИЕ" not in out
+
+
+def test_a_broken_supplied_vault_file_stops_the_run_with_code_2_and_no_window(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+    window_calls: list[LivecraftPaths],
+) -> None:
+    """Повреждённый vault.dat окно не заменит: строки с одним действием — переустановить — и код 2."""
+    ready_root.vault_file.write_bytes(b"\xff\xfe\x00vault\x80\x81")
+    assert run_cli([]) == int(ExitCode.CONFIG)
+    out: str = capsys.readouterr().out
+    assert ready_root.vault_file.name in out
+    assert msg.VAULT_FILE_ADVICE_SUPPLIED in out
+    assert msg.SETUP_OPENING not in out
+    assert window_calls == []
+
+
+def test_a_broken_vault_file_goes_to_the_log_with_reason_and_detail(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+    window_calls: list[LivecraftPaths],
+) -> None:
+    """Английская подробность — только в лог, строкой vault_error с причиной (D4); в консоли её нет."""
+    ready_root.vault_file.write_text("{", encoding=VAULT_FILE_ENCODING)
+    run_cli([])
+    out: str = capsys.readouterr().out
+    [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
+    text: str = log_file.read_text(encoding="utf-8")
+    assert "vault_error file=vault.dat source=supplied reason=damaged detail=vault file is not valid JSON" in text
+    assert "JSON" not in out
 
 
 def test_the_secret_filter_works_during_a_normal_run(

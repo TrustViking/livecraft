@@ -118,6 +118,9 @@ def test_broken_vault_is_code_2(ready_paths: LivecraftPaths) -> None:
     ready_paths.vault_file.write_text("{не json", encoding="utf-8")
     code, lines = run_probe(ready_paths, FakeLlmSdk())
     assert code == ProbeExit.CONFIG and lines[-1] == msg.SETUP_REQUIRED
+    refusal: str = lines[-2]
+    assert ready_paths.vault_file.name in refusal and msg.VAULT_FILE_ADVICE_SUPPLIED in refusal
+    assert "JSON" not in refusal
 
 
 def test_main_on_an_empty_root_is_code_2(monkeypatch: pytest.MonkeyPatch, livecraft_paths: LivecraftPaths) -> None:

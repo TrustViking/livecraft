@@ -23,8 +23,11 @@ from app.secretsafe.crypto import (
     VaultDecryptError,
     VaultFile,
     VaultFormatError,
+    VaultFormatReason,
+    VaultSource,
 )
 from app.secretsafe.value import SecretField
+from app.ui import messages_ru as msg
 
 VAULT_KEY: bytes = bytes(range(VAULT_KEY_BYTES))
 OTHER_KEY: bytes = bytes(range(100, 100 + VAULT_KEY_BYTES))
@@ -148,20 +151,25 @@ def test_the_decrypt_error_text_carries_neither_value_nor_key(crypto: VaultCrypt
 
 @pytest.mark.parametrize("key", [b"", b"short", bytes(VAULT_KEY_BYTES - 1), bytes(VAULT_KEY_BYTES + 1)])
 def test_a_vault_key_of_the_wrong_length_is_refused(key: bytes) -> None:
-    with pytest.raises(VaultFormatError):
+    with pytest.raises(VaultFormatError) as raised:
         VaultCrypto(key=key, salt=SALT)
+    assert raised.value.reason is VaultFormatReason.KEY_INVALID
+    assert str(VAULT_KEY_BYTES) in raised.value.detail
 
 
 @pytest.mark.parametrize("salt", [b"", bytes(SALT_BYTES - 1), bytes(SALT_BYTES + 1)])
 def test_a_salt_of_the_wrong_length_is_refused(salt: bytes) -> None:
-    with pytest.raises(VaultFormatError):
+    with pytest.raises(VaultFormatError) as raised:
         VaultCrypto(key=VAULT_KEY, salt=salt)
+    assert raised.value.reason is VaultFormatReason.KEY_INVALID
+    assert str(SALT_BYTES) in raised.value.detail
 
 
 def test_the_refusal_text_carries_no_key_bytes() -> None:
     with pytest.raises(VaultFormatError) as raised:
         VaultCrypto(key=b"secret-but-too-short", salt=SALT)
     assert "secret-but-too-short" not in str(raised.value)
+    assert "secret-but-too-short" not in raised.value.log_line
 
 
 # --- файл сейфа: render и parse
@@ -233,13 +241,15 @@ def test_an_unknown_format_version_is_an_error(version: Any) -> None:
     )
     with pytest.raises(VaultFormatError) as raised:
         VaultFile.parse(text)
-    assert str(FORMAT_VERSION) in str(raised.value)
+    assert raised.value.reason is VaultFormatReason.UNSUPPORTED_VERSION
+    assert str(FORMAT_VERSION) in raised.value.detail
 
 
 @pytest.mark.parametrize("text", ["", "не json", "[]", '"строка"', "42", "{"])
 def test_a_file_that_is_not_a_json_object_is_an_error(text: str) -> None:
-    with pytest.raises(VaultFormatError):
+    with pytest.raises(VaultFormatError) as raised:
         VaultFile.parse(text)
+    assert raised.value.reason is VaultFormatReason.DAMAGED
 
 
 @pytest.mark.parametrize(
@@ -250,14 +260,16 @@ def test_a_broken_salt_is_an_error(salt: Any) -> None:
     text: str = json.dumps({KEY_VERSION: FORMAT_VERSION, KEY_SALT: salt, KEY_FIELDS: {}})
     with pytest.raises(VaultFormatError) as raised:
         VaultFile.parse(text)
-    assert KEY_SALT in str(raised.value)
+    assert raised.value.reason is VaultFormatReason.DAMAGED
+    assert KEY_SALT in raised.value.detail
 
 
 def test_a_missing_fields_key_is_an_error() -> None:
     text: str = json.dumps({KEY_VERSION: FORMAT_VERSION, KEY_SALT: base64.b64encode(SALT).decode("ascii")})
     with pytest.raises(VaultFormatError) as raised:
         VaultFile.parse(text)
-    assert KEY_FIELDS in str(raised.value)
+    assert raised.value.reason is VaultFormatReason.DAMAGED
+    assert KEY_FIELDS in raised.value.detail
 
 
 @pytest.mark.parametrize(
@@ -285,7 +297,8 @@ def test_a_broken_field_record_is_an_error_naming_the_field(record: Any) -> None
     )
     with pytest.raises(VaultFormatError) as raised:
         VaultFile.parse(text)
-    assert SecretField.KEY_FORM_URL.value in str(raised.value)
+    assert raised.value.reason is VaultFormatReason.DAMAGED
+    assert SecretField.KEY_FORM_URL.value in raised.value.detail
 
 
 def test_the_format_error_text_carries_no_secret_material(crypto: VaultCrypto) -> None:
@@ -295,10 +308,10 @@ def test_the_format_error_text_carries_no_secret_material(crypto: VaultCrypto) -
     )
     with pytest.raises(VaultFormatError) as raised:
         VaultFile.parse(text)
-    message: str = str(raised.value)
-    assert VAULT_KEY.hex() not in message
-    assert base64.b64encode(SALT).decode("ascii") not in message
-    assert all(value not in message for value in VALUES.values())
+    for message in (str(raised.value), raised.value.log_line):
+        assert VAULT_KEY.hex() not in message
+        assert base64.b64encode(SALT).decode("ascii") not in message
+        assert all(value not in message for value in VALUES.values())
 
 
 # --- константы формата
@@ -371,7 +384,8 @@ def test_a_broken_key_record_is_an_error(wrapped: Any) -> None:
     )
     with pytest.raises(VaultFormatError) as raised:
         VaultFile.parse(text)
-    assert KEY_WRAPPED in str(raised.value)
+    assert raised.value.reason is VaultFormatReason.DAMAGED
+    assert repr(KEY_WRAPPED) in raised.value.detail
 
 
 def test_the_key_record_error_carries_no_key_material() -> None:
@@ -386,3 +400,71 @@ def test_the_key_record_error_carries_no_key_material() -> None:
     with pytest.raises(VaultFormatError) as raised:
         VaultFile.parse(text)
     assert "секретный мусор" not in str(raised.value)
+    assert "секретный мусор" not in raised.value.log_line
+
+
+# --- ошибка формата: причина для человека, подробность — только в лог (D4)
+
+
+def _parse_error(text: str) -> VaultFormatError:
+    with pytest.raises(VaultFormatError) as raised:
+        VaultFile.parse(text)
+    return raised.value
+
+
+def test_every_reason_has_a_russian_text() -> None:
+    assert set(msg.VAULT_FORMAT_REASON_TEXT) == {reason.value for reason in VaultFormatReason}
+    for reason in VaultFormatReason:
+        assert reason.human == msg.VAULT_FORMAT_REASON_TEXT[reason.value]
+
+
+def test_the_text_of_the_error_is_the_human_line_without_the_detail() -> None:
+    error: VaultFormatError = _parse_error("не json")
+    assert str(error) == error.human
+    assert error.detail and error.detail not in str(error)
+    assert error.reason.human in str(error)
+
+
+def test_an_unlocated_error_names_only_the_reason_and_the_supplied_advice() -> None:
+    error: VaultFormatError = _parse_error("[]")
+    assert (error.file_name, error.source) == (None, None)
+    assert error.problem == VaultFormatReason.DAMAGED.human
+    assert not error.is_replaceable
+    assert error.human == msg.VAULT_FILE_BROKEN.format(
+        problem=VaultFormatReason.DAMAGED.human, advice=msg.VAULT_FILE_ADVICE_SUPPLIED
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "advice", "is_replaceable"),
+    [
+        (VaultSource.LOCAL, msg.VAULT_FILE_ADVICE_LOCAL, True),
+        (VaultSource.SUPPLIED, msg.VAULT_FILE_ADVICE_SUPPLIED, False),
+    ],
+)
+def test_located_keeps_the_reason_and_detail_and_names_the_file(
+    source: VaultSource, advice: str, is_replaceable: bool
+) -> None:
+    original: VaultFormatError = _parse_error(json.dumps({KEY_VERSION: 7, KEY_SALT: "", KEY_FIELDS: {}}))
+    located: VaultFormatError = original.located("vault.local.dat", source)
+    assert (located.reason, located.detail) == (original.reason, original.detail)
+    assert (located.file_name, located.source) == ("vault.local.dat", source)
+    assert located.is_replaceable is is_replaceable
+    assert located.advice == advice
+    assert located.problem == msg.VAULT_FILE_PROBLEM.format(
+        file="vault.local.dat", reason=VaultFormatReason.UNSUPPORTED_VERSION.human
+    )
+    assert str(located) == msg.VAULT_FILE_BROKEN.format(problem=located.problem, advice=advice)
+
+
+def test_the_log_line_carries_file_source_reason_and_detail() -> None:
+    error: VaultFormatError = _parse_error("{").located("vault.dat", VaultSource.SUPPLIED)
+    line: str = error.log_line
+    assert "file=vault.dat" in line and "source=supplied" in line
+    assert f"reason={VaultFormatReason.DAMAGED.value}" in line
+    assert f"detail={error.detail}" in line
+
+
+def test_the_log_line_of_an_unlocated_error_marks_file_and_source_absent() -> None:
+    error: VaultFormatError = _parse_error("{")
+    assert error.log_line.startswith("file=- source=- reason=damaged detail=")

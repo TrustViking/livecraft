@@ -9,8 +9,9 @@ from typing import Any
 import pytest
 
 from app.paths import LivecraftPaths
-from app.secretsafe.crypto import VAULT_KEY_BYTES, VaultFormatError
+from app.secretsafe.crypto import VAULT_KEY_BYTES, VaultFormatError, VaultFormatReason, VaultSource
 from app.secretsafe.store import GENERATED_KEY_MODULE, GENERATED_KEY_PARTS, ProgramKey, VaultStore
+from app.ui import messages_ru as msg
 
 KEY: bytes = bytes(range(VAULT_KEY_BYTES))
 
@@ -69,6 +70,9 @@ def test_a_key_file_that_does_not_open_is_a_format_error_not_absent(dev_key_path
     assert "program.key" in text
     assert str(dev_key_path.parent) not in text          # только имя файла, без папки
     assert isinstance(raised.value.__cause__, OSError)
+    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.FILE_UNREADABLE, VaultSource.SUPPLIED)
+    assert text == raised.value.human and raised.value.detail not in text
+    assert raised.value.advice == msg.VAULT_FILE_ADVICE_SUPPLIED
 
 
 def test_a_key_file_that_does_not_open_stops_the_store_from_opening(livecraft_paths: LivecraftPaths) -> None:

@@ -227,7 +227,9 @@ def test_a_vault_file_of_an_unknown_format_is_named(ready_paths: LivecraftPaths)
     assert readiness.vault_error is not None
     assert not readiness.is_ready
     assert any(ready_paths.vault_local_file.name in line for line in readiness.problems)
-    assert readiness.problems[-1] == msg.VAULT_FILE_BROKEN.format(error=readiness.vault_error)
+    assert readiness.problems[-1] == readiness.vault_error.human
+    assert msg.VAULT_FILE_ADVICE_LOCAL in readiness.problems[-1]
+    assert readiness.vault_error.detail not in readiness.problems[-1]
     assert "vault=broken" in readiness.log_line
 
 
@@ -240,7 +242,7 @@ def _assert_broken_local_file(paths: LivecraftPaths, readiness: Readiness) -> No
     assert readiness.vault_error is not None
     assert readiness.vault is None
     assert any(paths.vault_local_file.name in line for line in readiness.problems)
-    assert readiness.problems[-1] == msg.VAULT_FILE_BROKEN.format(error=readiness.vault_error)
+    assert readiness.problems[-1] == readiness.vault_error.human
     assert readiness.warnings == ()
 
 
@@ -504,8 +506,26 @@ def test_the_mode_lines_come_one_per_part_in_work_order(ready_paths: LivecraftPa
     assert len(mode.lines) == 4
 
 
-def test_a_broken_vault_file_blocks_the_table_and_is_not_fixable_in_the_window(ready_paths: LivecraftPaths) -> None:
+def test_a_broken_own_vault_file_blocks_the_table_and_is_fixable_in_the_window(ready_paths: LivecraftPaths) -> None:
+    """Свой повреждённый файл окно заменяет первым сохранением: открывать его есть зачем (D9)."""
     ready_paths.vault_local_file.write_bytes(NOT_UTF8_BYTES)
-    mode: ModeReadiness = _configured(ready_paths).for_mode(RunMode.ALL, no_llm=False)
-    assert mode.is_nothing_ready and not mode.is_fixable_in_setup
+    readiness: Readiness = _configured(ready_paths)
+    mode: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=False)
+    assert mode.is_nothing_ready and mode.is_fixable_in_setup
+    assert readiness.vault_error is not None
+    gap: str = msg.READINESS_GAP_VAULT_BROKEN.format(problem=readiness.vault_error.problem)
+    assert gap in mode.parts[0].action     # type: ignore[operator]
     assert ready_paths.vault_local_file.name in mode.parts[0].action     # type: ignore[operator]
+
+
+def test_a_broken_supplied_vault_file_blocks_the_table_and_is_not_fixable_in_the_window(
+    ready_paths: LivecraftPaths,
+) -> None:
+    """Файл, пришедший с программой, окно не заменит: только установка."""
+    ready_paths.vault_file.write_bytes(NOT_UTF8_BYTES)
+    readiness: Readiness = _configured(ready_paths)
+    mode: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=False)
+    assert mode.is_nothing_ready and not mode.is_fixable_in_setup
+    assert ready_paths.vault_file.name in mode.parts[0].action     # type: ignore[operator]
+    assert readiness.problems[-1] == readiness.vault_error.human     # type: ignore[union-attr]
+    assert msg.VAULT_FILE_ADVICE_SUPPLIED in readiness.problems[-1]

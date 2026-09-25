@@ -73,7 +73,8 @@ READINESS_GAP_SETTINGS: Final[str] = "настройки запуска ({key} �
 READINESS_GAP_FORM: Final[str] = "ссылка на Google форму для ключей стрима"
 READINESS_GAP_CHANNELS_MISSING: Final[str] = "каналы YouTube не заданы"
 READINESS_GAP_CHANNELS: Final[str] = "каналы YouTube ({key} — {problem})"
-READINESS_GAP_VAULT_BROKEN: Final[str] = "ключи и ссылки не читаются: {error}"
+# {problem} — VaultFormatError.problem: файл и причина.
+READINESS_GAP_VAULT_BROKEN: Final[str] = "ключи и ссылки не читаются: {problem}"
 # client_secret.json в настройщике не задаётся (§9): это файл OAuth-клиента, его кладут рядом с программой.
 READINESS_GAP_CLIENT_SECRET: Final[str] = "нет файла входа в Google client_secret.json — положите его сюда: {path}"
 # Полная проверка (окно настройщика, --check, --status): нет файла каналов — не ошибка, а «ещё не задано».
@@ -107,10 +108,24 @@ VAULT_LOCAL_UNREADABLE: Final[str] = (
     "вместе с ней (ключ OpenAI, таблица плана, форма ключей). Так бывает после переноса программы на другой "
     "компьютер или смены пользователя Windows. Введите свои значения заново: livecraft.bat --setup."
 )
-VAULT_FILE_BROKEN: Final[str] = (
-    "Ключи и ссылки не читаются: {error}. Если это vault.local.dat — введите свои значения заново через "
-    "livecraft.bat --setup; если vault.dat — переустановите программу."
+# Файл ключей и ссылок не читается (app\secretsafe\crypto.py::VaultFormatError): причина — по-русски, английская
+# подробность — только в лог. Ключи VAULT_FORMAT_REASON_TEXT — значения VaultFormatReason. {problem} —
+# VAULT_FILE_PROBLEM или одна причина, когда файл неизвестен; {advice} — одно действие: свой файл заменяет
+# настройщик, файл программы — только установка.
+VAULT_FORMAT_REASON_TEXT: Final[dict[str, str]] = {
+    "file_unreadable": "файл не открывается — его держит другая программа, нет прав или на его месте папка",
+    "not_text": "файл повреждён — это не текст",
+    "damaged": "файл повреждён — внутри не то, что записывает программа",
+    "unsupported_version": "файл записан другой версией программы",
+    "key_invalid": "ключ файла неверной длины",
+}
+VAULT_FILE_PROBLEM: Final[str] = "{file} — {reason}"
+VAULT_FILE_BROKEN: Final[str] = "Ключи и ссылки не читаются: {problem}. {advice}"
+VAULT_FILE_ADVICE_LOCAL: Final[str] = (
+    "Откройте «Livecraft — настройка», вкладку «Ключи и ссылки», и введите свои значения заново — сохранение "
+    "заменит этот файл."
 )
+VAULT_FILE_ADVICE_SUPPLIED: Final[str] = "Переустановите программу."
 
 # --- конфиги (CLAUDE.md §5): два JSON, все поля обязательные, умолчаний и копирования примеров нет
 CONFIG_ERROR: Final[str] = "Ошибка в конфиге {path}: {key} — {problem}"
@@ -310,6 +325,9 @@ SETUP_KEYS_NOTICE_NO_OWN: Final[str] = (
 SETUP_KEYS_NOTICE_LOCAL_UNREADABLE: Final[str] = (
     "Ваши прежние значения не прочитались — так бывает после переноса программы на другой компьютер или смены "
     "пользователя Windows. Первое сохранение заменит их тем, что вы введёте сейчас."
+)
+SETUP_KEYS_NOTICE_LOCAL_BROKEN: Final[str] = (
+    "Файл ваших ключей и ссылок повреждён — введите свои значения заново: сохранение заменит его."
 )
 
 # --- настройщик, вкладка «Каналы YouTube» (CLAUDE.md §8.2, п.2). {key} и {problem} — из ConfigError загрузчика.

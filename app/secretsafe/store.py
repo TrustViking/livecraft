@@ -20,11 +20,16 @@
 `main`, не этот объект; «файла нет» — только когда его действительно нет) и
 `DpapiUnavailable` из `save_local` (записать локальный сейф без DPAPI нельзя, и делать вид, что записали,
 запрещено).
+
+Настройщик читает сейф через `load_for_setup`: повреждённый личный файл там — не тупик, а пустой личный
+слой с состоянием BROKEN; первое сохранение заменит файл (`save_local` старый файл не читает). Повреждённый
+поставочный файл настройщик не чинит — `VaultFormatError` наружу и там.
 """
 from __future__ import annotations
 
 import base64
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -40,6 +45,8 @@ from app.secretsafe.crypto import (
     VaultDecryptError,
     VaultFile,
     VaultFormatError,
+    VaultFormatReason,
+    VaultSource,
 )
 from app.secretsafe.dpapi import Dpapi, DpapiUnavailable
 from app.secretsafe.value import SecretField, SecretValue
@@ -54,23 +61,20 @@ GENERATED_KEY_MODULE: Final[str] = "app.secretsafe.program_key"
 GENERATED_KEY_PARTS: Final[str] = "PARTS"
 
 
-class VaultSource(str, Enum):
-    """Какой файл сейфа имеется в виду. Значение уходит в лог вместо пути: путь секретов не печатаем."""
-
-    SUPPLIED = "supplied"
-    LOCAL = "local"
-
-
 class LocalVaultState(str, Enum):
-    """Что с личным сейфом: его нет, он прочитан, или он есть, но не читается.
+    """Что с личным сейфом: его нет, он прочитан, он целый, но не наш, или он повреждён.
 
     Пустой, но прочитанный файл — READ: пользователь сбросил всё к поставке, это не поломка. UNREADABLE —
-    файл есть, а значений из него нет: оператор должен узнать об этом громко (§16, требование к связке с main).
+    файл целый, а значений из него нет (DPAPI не развернул ключ, блоб не расшифровался): оператор должен
+    узнать об этом громко (§16, требование к связке с main). BROKEN — файл есть, но повреждён или не
+    открывается; бывает только у `VaultStore.load_for_setup`: запуск на таком файле останавливается
+    `VaultFormatError`, а настройщик открывается с пустым личным слоем и заменяет файл первым сохранением.
     """
 
     ABSENT = "absent"
     READ = "read"
     UNREADABLE = "unreadable"
+    BROKEN = "broken"
 
 
 @dataclass(frozen=True)
@@ -175,8 +179,12 @@ class ProgramKey:
         except FileNotFoundError:
             return None      # обычная установка без своего ключа
         except OSError as error:
-            reason: str = error.strerror or type(error).__name__
-            raise VaultFormatError(f"{path.name}: {reason}") from error
+            raise VaultFormatError(
+                VaultFormatReason.FILE_UNREADABLE,
+                error.strerror or type(error).__name__,
+                file_name=path.name,
+                source=VaultSource.SUPPLIED,
+            ) from error
         return cls._checked(cls._as_key_bytes(raw), str(path))
 
     @staticmethod
@@ -225,9 +233,24 @@ class VaultStore:
         return self.dpapi.is_available
 
     def load(self) -> VaultLoad:
-        """Оба файла в один сейф: поле локального перекрывает поле поставочного (§7.3)."""
+        """Оба файла в один сейф: поле локального перекрывает поле поставочного (§7.3).
+
+        Повреждённый любой из двух файлов — VaultFormatError наружу: запуск на нём не идёт (код 2, задача 1.5a).
+        """
+        return self._load(self._read_local)
+
+    def load_for_setup(self) -> VaultLoad:
+        """То же для настройщика: повреждённый личный файл — пустой личный слой и BROKEN, а не отказ.
+
+        Настройщик — единственное место, где такой файл чинится: первое сохранение его заменит. Повреждённый
+        поставочный файл — VaultFormatError наружу, как у `load`: его заменяет только установка.
+        """
+        return self._load(self._read_local_for_setup)
+
+    def _load(self, read_local: Callable[[], _LocalRead]) -> VaultLoad:
+        """Общий путь чтения: сначала поставочный слой, затем личный — тем способом, который задал вызывающий."""
         supplied: Vault = self._read_supplied()
-        local: _LocalRead = self._read_local()
+        local: _LocalRead = read_local()
         loaded: VaultLoad = VaultLoad.from_layers(supplied=supplied, own=local.vault, local_state=local.state)
         LOGGER.info("vault_loaded fields=%s local=%s", loaded.vault.log_line, local.state.value)
         return loaded
@@ -264,7 +287,7 @@ class VaultStore:
 
     def _read_supplied(self) -> Vault:
         """Поставочный сейф: ключ приходит извне, записи «key» в файле нет и быть не должно."""
-        file: VaultFile | None = self._read_file(self.supplied_path)
+        file: VaultFile | None = self._read_file(self.supplied_path, VaultSource.SUPPLIED)
         if file is None:
             return Vault.empty()
         key: bytes | None = self.program_key.material
@@ -279,7 +302,7 @@ class VaultStore:
 
         Состояние решается здесь, где оно известно, а не догадкой по пустоте сейфа снаружи.
         """
-        file: VaultFile | None = self._read_file(self.local_path)
+        file: VaultFile | None = self._read_file(self.local_path, VaultSource.LOCAL)
         if file is None:
             return _LocalRead(vault=Vault.empty(), state=LocalVaultState.ABSENT)
         key: bytes | None = self._unwrap_local_key(file)
@@ -289,6 +312,14 @@ class VaultStore:
         if decrypted is None:
             return _LocalRead(vault=Vault.empty(), state=LocalVaultState.UNREADABLE)
         return _LocalRead(vault=decrypted, state=LocalVaultState.READ)
+
+    def _read_local_for_setup(self) -> _LocalRead:
+        """Личный сейф для настройщика: повреждённый файл — пустой слой BROKEN; причина — в лог, не наружу."""
+        try:
+            return self._read_local()
+        except VaultFormatError as error:
+            LOGGER.warning("vault_local_broken %s", error.log_line)
+            return _LocalRead(vault=Vault.empty(), state=LocalVaultState.BROKEN)
 
     def _unwrap_local_key(self, file: VaultFile) -> bytes | None:
         """Нет записи «key» или DPAPI её не развернул — файл нечитаем, работаем на поставочном (§14, решение 9)."""
@@ -307,28 +338,32 @@ class VaultStore:
             return None
         return key
 
-    def _read_file(self, path: Path) -> VaultFile | None:
+    def _read_file(self, path: Path, source: VaultSource) -> VaultFile | None:
         """Нет файла — нет его полей; файл есть, но не открывается или не текст, и чужой формат —
-        VaultFormatError с именем файла (§7.3).
+        VaultFormatError с именем файла и тем, чей он (§7.3).
 
         «Не открылся» — это не «нет»: заблокированный антивирусом или синхронизацией личный файл иначе
-        читался бы как отсутствующий, и работа молча шла бы на поставочных значениях (§16). В тексте
-        ошибки — имя файла и короткая причина, без полного пути; исходная ошибка сохраняется через from.
+        читался бы как отсутствующий, и работа молча шла бы на поставочных значениях (§16). В ошибке —
+        имя файла без полного пути, причина и подробность для лога; исходная ошибка сохраняется через from.
         """
         try:
             text: str = path.read_text(encoding=VAULT_FILE_ENCODING)
         except FileNotFoundError:
             return None
         except OSError as error:
-            reason: str = error.strerror or type(error).__name__
-            raise VaultFormatError(f"{path.name}: {reason}") from error
+            detail: str = error.strerror or type(error).__name__
+            raise VaultFormatError(
+                VaultFormatReason.FILE_UNREADABLE, detail, file_name=path.name, source=source
+            ) from error
         except UnicodeDecodeError as error:
-            raise VaultFormatError(f"{path.name}: {error.reason}") from error
+            raise VaultFormatError(
+                VaultFormatReason.NOT_TEXT, error.reason, file_name=path.name, source=source
+            ) from error
         try:
             return VaultFile.parse(text)
         except VaultFormatError as error:
             # §7.3: ошибка с именем файла. Путь к файлу сейфа — не секрет, секрет — его содержимое.
-            raise VaultFormatError(f"{path.name}: {error}") from error
+            raise error.located(path.name, source) from error
 
     def _decrypt(
         self,

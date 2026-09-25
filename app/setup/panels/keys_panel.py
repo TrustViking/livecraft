@@ -36,6 +36,12 @@ class RowAction(str, Enum):
     REVEAL = "show_own"  # показать своё: окно открывает значение, которое пользователь ввёл сам
 
 
+# Оговорка вкладки о личном файле, который не дал значений; «первое сохранение заменит» — только при can_save_own.
+_LOCAL_STATE_NOTICES: Final[dict[LocalVaultState, str]] = {
+    LocalVaultState.UNREADABLE: msg.SETUP_KEYS_NOTICE_LOCAL_UNREADABLE,
+    LocalVaultState.BROKEN: msg.SETUP_KEYS_NOTICE_LOCAL_BROKEN,
+}
+
 # Действия по происхождению поля; None — поля нет вовсе.
 _ACTIONS_BY_ORIGIN: Final[dict[VaultOrigin | None, frozenset[RowAction]]] = {
     VaultOrigin.SUPPLIED: frozenset({RowAction.REPLACE}),
@@ -124,8 +130,12 @@ class KeysPanel:
 
     @classmethod
     def from_store(cls, store: VaultStore) -> KeysPanel:
-        """Прочитать оба файла сейфа и узнать, можно ли на этой машине писать свои значения."""
-        loaded: VaultLoad = store.load()
+        """Прочитать оба файла сейфа и узнать, можно ли на этой машине писать свои значения.
+
+        Читается путём настройщика: повреждённый личный файл — пустой личный слой (BROKEN), и вкладка
+        открывается, чтобы первое сохранение его заменило. Повреждённый поставочный — VaultFormatError наружу.
+        """
+        loaded: VaultLoad = store.load_for_setup()
         return cls(
             supplied=loaded.supplied,
             own=loaded.own,
@@ -159,9 +169,11 @@ class KeysPanel:
         lines: list[str] = [msg.SETUP_KEYS_NOTICE_PROTECTION]
         if not self.can_save_own:
             lines.append(msg.SETUP_KEYS_NOTICE_NO_OWN)
-        elif self.local_state is LocalVaultState.UNREADABLE:
-            # «Первое сохранение заменит» честно только там, где сохранение возможно.
-            lines.append(msg.SETUP_KEYS_NOTICE_LOCAL_UNREADABLE)
+            return tuple(lines)
+        # «Первое сохранение заменит» честно только там, где сохранение возможно.
+        notice: str | None = _LOCAL_STATE_NOTICES.get(self.local_state)
+        if notice is not None:
+            lines.append(notice)
         return tuple(lines)
 
     @property

@@ -203,7 +203,8 @@ def _run_service(readiness: Readiness) -> int:
 def _run_mode(request: RunRequest, paths: LivecraftPaths, readiness: Readiness) -> int:
     """Режим по частям (§10): не готово ничего — окно настройки и код 2; не готова часть — строка и код 1.
 
-    Файл ключей и ссылок повреждён — окно его не починит (правка там выключена): только строки и код 2.
+    Повреждён файл ключей и ссылок, пришедший с программой, — окно его не починит: только строки и код 2.
+    Повреждён свой файл — окно настройщика (первое сохранение заменит файл) и код 2.
     Готова таблица плана — прогон контура A; код запуска — сведённый код готовности и прогона.
     """
     mode: ModeReadiness = readiness.for_mode(request.mode, no_llm=request.no_llm)
@@ -306,7 +307,7 @@ def _log_readiness(readiness: Readiness) -> None:
     for line in readiness.template_lines:          # шаблон сломанного файла — только в лог, в консоль не идёт
         LOGGER.debug("config_template %s", line)
     if readiness.vault_error is not None:
-        LOGGER.error("vault_error error=%s", readiness.vault_error)
+        LOGGER.error("vault_error %s", readiness.vault_error.log_line)
     if readiness.vault_load is not None and readiness.vault_load.is_local_unreadable:
         LOGGER.warning("vault_local_unreadable working_on=supplied")
 

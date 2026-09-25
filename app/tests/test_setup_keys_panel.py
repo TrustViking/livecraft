@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from app.paths import LivecraftPaths
-from app.secretsafe.crypto import KEY_WRAPPED
+from app.secretsafe.crypto import KEY_WRAPPED, VaultFormatError
 from app.secretsafe.dpapi import Dpapi, DpapiUnavailable
 from app.secretsafe.store import VAULT_FILE_ENCODING, LocalVaultState, ProgramKey, VaultStore
 from app.secretsafe.value import SecretField, SecretValue
@@ -406,6 +406,48 @@ def test_the_first_save_replaces_the_unreadable_local_file(store: VaultStore) ->
     assert saved.local_state is LocalVaultState.READ
     assert saved.own.origin_of(SecretField.SHEETS_RANGE) is VaultOrigin.OWN
     assert saved.own.get(SecretField.SHEETS_ID) is None
+
+
+
+# --- повреждённый личный файл — вкладка открывается и первое сохранение его заменяет (D9)
+
+BROKEN_LOCAL_TEXT: str = "{ не json"
+
+
+def test_a_broken_local_file_opens_the_panel_with_the_broken_notice(store: VaultStore) -> None:
+    store.local_path.write_text(BROKEN_LOCAL_TEXT, encoding=VAULT_FILE_ENCODING)
+    panel: KeysPanel = KeysPanel.from_store(store)
+    assert panel.local_state is LocalVaultState.BROKEN
+    assert msg.SETUP_KEYS_NOTICE_LOCAL_BROKEN in panel.notices
+    assert msg.SETUP_KEYS_NOTICE_LOCAL_UNREADABLE not in panel.notices
+    assert panel.own.entries == {} and not panel.is_dirty
+    assert all(row.origin_label == msg.VAULT_ORIGIN_SUPPLIED for row in panel.rows)
+
+
+def test_a_broken_local_file_is_replaced_by_the_first_save(store: VaultStore) -> None:
+    store.local_path.write_text(BROKEN_LOCAL_TEXT, encoding=VAULT_FILE_ENCODING)
+    panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID))
+    saved: KeysPanel = panel.save(store)
+    assert saved.local_state is LocalVaultState.READ
+    assert msg.SETUP_KEYS_NOTICE_LOCAL_BROKEN not in saved.notices
+    assert saved.own.get(SecretField.SHEETS_ID) == SecretValue(field=SecretField.SHEETS_ID, value=OWN_SHEET_ID)
+    assert store.load().local_state is LocalVaultState.READ
+
+
+def test_a_broken_local_file_without_dpapi_keeps_the_no_own_notice(ready_paths: LivecraftPaths) -> None:
+    """«Сохранение заменит» честно только там, где сохранить можно."""
+    ready_paths.vault_local_file.write_text(BROKEN_LOCAL_TEXT, encoding=VAULT_FILE_ENCODING)
+    panel: KeysPanel = KeysPanel.from_store(_no_dpapi_store(ready_paths))
+    assert panel.local_state is LocalVaultState.BROKEN
+    assert msg.SETUP_KEYS_NOTICE_NO_OWN in panel.notices
+    assert msg.SETUP_KEYS_NOTICE_LOCAL_BROKEN not in panel.notices
+
+
+def test_a_broken_supplied_file_still_stops_the_panel(ready_paths: LivecraftPaths) -> None:
+    ready_paths.vault_file.write_text(BROKEN_LOCAL_TEXT, encoding=VAULT_FILE_ENCODING)
+    with pytest.raises(VaultFormatError) as raised:
+        KeysPanel.from_store(VaultStore.open(ready_paths))
+    assert raised.value.advice == msg.VAULT_FILE_ADVICE_SUPPLIED
 
 
 # --- оговорка §7.2 и отсутствие значений в выводе

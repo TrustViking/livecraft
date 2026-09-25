@@ -17,7 +17,7 @@ import pytest
 
 from app.config.loader import FormSettings, LivecraftSettings, load_channels, load_settings
 from app.paths import LivecraftPaths
-from app.secretsafe.store import VaultStore
+from app.secretsafe.store import LocalVaultState, VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.setup.app import SELECTED, TAB_STYLE, THEME, SetupWindow
 from app.setup.fields.language_choice import LanguageCatalog
@@ -486,15 +486,31 @@ def test_the_close_button_of_the_window_goes_through_the_question(window: SetupW
     assert str(window.root.protocol("WM_DELETE_WINDOW")).endswith("request_close")
 
 
-def test_a_broken_vault_file_is_named_on_the_keys_tab(
+def test_a_broken_own_vault_file_opens_the_keys_tab_for_replacement(
     ready_paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Файл сейфа чужого формата: вкладка называет причину и не даёт править; окно открывается."""
+    """Свой файл ключей повреждён: вкладка открыта со строками и говорит, что сохранение его заменит (D9)."""
     ready_paths.vault_local_file.write_bytes(b"\xff\xfe\x00vault\x80\x81")
     for window in _open(ready_paths, capsys):
         tab: KeysTab = window.keys_tab
+        assert tab.panel is not None
+        assert tab.panel.local_state is LocalVaultState.BROKEN
+        assert msg.SETUP_KEYS_NOTICE_LOCAL_BROKEN in tab.notice.cget("text")
+        assert tab.rows_frame.winfo_manager() != ""         # строки с кнопками записи есть
+        assert set(tab.rows) == set(SecretField.current())
+        assert not tab.is_dirty
+
+
+def test_a_broken_supplied_vault_file_is_named_on_the_keys_tab(
+    ready_paths: LivecraftPaths, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Файл программы повреждён: вкладка называет файл и действие и не даёт править; окно открывается."""
+    ready_paths.vault_file.write_bytes(b"\xff\xfe\x00vault\x80\x81")
+    for window in _open(ready_paths, capsys):
+        tab: KeysTab = window.keys_tab
         assert tab.panel is None
-        assert ready_paths.vault_local_file.name in tab.notice.cget("text")
+        text: str = tab.notice.cget("text")
+        assert ready_paths.vault_file.name in text and msg.VAULT_FILE_ADVICE_SUPPLIED in text
         assert tab.rows_frame.winfo_manager() == ""         # строк с кнопками записи нет
         assert not tab.is_dirty
 
