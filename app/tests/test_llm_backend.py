@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import pytest
 
@@ -18,7 +17,8 @@ from app.llm.backend import (
 from app.llm.errors import LlmErrorKind, LlmRequestError
 from app.llm.selection import ChoiceReason, ModelChoice
 from app.llm.usage import RequestUsage, RunUsage
-from app.tests.conftest import LLM_SETTINGS
+from app.tests.conftest import LLM_SETTINGS, REPO_ROOT
+from app.tools.code_standard.source import SourceKey, SourceTree
 
 FAKE_BACKEND: str = "fake"
 NEUTRAL_MODULES: tuple[str, ...] = ("backend.py", "selection.py", "usage.py")
@@ -123,6 +123,6 @@ def test_the_response_log_line_carries_the_notes_but_no_text() -> None:
 
 @pytest.mark.parametrize("module", NEUTRAL_MODULES)
 def test_neutral_modules_name_no_backend(module: str) -> None:
-    text: str = (Path(__file__).resolve().parents[1] / "llm" / module).read_text(encoding="utf-8").lower()
+    text: str = SourceTree.from_root(REPO_ROOT).by_key[SourceKey.of(f"app/llm/{module}").text].text.lower()
     assert not [word for word in BACKEND_WORDS if word in text]
     assert "app.llm.backends" not in text

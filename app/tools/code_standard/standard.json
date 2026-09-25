@@ -23,5 +23,80 @@
     "min",
     "max",
     "sum"
+  ],
+  "allowed_body_numbers": [
+    0,
+    1
+  ],
+  "log_methods": [
+    "debug",
+    "info",
+    "warning",
+    "error",
+    "exception"
+  ],
+  "cyrillic_modules": [
+    "app\\ui\\messages_ru.py",
+    "app\\core\\alphabet.py"
+  ],
+  "boundary_modules": [
+    "app\\config\\",
+    "app\\llm\\json_text.py",
+    "app\\llm\\backends\\openai*.py",
+    "app\\secretsafe\\crypto.py",
+    "app\\secretsafe\\dpapi.py",
+    "app\\sources\\ytdlp.py",
+    "app\\sources\\metadata.py",
+    "app\\resources\\loader.py",
+    "app\\sheets\\client.py",
+    "app\\google\\auth.py",
+    "app\\packages\\package.py"
+  ],
+  "clock_module": "app\\core\\clock.py",
+  "clock_calls": [
+    "datetime.now",
+    "datetime.utcnow",
+    "datetime.today",
+    "date.today",
+    "time.time",
+    "time.monotonic",
+    "time.perf_counter"
+  ],
+  "clone_window": 3,
+  "clone_min_nodes": 40,
+  "logger_package": "app\\observability",
+  "log_area_class": "LogArea",
+  "isolated_packages": [
+    "app\\tools\\code_standard"
+  ],
+  "tool_imports": [
+    "app.ui.messages_ru"
+  ],
+  "sealed_modules": [
+    "app\\ui\\messages_ru.py"
+  ],
+  "layers": [
+    {"level": "0", "packages": ["core", "version", "examples"], "imports": []},
+    {"level": "1", "packages": ["paths", "observability", "resources", "ui"], "imports": ["0"]},
+    {"level": "2", "packages": ["run", "runtime"], "imports": ["0", "1"]},
+    {"level": "3", "packages": ["secretsafe", "config", "google"], "imports": ["0", "1", "2"]},
+    {"level": "4", "packages": ["slots"], "imports": ["0", "1"]},
+    {"level": "5", "packages": ["packages"], "imports": ["0", "1", "2", "3", "4"]},
+    {"level": "6A", "packages": ["texts", "sheets", "sources", "llm", "intake"], "imports": ["0", "1", "2", "3", "4", "5"]},
+    {"level": "6B", "packages": ["platforms", "form", "records", "pipeline", "output"], "imports": ["0", "1", "2", "3", "4", "5"]},
+    {"level": "7", "packages": ["setup", "main", "tools"], "imports": ["0", "1", "2", "3", "4", "5", "6A", "6B", "7"]}
+  ],
+  "chain_level": "6A",
+  "test_shared": [
+    "app\\tests\\conftest.py",
+    "app\\tests\\fixtures\\"
+  ],
+  "test_fixtures": [
+    "app\\tests\\fixtures\\"
+  ],
+  "logger_root": "livecraft",
+  "logger_file_names": [
+    "livecraft.json",
+    "livecraft.exe"
   ]
 }

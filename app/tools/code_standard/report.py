@@ -1,7 +1,8 @@
 """Отчёт замка: по строке на правило — сейчас, в реестре, исключений, цель (REFACTORING_STANDARD.md §6).
 
 «Сейчас» — всё, что правило находит в коде, вместе с исключениями; «в реестре» — долги, «исключений» —
-постоянные исключения. Под строкой правила с признаками — разбивка по признакам.
+постоянные исключения. Под строкой правила с признаками — разбивка по признакам: у E5 — литералы по видам,
+у E16 — рёбра, кольца и пакеты вне карты, у E20 — места по признакам тестов.
 """
 from __future__ import annotations
 
@@ -39,7 +40,6 @@ class StandardReport:
         rows: list[str] = [msg.CODE_STANDARD_REPORT_TITLE, header]
         for rule in self.measurements.rules:
             rows.extend(self._rule_lines(self.measurements.of(rule)))
-        rows.append(self._not_measured())
         rows.extend(self._state_lines())
         rows.extend(self.exceptions.problems(self.measurements))
         return tuple(rows)
@@ -65,10 +65,6 @@ class StandardReport:
             for sign, count in measurement.sign_counts().items()
         )
         return (row, msg.CODE_STANDARD_REPORT_SIGNS.format(signs=signs)) if signs else (row,)
-
-    def _not_measured(self) -> str:
-        waiting: list[str] = [rule.value for rule in Rule if rule not in self.measurements.rules]
-        return msg.CODE_STANDARD_REPORT_NOT_MEASURED.format(rules=msg.CODE_STANDARD_REPORT_RULE_JOINER.join(waiting))
 
     def _state_lines(self) -> tuple[str, ...]:
         """Разница реестра и кода: итог и по строке на изменение."""

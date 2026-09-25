@@ -7,16 +7,13 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Final
 
-from app.tools.code_standard.measurement import Finding, Measurement
+from app.tools.code_standard.measurement import VIOLATION, Finding, Measurement
 from app.tools.code_standard.rule import Rule, Sign
 from app.tools.code_standard.signature import FunctionBody, Signature
 from app.tools.code_standard.source import DefinitionSite, ModuleSource, SourceTree
 from app.tools.code_standard.standard import Standard
 from app.tools.code_standard.usage import ClassScope, FunctionUse, FunctionUses
-
-VIOLATION: Final[int] = 1  # величина нарушения «есть или нет»
 
 
 @dataclass(frozen=True)

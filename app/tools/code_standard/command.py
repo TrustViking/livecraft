@@ -200,7 +200,7 @@ class StandardCommand:
             self._say((msg.CODE_STANDARD_NO_LEDGER,))
             return CommandExit.REFUSED
         paths: tuple[SourceKey, ...] = tuple(self.files.key_of(raw) for raw in self.request.paths)
-        debts: Ledger = registered.under(paths)
+        debts: Ledger = registered.under(paths, self._measurements)
         lines: list[str] = [
             msg.CODE_STANDARD_FILES_LINE.format(rule=rule.value, key=key, value=value, signs=self._signs_of(rule, key))
             for rule in debts.rules for key, value in debts.section(rule).items()

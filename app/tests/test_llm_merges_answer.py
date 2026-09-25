@@ -12,6 +12,9 @@ from app.llm.merges import description as description_module
 from app.llm.merges.answer import AnswerParseMode, MergeAnswer
 from app.llm.merges.layout import TailBlock
 from app.llm.merges.reject import MergeReject, MergeRejectCode, MergeRejectStage
+from app.tests.conftest import REPO_ROOT
+from app.tools.code_standard.module_shape import TopLevelNames
+from app.tools.code_standard.source import SourceKey, SourceTree
 
 TWO_PARAGRAPHS: str = "Paragraph one.\n\nParagraph two."
 
@@ -328,4 +331,10 @@ def test_a_paragraph_count_reject_carries_the_count() -> None:
 
 
 def test_the_emoji_pattern_has_one_source() -> None:
+    """Шаблон объявлен на верхнем уровне ровно одного модуля app; остальные берут его импортом."""
+    declared: list[str] = [
+        module.key.text for module in SourceTree.from_root(REPO_ROOT).production
+        if "EMOJI_PATTERN" in TopLevelNames(module).names()
+    ]
+    assert declared == [SourceKey.of("app/llm/merges/description.py").text]
     assert answer_module.EMOJI_PATTERN is description_module.EMOJI_PATTERN

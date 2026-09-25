@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import pathlib
 import random
 
 import pytest
@@ -19,6 +18,8 @@ from app.llm.merges.quality import (
     QualityRules,
 )
 from app.llm.merges.rules import COMPACT_BULLET_MAX
+from app.tests.conftest import REPO_ROOT
+from app.tools.code_standard.source import ModuleSource, SourceTree
 
 RULES: QualityRules = QualityRules.load()
 CLEAN_EN: str = (
@@ -352,11 +353,13 @@ def test_normalization_never_raises_on_arbitrary_text() -> None:
 
 def test_merge_patterns_have_no_literal_range_characters() -> None:
     """Диапазоны и символы в шаблонах merge записаны экранированием: литеральный символ не виден глазом."""
-    folder: pathlib.Path = pathlib.Path(quality_module.__file__).parent
+    package: str = quality_module.__name__.rpartition(".")[0]
+    modules: list[ModuleSource] = [module for module in SourceTree.from_root(REPO_ROOT).modules if module.key.package == package]
+    assert modules
     offenders: list[tuple[str, int]] = [
-        (path.name, number)
-        for path in folder.glob("*.py")
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        (module.key.parts[-1], number)
+        for module in modules
+        for number, line in enumerate(module.text.splitlines(), 1)
         if ("compile(" in line or line.lstrip().startswith(('r"', "r'")))
         and any(0x2000 <= ord(char) <= 0x2BFF or ord(char) >= 0x1F000 for char in line)
     ]

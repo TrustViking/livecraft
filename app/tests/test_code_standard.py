@@ -28,11 +28,10 @@ from app.ui import messages_ru as msg
 
 LOCK: LockFiles = LockFiles.repository()
 PACKAGE: SourceKey = SourceKey.of("app/tools/code_standard")
-# Правила, которые замок проверяет с задачи R2.1a; R2.1b добавит E5–E11, E14–E17, E20.
-ACTIVE_RULES: frozenset[Rule] = frozenset({
-    Rule.FREE_FUNCTIONS, Rule.STATIC_METHODS, Rule.DEFINITION_LENGTH, Rule.PARAMETERS, Rule.EMPTY_WRAPPERS,
-    Rule.STATE_TUPLES, Rule.SIZES, Rule.PACKAGE_INIT, Rule.REPEATED_NAMES,
-})
+# С задачи R2.1b замок проверяет все правила эталона.
+ACTIVE_RULES: frozenset[Rule] = frozenset(Rule)
+# Правила, у которых ключ реестра — не путь: значение (E8, E9) или пакеты и кольцо (E16).
+VALUE_KEYED_RULES: frozenset[Rule] = frozenset({Rule.ONE_DECLARATION, Rule.PATTERNS, Rule.LAYERS})
 ALLOWED_APP_IMPORTS: tuple[str, ...] = ("app.tools.code_standard", "app.ui.messages_ru")
 # Возможности Python 3.11+ — замок работает на 3.10 без пакетов проекта (REFACTORING_STANDARD.md §6).
 PYTHON_FLOOR: tuple[int, int] = (3, 10)
@@ -40,22 +39,23 @@ NEW_PYTHON_NAMES: frozenset[str] = frozenset({"StrEnum", "tomllib", "Self", "UTC
 NEW_PYTHON_NODES: frozenset[str] = frozenset({"TryStar", "TypeAlias", "TypeVar", "ParamSpec", "TypeVarTuple"})
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def standard() -> Standard:
     return Standard.load(LOCK.standard)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def measured(standard: Standard) -> Measurements:
+    """Дерево репозитория разбирается и замеряется один раз на сессию теста."""
     return StandardCheck(SourceTree.from_root(LOCK.root), standard).measure()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def exceptions() -> Exceptions:
     return Exceptions.load(LOCK.exceptions)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def ledger_diff(measured: Measurements, exceptions: Exceptions) -> LedgerDiff:
     return Ledger.load(LOCK.ledger).diff(Ledger.of(measured.without(exceptions.keys)))
 
@@ -66,9 +66,9 @@ def _measure(standard: Standard, texts: Mapping[str, str], rule: Rule) -> Measur
 
 # --- (а), (б), (в): код против реестра и исключений
 
-def test_the_lock_measures_exactly_the_rules_of_this_stage(measured: Measurements) -> None:
-    assert frozenset(measured.rules) == ACTIVE_RULES
-    assert frozenset(Ledger.load(LOCK.ledger).rules) == ACTIVE_RULES
+def test_the_lock_measures_every_rule_and_the_ledger_covers_them(measured: Measurements) -> None:
+    assert frozenset(measured.rules) == ACTIVE_RULES == frozenset(Rule)
+    assert frozenset(Ledger.load(LOCK.ledger).rules) == frozenset(Rule)
 
 
 def test_no_debt_appeared_or_grown(ledger_diff: LedgerDiff) -> None:
@@ -101,11 +101,12 @@ def test_an_exception_the_rule_no_longer_catches_is_a_problem(measured: Measurem
 
 # --- (г): чувствительность каждого правила
 
+# Чистый образец лежит в пакете карты слоёв (E16) и несёт модуль тестов без признаков E20.
 CLEAN_SAMPLE: dict[str, str] = {
-    "app/pkg/__init__.py": (
-        '"""Пакет образца."""\nfrom __future__ import annotations\n\nfrom app.pkg.item import Item\n\n__all__ = ["Item"]\n'
+    "app/core/__init__.py": (
+        '"""Пакет образца."""\nfrom __future__ import annotations\n\nfrom app.core.item import Item\n\n__all__ = ["Item"]\n'
     ),
-    "app/pkg/item.py": (
+    "app/core/item.py": (
         "from __future__ import annotations\n"
         "from dataclasses import dataclass\n\n\n"
         "def normalize(text: str) -> str:\n"
@@ -119,7 +120,12 @@ CLEAN_SAMPLE: dict[str, str] = {
         "    def names(self) -> tuple[str, ...]:\n"
         "        return (self.name,)\n"
     ),
-    "app/pkg/user.py": "from app.pkg.item import normalize\n\nLABEL = normalize(' A ')\n",
+    "app/core/user.py": "from app.core.item import normalize\n\nLABEL = normalize(' A ')\n",
+    "app/tests/conftest.py": "SAMPLE = 'x'\n",
+    "app/tests/test_item.py": (
+        "from app.core.item import Item\nfrom app.tests.conftest import SAMPLE\n\n\n"
+        "def test_item(monkeypatch):\n    monkeypatch.setattr(Item, 'public', 1)\n    assert Item(SAMPLE).key\n"
+    ),
 }
 
 
@@ -315,6 +321,279 @@ def test_no_module_of_app_defines_a_name_twice(measured: Measurements) -> None:
     assert dict(measured.of(Rule.REPEATED_NAMES).values) == {}
 
 
+def test_body_literals_are_caught_by_kind(standard: Standard) -> None:
+    texts: dict[str, str] = {
+        "app/core/s.py": (
+            "LIMIT = 'module level is not a body'\n"
+            "@decorate('decorators are not counted')\n"
+            "def f(text: 'Annotated' = 'dflt', size=2):\n"
+            "    '''Докстрока не считается.'''\n"
+            "    LOGGER.info('done', text)\n"
+            "    joined = ', '.join(['name', 'two words', 'key=%s'])\n"
+            "    width: 'Annotated' = 3 + 0 - 1\n"
+            "    return f'x{text:>4}' + '' + str(-1)\n"
+            "def outer():\n"
+            "    def inner(value=0.5):\n"
+            "        return 'inner'\n"
+            "    return 'outer'\n"
+            "def clean(flag=True, empty='', none=None):\n"
+            "    return (0, 1, 1.0, flag, empty, none, ...)\n"
+        ),
+    }
+    measurement: Measurement = _measure(standard, texts, Rule.BODY_LITERALS)
+    assert dict(measurement.values) == {"app\\core\\s.py::f": 10, "app\\core\\s.py::outer": 1, "app\\core\\s.py::outer.inner": 2}
+    assert dict(measurement.parts_of("app\\core\\s.py::f")) == {
+        Sign.NUMBER: 2, Sign.LOG: 2, Sign.SEPARATOR: 1, Sign.IDENTIFIER: 3, Sign.TEXT: 2,
+    }
+    assert measurement.sign_counts()[Sign.NUMBER] == 3
+
+
+def test_cyrillic_in_code_is_caught_outside_the_text_modules(standard: Standard) -> None:
+    texts: dict[str, str] = {
+        "app/core/s.py": (
+            "'''Докстрока модуля не считается.'''\n"
+            "LABEL = 'метка'\n"
+            "def f():\n    '''Докстрока функции.'''\n    return f'итого {LABEL}'\n"
+            "LATIN = 'label'\n"
+        ),
+        "app/ui/messages_ru.py": "TEXT = 'текст'\n",
+        "app/core/alphabet.py": "LETTERS = 'абв'\n",
+    }
+    assert dict(_measure(standard, texts, Rule.CYRILLIC_IN_CODE).values) == {"app\\core\\s.py": 2}
+
+
+def test_exception_texts_are_caught(standard: Standard) -> None:
+    texts: dict[str, str] = {
+        "app/core/s.py": (
+            "def f(x):\n"
+            "    if x:\n        raise ValueError('text')\n"
+            "    if x > 1:\n        raise ValueError(f'{x}')\n"
+            "    raise KindError(Reason.BAD, detail='named')\n"
+            "def clean(x):\n"
+            "    if x:\n        raise KindError(Reason.BAD)\n"
+            "    raise ValueError(TEXT) from None\n"
+            "raise RuntimeError('module level')\n"
+        ),
+    }
+    assert dict(_measure(standard, texts, Rule.EXCEPTION_TEXT).values) == {"app\\core\\s.py": 1, "app\\core\\s.py::f": 3}
+
+
+def test_one_value_one_declaration_counts_areas_apart(standard: Standard) -> None:
+    texts: dict[str, str] = {
+        "app/core/a.py": (
+            "from enum import Enum, IntEnum\n"
+            "SEP = ','\nLIMIT = 5\nlowercase = 'x'\nALONE = 'alone'\n"
+            "class Kind(str, Enum):\n    COMMA = ','\n    DOT = '.'\n"
+        ),
+        "app/core/b.py": "COMMA: str = ','\nLIMIT = 5\nOTHER = 5\nlowercase = 'x'\nDOT = '.'\n",
+        "app/core/c.py": "from enum import IntEnum\nclass Code(IntEnum):\n    LIMIT = 5\n",
+        "app/tools/code_standard/x.py": "MARK = '!'\nSTAR = '*'\n",
+        "app/tools/code_standard/y.py": "BANG = '!'\n",
+        "app/core/d.py": "STAR = '*'\n",
+    }
+    measurement: Measurement = _measure(standard, texts, Rule.ONE_DECLARATION)
+    assert dict(measurement.values) == {"','": 2, "'!'": 2, "LIMIT=5": 3}
+    assert measurement.signs_of("','") == (Sign.TEXT_CONSTANT,)
+    assert measurement.signs_of("LIMIT=5") == (Sign.NUMBER_CONSTANT,)
+    assert measurement.sites_of("'!'") == frozenset({"app\\tools\\code_standard\\x.py", "app\\tools\\code_standard\\y.py"})
+    assert dict(measurement.under((PACKAGE,)).values) == {"'!'": 2}
+
+
+def test_patterns_are_caught_repeated_or_inside_functions(standard: Standard) -> None:
+    texts: dict[str, str] = {
+        "app/core/a.py": "import re\nSPACES = re.compile(r'\\s+')\ndef f(text):\n    return re.sub('x+', '', text)\n",
+        "app/core/b.py": "import re\nclass C:\n    SPACES = re.compile(r'\\s+')\nONCE = re.compile(r'\\d+')\nBUILT = re.compile(PATTERN)\n",
+        "app/core/c.py": "import re\nQUOTE = re.compile('q')\n",
+        "app/tools/code_standard/x.py": "import re\nQUOTE = re.compile('q')\n",
+    }
+    measurement: Measurement = _measure(standard, texts, Rule.PATTERNS)
+    assert dict(measurement.values) == {repr("\\s+"): 2, "app\\core\\a.py::f": 1}
+    assert measurement.signs_of(repr("\\s+")) == (Sign.REPEATED_PATTERN,)
+    assert measurement.signs_of("app\\core\\a.py::f") == (Sign.PATTERN_IN_FUNCTION,)
+
+
+def test_loggers_are_caught(standard: Standard) -> None:
+    texts: dict[str, str] = {
+        "app/core/a.py": (
+            "import logging\n"
+            "from app.observability.logging_setup import LogArea, get_logger\n"
+            "LOGGER = get_logger('sample.area')\nGOOD = get_logger(LogArea.CORE)\nRAW = logging.getLogger('x')\n"
+        ),
+        "app/core/b.py": "from app.observability import logging_setup\nGOOD = logging_setup.get_logger(LogArea.CORE)\n",
+        "app/observability/logging_setup.py": "import logging\nROOT = logging.getLogger('root')\n",
+    }
+    measurement: Measurement = _measure(standard, texts, Rule.LOGGERS)
+    assert dict(measurement.values) == {"app\\core\\a.py": 2}
+    assert measurement.signs_of("app\\core\\a.py") == (Sign.AREA_MISSING, Sign.RAW_LOGGER)
+
+
+FIRST_CLONE: str = (
+    "def first(items, limit):\n"
+    "    total = sum(item.size * 2 for item in items if item.size > limit)\n"
+    "    names = [item.name.strip().lower() for item in items if item.name]\n"
+    "    result = {'total': total, 'names': names, 'count': len(items)}\n"
+    "    return result\n"
+)
+SECOND_CLONE: str = (
+    "class Box:\n"
+    "    def second(self, rows, floor):\n"
+    "        if rows:\n"
+    "            amount = sum(row.weight * 3 for row in rows if row.weight > floor)\n"
+    "            labels = [row.title.strip().lower() for row in rows if row.title]\n"
+    "            output = {'sum': amount, 'labels': labels, 'size': len(rows)}\n"
+    "        return None\n"
+)
+
+
+def test_structural_clones_are_caught_across_functions(standard: Standard) -> None:
+    texts: dict[str, str] = {
+        "app/core/a.py": FIRST_CLONE,
+        "app/core/b.py": SECOND_CLONE,
+        "app/core/c.py": (
+            "def small(a):\n    x = a\n    y = x\n    return y\n"
+            "def other(a):\n    x = a\n    y = x\n    return y\n"
+        ),
+    }
+    measurement: Measurement = _measure(standard, texts, Rule.STRUCTURAL_CLONES)
+    key: str = "app\\core\\a.py::first | app\\core\\b.py::Box.second"
+    assert dict(measurement.values) == {key: 2}
+    assert measurement.sites_of(key) == frozenset({"app\\core\\a.py", "app\\core\\b.py"})
+
+
+def test_a_window_repeated_inside_one_function_is_not_a_clone(standard: Standard) -> None:
+    body: str = "".join(line for line in FIRST_CLONE.splitlines(keepends=True)[1:4])
+    texts: dict[str, str] = {"app/core/a.py": f"def twice(items, limit):\n{body}{body}    return None\n"}
+    assert dict(_measure(standard, texts, Rule.STRUCTURAL_CLONES).values) == {}
+
+
+def test_raw_data_is_caught_outside_boundary_modules(standard: Standard) -> None:
+    sample: str = (
+        "from typing import Any\nimport typing\n"
+        "def f(value: Any) -> 'dict[str, Any]':\n    return {}\n"
+        "class C:\n    field: typing.Any\n"
+        "Json = dict[str, Any]\n"
+        "def clean(value: object) -> dict[str, object]:\n    return {}\n"
+    )
+    texts: dict[str, str] = {
+        "app/core/s.py": sample,
+        "app/config/loader.py": sample,
+        "app/llm/backends/openai_model.py": sample,
+    }
+    assert dict(_measure(standard, texts, Rule.RAW_DATA).values) == {
+        "app\\core\\s.py": 1, "app\\core\\s.py::C": 1, "app\\core\\s.py::f": 2,
+    }
+
+
+def test_defensive_casts_are_caught_outside_boundary_modules(standard: Standard) -> None:
+    sample: str = (
+        "def f(x):\n    return str(x or '') + str(x.name or '')\n"
+        "def clean(x):\n    return str(x or '-') + str(x) + text(x or '')\n"
+    )
+    texts: dict[str, str] = {"app/core/s.py": sample, "app/sheets/client.py": sample}
+    assert dict(_measure(standard, texts, Rule.DEFENSIVE_CASTS).values) == {"app\\core\\s.py::f": 2}
+
+
+LAYERED_SAMPLE: dict[str, str] = {
+    "app/core/a.py": (
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n    from ..slots import slot\n"
+        "def later():\n    import app.slots.slot\n"
+        "from app.core import b\n"
+    ),
+    "app/core/b.py": "X = 1\n",
+    "app/slots/slot.py": "from app.core.b import X\nfrom app.paths import Y\n",
+    "app/paths.py": "from app.core.b import X\n",
+    "app/texts/t.py": "from app.sheets.p import P\n",
+    "app/sheets/p.py": "from app.texts.u import U\nfrom app.slots.slot import S\n",
+    "app/texts/u.py": "U = 1\n",
+    "app/ui/messages_ru.py": "from app.core.b import X\n",
+    "app/ui/other.py": "from app.core.b import X\n",
+    "app/tools/code_standard/z.py": "from app.ui import messages_ru\nfrom app.tools.code_standard import w\nfrom app.core import b\n",
+    "app/tools/code_standard/w.py": "W = 1\n",
+    "app/setup/any.py": "from app.tools.code_standard import w\nfrom app.main import run\n",
+    "app/main.py": "from app.setup.any import thing\n",
+    "app/newpkg/m.py": "M = 1\n",
+    "app/sources/r1.py": "from app.sources import r2\n",
+    "app/sources/r2.py": "from app.sources.r1 import A\n",
+    "app/tests/test_x.py": "from app.slots.slot import S\n",
+}
+
+
+def test_layers_catch_edges_unmapped_packages_and_rings(standard: Standard) -> None:
+    measurement: Measurement = _measure(standard, LAYERED_SAMPLE, Rule.LAYERS)
+    ring: str = msg.CODE_STANDARD_RING_KEY.format(modules="app\\main.py | app\\setup\\any.py")
+    sources_ring: str = msg.CODE_STANDARD_RING_KEY.format(modules="app\\sources\\r1.py | app\\sources\\r2.py")
+    unmapped: str = msg.CODE_STANDARD_UNMAPPED_KEY.format(package="newpkg")
+    assert dict(measurement.values) == {
+        "core -> slots": 2,
+        "texts -> sheets": 1,
+        "ui.messages_ru -> core": 1,
+        "tools.code_standard -> core": 1,
+        ring: 2,
+        sources_ring: 2,
+        unmapped: 1,
+    }
+    assert measurement.signs_of("core -> slots") == (Sign.EDGE,)
+    assert measurement.signs_of(ring) == (Sign.RING,)
+    assert measurement.signs_of(unmapped) == (Sign.UNMAPPED,)
+    assert measurement.sites_of("tools.code_standard -> core") == frozenset({"app\\tools\\code_standard\\z.py"})
+
+
+def test_the_layer_map_refuses_an_unknown_level(tmp_path: Path) -> None:
+    broken: str = LOCK.standard.read_text(encoding="utf-8").replace('"imports": ["0"]', '"imports": ["9"]', 1)
+    path: Path = tmp_path / "standard.json"
+    path.write_text(broken, encoding="utf-8")
+    with pytest.raises(StandardFileError) as caught:
+        Standard.load(path)
+    assert caught.value.human == msg.CODE_STANDARD_FILE_PROBLEMS["unknown_level"].format(file="standard.json", key="9")
+
+
+def test_clock_calls_are_caught_outside_the_clock_module(standard: Standard) -> None:
+    sample: str = (
+        "import time\nfrom datetime import date, datetime\n"
+        "def f():\n    return datetime.now(), date.today()\n"
+        "class C:\n    clock = time.monotonic\n"
+        "def clean(moment):\n    return moment.now() if moment else time.sleep(0)\n"
+    )
+    texts: dict[str, str] = {"app/core/s.py": sample, "app/core/clock.py": sample}
+    assert dict(_measure(standard, texts, Rule.TIME).values) == {"app\\core\\s.py::C": 1, "app\\core\\s.py::f": 2}
+
+
+def test_tests_are_checked_by_every_sign(standard: Standard) -> None:
+    texts: dict[str, str] = {
+        "app/tests/conftest.py": "SHARED = 1\n",
+        "app/tests/fixtures/make.py": "import dataclasses\n\n\ndef make(item):\n    return dataclasses.replace(item)\n",
+        "app/tests/test_b.py": "def helper():\n    return 1\n",
+        "app/tests/test_a.py": (
+            "import dataclasses\nimport os\n"
+            "from dataclasses import replace as swap\n"
+            "from app.tests.test_b import helper\n"
+            "from app.tests import test_b\n"
+            "from app.tests.conftest import SHARED\n"
+            "from app.tests.fixtures.make import make\n"
+            "AREA = 'livecraft' + '.sheets'\n"
+            "NAMES = ('livecraft.json', 'livecraft.exe', 'livecraft')\n"
+            "def test_it(monkeypatch, item):\n"
+            "    monkeypatch.setattr(item, '_private', 1)\n"
+            "    monkeypatch.setattr('app.module._hidden', 1)\n"
+            "    monkeypatch.setattr(os, 'replace', helper)\n"
+            "    monkeypatch.setattr(item, 'public', 1)\n"
+            "    assert dataclasses.replace(item) and swap(item) and make(item) and SHARED and test_b\n"
+        ),
+        "app/tests/test_c.py": "LOGGER_NAME = " + repr("livecraft" + ".llm") + "\n",
+        "app/core/s.py": "import dataclasses\nNAME = " + repr("livecraft" + ".llm") + "\n",
+    }
+    measurement: Measurement = _measure(standard, texts, Rule.TESTS)
+    assert dict(measurement.values) == {
+        "app\\tests\\test_a.py::dataclass_replace": 2,
+        "app\\tests\\test_a.py::global_patch": 1,
+        "app\\tests\\test_a.py::private_patch": 2,
+        "app\\tests\\test_a.py::test_import": 2,
+        "app\\tests\\test_c.py::logger_name": 1,
+    }
+    assert measurement.signs_of("app\\tests\\test_c.py::logger_name") == (Sign.LOGGER_NAME,)
+
+
 # --- (д), (е), (и): сам замок
 
 def test_the_lock_package_has_no_debt(measured: Measurements) -> None:
@@ -377,10 +656,13 @@ def test_keys_use_a_backslash_whatever_the_separator() -> None:
     assert SourceKey.of("app/x/__init__.py").dotted == "app.x"
 
 
-def test_every_key_of_the_repository_uses_a_backslash(measured: Measurements) -> None:
-    keys: list[str] = [key for rule in Ledger.load(LOCK.ledger).rules for key in Ledger.load(LOCK.ledger).section(rule)]
+def test_every_path_key_of_the_repository_uses_a_backslash(measured: Measurements) -> None:
+    """Ключи-пути реестра, исключений и замеров; у ключей-значений E8, E9, E16 пути — в местах нарушений."""
+    ledger: Ledger = Ledger.load(LOCK.ledger)
+    keys: list[str] = [key for rule in ledger.rules if rule not in VALUE_KEYED_RULES for key in ledger.section(rule)]
     keys.extend(item.key for item in Exceptions.load(LOCK.exceptions).items)
-    keys.extend(key for item in measured.items for key in item.values)
+    keys.extend(key for item in measured.items if item.rule not in VALUE_KEYED_RULES for key in item.values)
+    keys.extend(site for item in measured.items for key in item.values for site in item.sites_of(key))
     assert keys
     assert all(key.startswith("app\\") and "/" not in key for key in keys)
 

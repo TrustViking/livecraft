@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from functools import cached_property
 from pathlib import Path, PurePosixPath
 from typing import Final
@@ -24,6 +25,8 @@ POSIX_SLASH: Final[str] = "/"
 NAME_DOT: Final[str] = "."
 KEY_JOINER: Final[str] = "::"
 STATIC_DECORATOR: Final[str] = "staticmethod"
+BODY_FIELD: Final[str] = "body"
+GLOB_MARKS: Final[frozenset[str]] = frozenset("*?[")
 
 FUNCTION_NODES: Final[tuple[type[ast.AST], ...]] = (ast.FunctionDef, ast.AsyncFunctionDef)
 DEFINITION_NODES: Final[tuple[type[ast.AST], ...]] = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
@@ -78,6 +81,23 @@ class SourceKey:
         return path == self.text or path.startswith(self.text + KEY_SLASH)
 
 
+@dataclass(frozen=True)
+class KeyPattern:
+    """Модуль, папка или шаблон имён модулей из `standard.json`: `app\\config\\`, `app\\llm\\backends\\openai*.py`."""
+
+    text: str
+
+    @classmethod
+    def of(cls, raw: str) -> KeyPattern:
+        return cls(SourceKey.of(raw).text)
+
+    def matches(self, key: SourceKey) -> bool:
+        """Шаблон со звёздочкой сравнивается по имени, путь — как файл или папка."""
+        if GLOB_MARKS & frozenset(self.text):
+            return fnmatchcase(key.text, self.text)
+        return SourceKey(self.text).covers(key.text)
+
+
 @dataclass(frozen=True, eq=False)
 class ModuleSource:
     """Модуль app: ключ, текст и дерево разбора."""
@@ -102,6 +122,41 @@ class ModuleSource:
     def class_names(self) -> frozenset[str]:
         """Имена классов, объявленных в модуле на любой глубине."""
         return frozenset(site.name for site in self.definitions if site.is_class)
+
+    @cached_property
+    def docstrings(self) -> frozenset[ast.AST]:
+        """Узлы докстрок модуля, классов и функций."""
+        holders: list[ast.AST] = [self.tree] + [site.node for site in self.definitions]
+        return frozenset(node for node in (self._docstring(holder) for holder in holders) if node is not None)
+
+    @cached_property
+    def owners(self) -> Mapping[ast.AST, str]:
+        """Каждый узел модуля → ключ самого внутреннего определения вокруг него; вне определений — путь."""
+        sites: Mapping[ast.AST, str] = {site.node: site.key for site in self.definitions}
+        found: dict[ast.AST, str] = {}
+        pending: list[ast.AST] = [self.tree]
+        while pending:
+            node: ast.AST = pending.pop()
+            owner: str = sites.get(node, found.get(node, self.key.text))
+            for child in ast.iter_child_nodes(node):
+                found[child] = owner
+                pending.append(child)
+        return found
+
+    def owner_of(self, node: ast.AST) -> str:
+        """Ключ нарушения для узла: `путь::определение` или `путь`."""
+        return self.owners.get(node, self.key.text)
+
+    def site_of(self, key: str) -> DefinitionSite | None:
+        """Определение модуля по ключу; путь самого модуля — `None`."""
+        return next((site for site in self.definitions if site.key == key), None)
+
+    def _docstring(self, holder: ast.AST) -> ast.AST | None:
+        body: list[ast.stmt] = getattr(holder, BODY_FIELD, [])
+        first: ast.stmt | None = body[0] if body else None
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+            return first.value
+        return None
 
     def _sites(self, node: ast.AST, scope: tuple[str, ...], in_class: bool) -> Iterator[DefinitionSite]:
         for child in ast.iter_child_nodes(node):
@@ -194,6 +249,20 @@ class SourceTree:
     def production(self) -> tuple[ModuleSource, ...]:
         """Модули app без `app\\tests`: то, что проверяет большинство правил."""
         return tuple(module for module in self.modules if not module.key.is_test)
+
+    @cached_property
+    def tests(self) -> tuple[ModuleSource, ...]:
+        """Модули `app\\tests`: их проверяет правило E20."""
+        return tuple(module for module in self.modules if module.key.is_test)
+
+    @cached_property
+    def by_key(self) -> Mapping[str, ModuleSource]:
+        """Модули по ключу-пути."""
+        return {module.key.text: module for module in self.modules}
+
+    def under(self, path: SourceKey) -> tuple[ModuleSource, ...]:
+        """Модули в этом файле или папке."""
+        return tuple(module for module in self.modules if path.covers(module.key.text))
 
     @cached_property
     def by_name(self) -> Mapping[str, ModuleSource]:

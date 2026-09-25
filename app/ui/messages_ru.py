@@ -726,7 +726,29 @@ CODE_STANDARD_SIGN_LABELS: Final[dict[str, str]] = {
     "foreign_body": "(в) чужое тело",
     "module": "модулей",
     "class": "классов",
+    "number": "числа",
+    "log": "лог",
+    "separator": "разделители",
+    "identifier": "идентификаторы",
+    "text": "текст",
+    "text_constant": "строки",
+    "number_constant": "числа",
+    "repeated_pattern": "повторы шаблона",
+    "pattern_in_function": "шаблон в функции",
+    "area_missing": "get_logger без LogArea",
+    "raw_logger": "logging.getLogger вне пакета логов",
+    "edge": "рёбра",
+    "ring": "кольца",
+    "unmapped": "пакеты вне карты",
+    "test_import": "импорт модуля тестов",
+    "logger_name": "имя логгера строкой",
+    "private_patch": "подмена приватного имени",
+    "global_patch": "подмена os / shutil",
+    "dataclass_replace": "dataclasses.replace вне заготовок",
 }
+# Ключи реестра E16, которые не называют пакеты парой «пакет -> пакет».
+CODE_STANDARD_RING_KEY: Final[str] = "кольцо: {modules}"
+CODE_STANDARD_UNMAPPED_KEY: Final[str] = "вне карты: {package}"
 CODE_STANDARD_REPORT_TITLE: Final[str] = "Эталон кода livecraft: нарушения, долги реестра и исключения"
 CODE_STANDARD_REPORT_ROW: Final[str] = "{rule:<4} {label:<34} {now:>7} {ledger:>10} {exempt:>11} {goal:>5}"
 CODE_STANDARD_REPORT_COLUMNS: Final[dict[str, str]] = {
@@ -742,7 +764,6 @@ CODE_STANDARD_REPORT_SIGNS: Final[str] = "     {signs}"
 CODE_STANDARD_REPORT_SIGN: Final[str] = "{label}: {count}"
 CODE_STANDARD_REPORT_SIGN_JOINER: Final[str] = "; "
 CODE_STANDARD_REPORT_RULE_JOINER: Final[str] = ", "
-CODE_STANDARD_REPORT_NOT_MEASURED: Final[str] = "Ещё не проверяются: {rules}."
 CODE_STANDARD_REPORT_STATE: Final[str] = (
     "Код против реестра: новых {new}, выросших {grown}, уменьшившихся {shrunk}, снятых {gone}."
 )
@@ -792,6 +813,9 @@ CODE_STANDARD_FILE_PROBLEMS: Final[dict[str, str]] = {
     "not_integer": "В файле замка {file} значение «{key}» — не целое число.",
     "not_text": "В файле замка {file} значение «{key}» — не строка.",
     "not_text_list": "В файле замка {file} значение «{key}» — не список строк.",
+    "not_integer_list": "В файле замка {file} значение «{key}» — не список целых чисел.",
+    "not_object_list": "В файле замка {file} значение «{key}» — не список объектов JSON.",
     "unknown_key": "В файле замка {file} неизвестный раздел «{key}».",
+    "unknown_level": "В файле замка {file} карта слоёв ссылается на неизвестный уровень «{key}».",
     "git_failed": "git не отдал реестр версии {file}: проверьте ссылку или путь к файлу реестра.",
 }

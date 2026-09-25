@@ -45,7 +45,7 @@ class ModuleImports:
                 modules.update(cls._module_aliases(node))
             elif isinstance(node, ast.ImportFrom):
                 base: str = cls.base_of(node, module)
-                for alias in node.names if cls._is_app(base) else ():
+                for alias in node.names if cls.is_app(base) else ():
                     full: str = NAME_DOT.join((base, alias.name))
                     if full in tree.by_name:
                         modules[alias.asname or alias.name] = full
@@ -55,7 +55,7 @@ class ModuleImports:
 
     @classmethod
     def _module_aliases(cls, node: ast.Import) -> Mapping[str, str]:
-        return {alias.asname: alias.name for alias in node.names if alias.asname and cls._is_app(alias.name)}
+        return {alias.asname: alias.name for alias in node.names if alias.asname and cls.is_app(alias.name)}
 
     @classmethod
     def base_of(cls, node: ast.ImportFrom, module: ModuleSource) -> str:
@@ -67,7 +67,8 @@ class ModuleImports:
         return NAME_DOT.join(parts + ([node.module] if node.module else []))
 
     @classmethod
-    def _is_app(cls, name: str) -> bool:
+    def is_app(cls, name: str) -> bool:
+        """Имя — пакет `app` или модуль внутри него."""
         return name == APP_PACKAGE or name.startswith(APP_PACKAGE + NAME_DOT)
 
 

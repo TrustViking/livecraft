@@ -131,10 +131,14 @@ class Ledger:
         added: dict[Rule, Mapping[str, int]] = {rule: other.section(rule) for rule in other.rules if rule not in self.sections}
         return Ledger({**self.sections, **added})
 
-    def under(self, paths: tuple[SourceKey, ...]) -> Ledger:
-        """Только записи этих файлов и папок."""
+    def under(self, paths: tuple[SourceKey, ...], measurements: Measurements) -> Ledger:
+        """Только записи, у которых хотя бы одно место нарушения в коде лежит в этих файлах и папках.
+
+        Место берётся из замеров (у ключей-значений E8, E9, групп E11 и рёбер E16 мест несколько); записи,
+        которой в замерах уже нет, место — путь из её ключа.
+        """
         return Ledger({
-            rule: {key: value for key, value in self.section(rule).items() if any(path.covers(key) for path in paths)}
+            rule: {key: value for key, value in self.section(rule).items() if measurements.of(rule).is_under(key, paths)}
             for rule in self.rules
         })
 

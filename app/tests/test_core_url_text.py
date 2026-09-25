@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import ast
-from pathlib import Path
-
 import pytest
 
 from app.core.url_text import (
@@ -24,10 +21,14 @@ from app.core.url_text import (
     split_url,
     strip_tracking_params,
 )
+from app.tests.conftest import REPO_ROOT
+from app.tools.code_standard.imports import ImportedModules
+from app.tools.code_standard.source import ModuleSource, SourceKey, SourceTree
+from app.tools.code_standard.standard import AppName
+from app.tools.code_standard.usage import ModuleImports
 
-CORE_DIR: Path = Path(__file__).resolve().parents[1] / "core"
+CORE_KEY: SourceKey = SourceKey.of("app/core")
 CORE_PACKAGE: str = "app.core"
-APP_PACKAGE: str = "app"
 
 
 @pytest.mark.parametrize("host", ["youtu.be", "www.youtu.be", "youtube.com", "www.youtube.com", "m.youtube.com"])
@@ -251,38 +252,19 @@ def test_dedupe_keeps_first_nonempty_values_in_order() -> None:
     assert dedupe_nonempty([" b", "a", "", "b", "  ", "a "]) == ("b", "a")
 
 
-def _imported_modules(source: str, package: str) -> list[str]:
-    """Все импорты текста модуля на любой глубине (в функциях, под TYPE_CHECKING); относительные — от `package`."""
-    package_parts: list[str] = package.split(".")
-    modules: list[str] = []
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            modules.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            base: list[str] = package_parts[: len(package_parts) - node.level + 1] if node.level else []
-            modules.append(".".join([*base, *([node.module] if node.module else [])]))
-    return modules
-
-
-def _package_of(path: Path) -> str:
-    return ".".join([APP_PACKAGE, *path.relative_to(CORE_DIR.parent).parent.parts])
-
-
-def _is_outside_core(module: str) -> bool:
-    is_app: bool = module == APP_PACKAGE or module.startswith(f"{APP_PACKAGE}.")
-    is_core: bool = module == CORE_PACKAGE or module.startswith(f"{CORE_PACKAGE}.")
-    return is_app and not is_core
+def _outside_core(module: ModuleSource, tree: SourceTree) -> list[str]:
+    """Модули app вне core, которые называют импорты модуля (разбор импортов замка, E16)."""
+    return [
+        origin for origin in ImportedModules(module, tree).origins
+        if ModuleImports.is_app(origin) and not AppName(origin).within(CORE_PACKAGE)
+    ]
 
 
 def test_core_modules_import_nothing_from_app_outside_core() -> None:
-    paths: list[Path] = sorted(CORE_DIR.rglob("*.py"))
-    assert paths
-    offenders: list[str] = [
-        f"{path.name}: {module}"
-        for path in paths
-        for module in _imported_modules(path.read_text(encoding="utf-8"), _package_of(path))
-        if _is_outside_core(module)
-    ]
+    tree: SourceTree = SourceTree.from_root(REPO_ROOT)
+    modules: tuple[ModuleSource, ...] = tree.under(CORE_KEY)
+    assert modules
+    offenders: list[str] = [f"{module.key.text}: {origin}" for module in modules for origin in _outside_core(module, tree)]
     assert offenders == []
 
 
@@ -297,9 +279,11 @@ from . import dates
 from ..texts import paragraphs
 from .retry import RetryPolicy
 """
-    modules: list[str] = _imported_modules(source, CORE_PACKAGE)
-    assert sorted(module for module in modules if _is_outside_core(module)) == [
+    tree: SourceTree = SourceTree.from_texts({"app/core/sample.py": source})
+    module: ModuleSource = tree.modules[0]
+    modules: tuple[str, ...] = ImportedModules(module, tree).origins
+    assert sorted(_outside_core(module, tree)) == [
         "app.sources.video", "app.texts", "app.texts.tail"
     ]
     assert "app.core" in modules and "app.core.retry" in modules
-    assert _package_of(CORE_DIR / "url_text.py") == CORE_PACKAGE
+    assert SourceKey.of("app/core/url_text.py").package == CORE_PACKAGE

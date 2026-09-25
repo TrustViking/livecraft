@@ -20,6 +20,7 @@ from app.google.auth import (
     GoogleLogin,
 )
 from app.paths import LivecraftPaths, write_text_atomically
+from app.tools.code_standard.source import SourceKey, SourceTree
 from app.ui import messages_ru as msg
 
 TOKEN_JSON: str = json.dumps({"token": "x", "refresh_token": "y"})
@@ -352,8 +353,6 @@ def test_every_reason_has_a_russian_text() -> None:
 def test_scopes_live_only_in_the_auth_module(repo_root: Path) -> None:
     """§9: скоупы задаются в app\\google\\auth.py и больше нигде (тесты не в счёт)."""
     places: list[str] = [
-        str(path.relative_to(repo_root))
-        for path in (repo_root / "app").rglob("*.py")
-        if "tests" not in path.parts and "googleapis.com/auth" in path.read_text(encoding="utf-8")
+        module.key.text for module in SourceTree.from_root(repo_root).production if "googleapis.com/auth" in module.text
     ]
-    assert places == [str(Path("app") / "google" / "auth.py")]
+    assert places == [SourceKey.of("app/google/auth.py").text]

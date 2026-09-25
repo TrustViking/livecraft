@@ -51,7 +51,7 @@ class Rule(str, Enum):
 
 
 class Sign(str, Enum):
-    """Признак нарушения внутри правила: виден в отчёте разбивкой, в реестр не пишется."""
+    """Признак нарушения внутри правила: виден в отчёте разбивкой и в `--files`; в ключ реестра входит только у E20."""
 
     NAMES_APP_CLASS = "names_app_class"        # E1 (а): в аннотациях назван класс app
     ONE_CLASS_USE = "one_class_use"            # E1 (б): все использования — в одном классе того же модуля
@@ -61,6 +61,25 @@ class Sign(str, Enum):
     FOREIGN_BODY = "foreign_body"              # E12 (в): тело — вызов свободной функции без других пользователей
     MODULE = "module"                          # E18: модуль длиннее предела
     CLASS = "class"                            # E18: класс больше предела членов
+    NUMBER = "number"                          # E5: числовой литерал
+    LOG = "log"                                # E5: строка лога
+    SEPARATOR = "separator"                    # E5: строка из пробелов и знаков препинания
+    IDENTIFIER = "identifier"                  # E5: одно слово-идентификатор
+    TEXT = "text"                              # E5: прочий текст
+    TEXT_CONSTANT = "text_constant"            # E8: строка объявлена в нескольких модулях
+    NUMBER_CONSTANT = "number_constant"        # E8: число под тем же именем в нескольких модулях
+    REPEATED_PATTERN = "repeated_pattern"      # E9: шаблон объявлен больше одного раза
+    PATTERN_IN_FUNCTION = "pattern_in_function"  # E9: шаблон-литерал внутри функции
+    AREA_MISSING = "area_missing"              # E10: `get_logger` без члена `LogArea`
+    RAW_LOGGER = "raw_logger"                  # E10: `logging.getLogger` вне пакета логов
+    EDGE = "edge"                              # E16: импорт между пакетами против карты
+    RING = "ring"                              # E16: кольцо импорта модулей
+    UNMAPPED = "unmapped"                      # E16: пакета нет в карте слоёв
+    TEST_IMPORT = "test_import"                # E20: модуль тестов импортирует другой модуль тестов
+    LOGGER_NAME = "logger_name"                # E20: строка с именем логгера
+    PRIVATE_PATCH = "private_patch"            # E20: подмена приватного имени
+    GLOBAL_PATCH = "global_patch"              # E20: подмена глобальных `os` / `shutil`
+    DATACLASS_REPLACE = "dataclass_replace"    # E20: `dataclasses.replace` вне общих заготовок тестов
 
     @property
     def label(self) -> str:

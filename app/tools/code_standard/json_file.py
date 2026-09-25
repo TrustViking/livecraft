@@ -30,6 +30,9 @@ class JsonProblem(str, Enum):
     NOT_INTEGER = "not_integer"
     NOT_TEXT = "not_text"
     NOT_TEXT_LIST = "not_text_list"
+    NOT_INTEGER_LIST = "not_integer_list"
+    NOT_OBJECT_LIST = "not_object_list"
+    UNKNOWN_LEVEL = "unknown_level"
     UNKNOWN_KEY = "unknown_key"
     GIT_FAILED = "git_failed"
 
@@ -120,10 +123,22 @@ class JsonObject:
 
     def texts(self, key: str) -> tuple[str, ...]:
         """Список строк по ключу."""
+        return tuple(self._list(key, str, JsonProblem.NOT_TEXT_LIST))
+
+    def integers(self, key: str) -> tuple[int, ...]:
+        """Список целых чисел по ключу; `true` и `false` числами не считаются."""
+        return tuple(self._list(key, int, JsonProblem.NOT_INTEGER_LIST))
+
+    def objects(self, key: str) -> tuple[JsonObject, ...]:
+        """Список объектов JSON по ключу."""
+        return tuple(JsonObject(self.origin, item) for item in self._list(key, dict, JsonProblem.NOT_OBJECT_LIST))
+
+    def _list(self, key: str, kind: type, problem: JsonProblem) -> list:
+        """Список по ключу, все элементы которого ровно этого типа (у чисел `bool` не проходит)."""
         value: object = self._value(key)
-        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-            raise StandardFileError(JsonProblem.NOT_TEXT_LIST, self.origin, key)
-        return tuple(value)
+        if not isinstance(value, list) or not all(type(item) is kind for item in value):
+            raise StandardFileError(problem, self.origin, key)
+        return value
 
     def _value(self, key: str) -> object:
         if key not in self.values:
