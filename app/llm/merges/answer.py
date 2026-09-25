@@ -20,7 +20,7 @@ from typing import Any, Final
 
 from app.llm.backend import LlmResponse
 from app.llm.json_text import PARSE_CANDIDATE, PARSE_DIRECT, parse_json_tolerant
-from app.llm.merges.description import MergedDescription
+from app.llm.merges.description import EMOJI_PATTERN, MergedDescription
 from app.llm.merges.layout import DescriptionLayout
 from app.llm.merges.reject import MergeReject, MergeRejectCode
 from app.observability.logging_setup import get_logger
@@ -38,7 +38,6 @@ TITLE_MAX_CHARS: Final[int] = 99
 MIN_BODY_PARAGRAPHS: Final[int] = 2
 # Предел тела, начиная с которого ответ ровно на один абзац длиннее отвергается до восстановления.
 SINGLE_STEP_OVERFLOW_MIN_LIMIT: Final[int] = 7
-EMOJI_PATTERN: Final[re.Pattern[str]] = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", flags=re.UNICODE)
 WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 INVALID_TYPE_DETAIL: Final[str] = "invalid_type:{key}"
 PARAGRAPH_COUNT_DETAIL: Final[str] = "body_paragraphs={count} allowed={low}..{high}"
@@ -151,7 +150,7 @@ class MergeAnswer:
             MergeRejectCode.PARAGRAPH_UNDERFLOW if count < MIN_BODY_PARAGRAPHS else MergeRejectCode.PARAGRAPH_OVERFLOW
         )
         detail: str = PARAGRAPH_COUNT_DETAIL.format(count=count, low=MIN_BODY_PARAGRAPHS, high=max_body_paragraphs)
-        return MergeReject(code, detail)
+        return MergeReject(code, detail, paragraph_count=count)
 
     @staticmethod
     def _rejected(model: str, reject: MergeReject) -> MergeReject:

@@ -52,7 +52,7 @@ BACKEND_NAME: Final[str] = "openai"              # имя реализации �
 # говорит «сейчас нет мощностей» — ждать дольше обычного выгодно (restreamer `FLEX_RETRY_DELAYS_SEC`).
 FLEX_RETRY_DELAYS_SEC: Final[tuple[float, ...]] = (20.0, 40.0, 80.0)
 MAX_OUTPUT_GROWTH: Final[int] = 2                # исчерпан max_output_tokens — один повтор с удвоенным пределом
-DEFAULT_SCHEMA_NAME: Final[str] = "merge_v1"     # имя формата json_schema, если схема своего не назвала
+DEFAULT_SCHEMA_NAME: Final[str] = "response"     # имя формата json_schema, если схема своего не назвала
 SDK_MAX_RETRIES: Final[int] = 0                  # повторы делает RetryPolicy, а не SDK
 # Заметки обмена для `LlmResponse.notes` — строки лога, не тексты для человека.
 NOTE_FLEX_TO_DEFAULT: Final[str] = "flex→default"

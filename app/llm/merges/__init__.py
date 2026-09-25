@@ -16,5 +16,9 @@
 Четвёртый слой (задача 3.12b) — проверка ответа: `links.py` (`OfficialLinkSelection` — официальные ссылки источников),
 `check.py` (`MergeDiagnostics` — диагностика стиля и строки лога, `MergeCheck` — проверка покрытия в порядке донора,
 `FormattingRecovery` — снятие лишних эмодзи и повторная проверка); правила над текстом ответа — `MergedDescription`.
+Пятый слой (задача 3.13) — исполнение: `attempt.py` (`MergeAttempt` — одна попытка от запроса до проверки, итог
+`MergeAttemptResult` сам выбирает профиль повтора; `MergeRules` — правила merge одним объектом на запуск; схема ответа
+`MERGE_RESPONSE_SCHEMA`), `job.py` (`MergeJob` — merge слота с повторами, итог `MergeOutcome`: тексты модели или
+источников), `run.py` (`MergeRun` — нейросеть, модель, настройки, счётчики `MergeTally` и остановка по квоте или настройке).
 Модель merge видит только через разъём `app\\llm\\backend.py::LlmBackend`.
 """

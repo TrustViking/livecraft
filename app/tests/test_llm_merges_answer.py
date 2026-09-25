@@ -7,6 +7,8 @@ import random
 import pytest
 
 from app.llm.backend import LlmResponse
+from app.llm.merges import answer as answer_module
+from app.llm.merges import description as description_module
 from app.llm.merges.answer import AnswerParseMode, MergeAnswer
 from app.llm.merges.layout import TailBlock
 from app.llm.merges.reject import MergeReject, MergeRejectCode, MergeRejectStage
@@ -313,3 +315,17 @@ def test_log_lines_have_donor_keys_and_no_text(caplog: pytest.LogCaptureFixture)
 def test_repr_of_the_answer_hides_texts() -> None:
     answer: MergeAnswer = accepted(json.dumps({"title": "Скрытое название", "description": TWO_PARAGRAPHS}))
     assert "Скрытое" not in repr(answer) and "Paragraph one" not in repr(answer)
+
+
+def test_a_paragraph_count_reject_carries_the_count() -> None:
+    overflow: MergeReject = rejected(json.dumps({"title": "T", "description": body(9)}))
+    assert overflow.code is MergeRejectCode.PARAGRAPH_OVERFLOW and overflow.paragraph_count == 9
+    underflow: MergeReject = rejected(json.dumps({"title": "T", "description": "Only one."}))
+    assert underflow.code is MergeRejectCode.PARAGRAPH_UNDERFLOW and underflow.paragraph_count == 1
+    preflight: MergeReject = rejected(json.dumps({"title": "T", "description": body(8)}), max_body_paragraphs=7)
+    assert preflight.code is MergeRejectCode.PARAGRAPH_OVERFLOW and preflight.paragraph_count == 8
+    assert rejected("not json").paragraph_count is None
+
+
+def test_the_emoji_pattern_has_one_source() -> None:
+    assert answer_module.EMOJI_PATTERN is description_module.EMOJI_PATTERN

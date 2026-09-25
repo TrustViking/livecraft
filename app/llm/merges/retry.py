@@ -5,6 +5,8 @@
 `RetryProfile.expanded` — `_build_expanded_retry_profile` (строки только встроенные, по первому сигналу, плюс строки для
 трёх и четырёх источников), `RetryProfile.standard` — `_standard_expanded_retry_profile` (инструкции нет).
 Блок инструкции (`instruction_block`) — `_retry_instruction_block`: промт дописывает его последним (`MergePrompt.text`).
+Какой профиль после отказа — `RetryProfile.after_reject`: первый сигнал в порядке донора (`SIGNAL_ORDER`,
+`merge_orchestrator.py::_select_retry_profile`), иначе обычный повтор с сигналами отказа.
 """
 from __future__ import annotations
 
@@ -67,6 +69,29 @@ class RetrySignal(str, Enum):
     def focus_tags(self) -> tuple[str, ...]:
         return _FOCUS_TAGS[self]
 
+    @classmethod
+    def first_of(cls, codes: Iterable[str]) -> RetrySignal | None:
+        """Сигнал повтора по причинам отказа — первый в порядке донора (`SIGNAL_ORDER`); своего профиля нет — None."""
+        present: frozenset[str] = frozenset(codes)
+        for code, signal in SIGNAL_ORDER:
+            if code in present:
+                return signal
+        return None
+
+
+# Порядок донора `merge_orchestrator.py::MergeOrchestrator._select_retry_profile`: причина, найденная раньше, задаёт
+# профиль. Повтор абзаца и призыв в тезисе — одна проверка донора, у обоих профиль повтора абзаца.
+SIGNAL_ORDER: Final[tuple[tuple[str, RetrySignal], ...]] = (
+    ("overloaded_bullet", RetrySignal.OVERLOADED_BULLET),
+    ("insufficient_bullet_coverage", RetrySignal.INSUFFICIENT_BULLET_COVERAGE),
+    ("cta_as_first_paragraph", RetrySignal.CTA_AS_FIRST_PARAGRAPH),
+    ("hook_echo_in_body", RetrySignal.HOOK_ECHO_IN_BODY),
+    ("duplicate_paragraph", RetrySignal.DUPLICATE_PARAGRAPH),
+    ("cta_in_hook", RetrySignal.DUPLICATE_PARAGRAPH),
+    ("paragraph_underflow", RetrySignal.PARAGRAPH_UNDERFLOW),
+    ("paragraph_overflow", RetrySignal.PARAGRAPH_OVERFLOW),
+    ("compact_bullet_overflow", RetrySignal.COMPACT_BULLET_OVERFLOW),
+)
 
 _REJECT_SIGNALS: Final[dict[RetrySignal, tuple[str, ...]]] = {
     RetrySignal.DUPLICATE_PARAGRAPH: ("duplicate_paragraph", "cta_as_first_paragraph", "cta_in_hook"),
@@ -186,6 +211,15 @@ class RetryProfile:
             focus_tags=(focus,) if focus is not None else (),
             reinforcement_lines=base + extra,
         )
+
+    @classmethod
+    def after_reject(cls, signals: tuple[str, ...], facts: RetryFacts, texts: MergePromptTexts) -> RetryProfile:
+        """Профиль следующей попытки после отказа: направленный по первому сигналу в порядке донора, иначе обычный
+        с сигналами отказа (`_select_retry_profile`). Числа — из отвергнутой попытки (`facts`)."""
+        signal: RetrySignal | None = RetrySignal.first_of(signals)
+        if signal is None:
+            return cls.standard(signals)
+        return cls.targeted(signal, facts, texts)
 
     @classmethod
     def standard(cls, reject_signals: Iterable[str] = ()) -> RetryProfile:

@@ -75,5 +75,14 @@ HOOK_MARKS: Final[tuple[str, ...]] = ("!", "?", ":")
 AGENDA_MIN_BULLETS: Final[int] = 3
 # Восстановление форматирования (`merge_formatting.py::_attempt_expanded_formatting_recovery`) — от трёх источников.
 FORMATTING_RECOVERY_MIN_SOURCES: Final[int] = 3
+# Попыток merge на слот: две; три — если хоть одна отвергнутая попытка отказана по повторяемой причине
+# (`merge_constants.py::PRIMARY_ATTEMPTS`, `PRIMARY_ATTEMPTS_EXTENDED`).
+PRIMARY_ATTEMPTS: Final[int] = 2
+PRIMARY_ATTEMPTS_EXTENDED: Final[int] = 3
+# Merge делается, только когда непустых описаний у источников слота не меньше двух (`slot_processing.py`).
+MIN_DESCRIBED_SOURCES: Final[int] = 2
+# Предел абзацев тела при выравнивании принятого описания слота из нескольких источников: значение по умолчанию
+# `merge_parser.py::separate_merge_body_and_tail`, с которым его зовёт `merge_executor.py::_enforce_description_structure`.
+POST_ENFORCEMENT_MAX_BODY_PARAGRAPHS: Final[int] = 4
 # Версия контракта стиля в строке лога `merge_style_coverage` (`merge_constants.py::STYLE_CONTRACT_VERSION`).
 STYLE_CONTRACT_VERSION: Final[str] = "v4_merge_quality_hardening"

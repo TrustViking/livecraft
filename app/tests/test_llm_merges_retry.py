@@ -172,3 +172,37 @@ def test_targeted_profile_without_lines_is_disabled() -> None:
     profile: RetryProfile = RetryProfile(mode=RetryMode.TARGETED, reject_signals=(), focus_tags=(), reinforcement_lines=())
     assert not profile.enabled
     assert profile.instruction_block == ""
+
+
+# --- выбор профиля после отказа (донор: `MergeOrchestrator._select_retry_profile`)
+
+
+@pytest.mark.parametrize(
+    ("codes", "signal"),
+    [
+        (("paragraph_overflow", "overloaded_bullet"), RetrySignal.OVERLOADED_BULLET),
+        (("cta_as_first_paragraph", "insufficient_bullet_coverage"), RetrySignal.INSUFFICIENT_BULLET_COVERAGE),
+        (("hook_echo_in_body", "cta_as_first_paragraph"), RetrySignal.CTA_AS_FIRST_PARAGRAPH),
+        (("duplicate_paragraph", "hook_echo_in_body"), RetrySignal.HOOK_ECHO_IN_BODY),
+        (("cta_in_hook",), RetrySignal.DUPLICATE_PARAGRAPH),
+        (("paragraph_underflow", "duplicate_paragraph"), RetrySignal.DUPLICATE_PARAGRAPH),
+        (("paragraph_overflow", "paragraph_underflow"), RetrySignal.PARAGRAPH_UNDERFLOW),
+        (("compact_bullet_overflow", "paragraph_overflow"), RetrySignal.PARAGRAPH_OVERFLOW),
+        (("missing_block_spacing", "compact_bullet_overflow"), RetrySignal.COMPACT_BULLET_OVERFLOW),
+    ],
+)
+def test_the_first_signal_in_donor_order_wins(codes: tuple[str, ...], signal: RetrySignal) -> None:
+    assert RetrySignal.first_of(codes) is signal
+    facts: RetryFacts = RetryFacts(source_count=3, actual_bullets=2, required_bullets=5, max_paragraphs=7)
+    assert RetryProfile.after_reject(codes, facts, TEXTS) == RetryProfile.targeted(signal, facts, TEXTS)
+
+
+def test_every_targeted_signal_has_a_place_in_the_order() -> None:
+    assert {RetrySignal.first_of((signal.value,)) for signal in RetrySignal} == set(RetrySignal)
+
+
+def test_a_reject_without_a_profile_gets_the_standard_retry_with_its_signals() -> None:
+    codes: tuple[str, ...] = ("missing_block_spacing", "script_mix_contamination")
+    assert RetrySignal.first_of(codes) is None
+    profile: RetryProfile = RetryProfile.after_reject(codes, RetryFacts(), TEXTS)
+    assert profile == RetryProfile.standard(codes) and profile.mode is RetryMode.STANDARD and not profile.enabled

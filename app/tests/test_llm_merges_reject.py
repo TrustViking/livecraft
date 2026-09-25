@@ -154,3 +154,18 @@ def test_every_code_has_a_stage(code: MergeRejectCode) -> None:
 def test_codes_of_both_stages() -> None:
     both: set[MergeRejectCode] = {code for code in MergeRejectCode if len(code.stages) == 2}
     assert both == {MergeRejectCode.CTA_AS_FIRST_PARAGRAPH, MergeRejectCode.DUPLICATE_PARAGRAPH}
+
+
+def test_signals_fall_back_to_the_main_reason() -> None:
+    assert MergeReject(MergeRejectCode.PARAGRAPH_OVERFLOW).signals == ("paragraph_overflow",)
+    assert MergeReject(MergeRejectCode.OVERLOADED_BULLET).signals == ("overloaded_bullet",)
+    assert MergeReject.semantic_gate(["missing_block_spacing", "script_mix_contamination"]).signals == (
+        "missing_block_spacing",
+        "script_mix_contamination",
+    )
+
+
+def test_the_paragraph_count_is_carried_but_not_compared() -> None:
+    counted: MergeReject = MergeReject(MergeRejectCode.PARAGRAPH_OVERFLOW, "d", paragraph_count=9)
+    assert counted.paragraph_count == 9 and MergeReject(MergeRejectCode.PARAGRAPH_OVERFLOW).paragraph_count is None
+    assert counted == MergeReject(MergeRejectCode.PARAGRAPH_OVERFLOW, "d")

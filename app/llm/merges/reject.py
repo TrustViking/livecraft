@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 from typing import Final
@@ -153,11 +153,14 @@ class MergeReject:
     """Ответ модели не принят. `detail` — подробность для лога (какие ключи, сколько абзацев), без текста ответа.
 
     `validation_codes` — причины, которые у отказа свои, а не из его кода: коды semantic gate после нормализации.
+    `paragraph_count` — сколько абзацев тела насчитал отказ по числу абзацев (недобор, перебор); у прочих None.
+    Повтор после перебора называет модели это число (у донора — разбором «got N» из текста исключения).
     """
 
     code: MergeRejectCode
     detail: str = ""
     validation_codes: tuple[str, ...] = ()
+    paragraph_count: int | None = field(default=None, compare=False)
 
     @classmethod
     def semantic_gate(cls, gate_codes: Sequence[str]) -> MergeReject:
@@ -193,9 +196,15 @@ class MergeReject:
         return codes[0] if codes else self.code.value
 
     @property
+    def signals(self) -> tuple[str, ...]:
+        """Причины, по которым выбирается повтор и решается его повторяемость: причины проверки описания, а если их
+        нет — главная причина (донор: `error.reason_codes or (error.reason_code,)` в `merge_orchestrator.py`)."""
+        return self.reason_codes or (self.reason_code,)
+
+    @property
     def is_recoverable(self) -> bool:
         """Повтор с подсказкой может помочь: хотя бы одна причина повторяемая (донор: `merge_orchestrator.py`)."""
-        return any(code in RECOVERABLE_REJECT_CODES for code in self.reason_codes or (self.code.value,))
+        return any(code in RECOVERABLE_REJECT_CODES for code in self.signals)
 
     @property
     def human(self) -> str:

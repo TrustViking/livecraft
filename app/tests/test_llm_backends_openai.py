@@ -94,7 +94,7 @@ def test_flex_goes_into_kwargs_and_other_models_follow_their_capabilities() -> N
     o3: dict[str, Any] = openai_request(DEFAULT_TIER, model="o3").to_kwargs()
     assert o3["temperature"] == 0.0 and o3["reasoning"] == {"effort": "medium"}
     unnamed_schema: dict[str, Any] = openai_request(schema={"schema": {}}).to_kwargs()
-    assert unnamed_schema["text"]["format"]["name"] == "merge_v1"
+    assert unnamed_schema["text"]["format"]["name"] == "response"
     none_effort: LlmSettings = dataclasses.replace(LLM_SETTINGS, reasoning_effort=ReasoningEffort.NONE)
     assert openai_request(none_effort).to_kwargs()["reasoning"] == {"effort": "none"}
 

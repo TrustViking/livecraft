@@ -29,10 +29,11 @@ NO_SLOT: Final[str] = "-"
 
 
 class SlotTextOrigin(str, Enum):
-    """Откуда тексты слота. `merged` появится вместе с merge (задачи 3.6 и дальше)."""
+    """Откуда тексты слота: из источников без нейросети или из ответа модели на merge (`app\\llm\\merges\\job.py`)."""
 
     SOURCE_SINGLE = "source_single"          # один источник: его название и описание как есть
     SOURCE_COMPOSED = "source_composed"      # несколько источников: название первого, описания подряд
+    MERGED = "merged"                        # одно название и одно описание от модели на весь слот (merge)
 
 
 @dataclass(frozen=True)

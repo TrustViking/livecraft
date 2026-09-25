@@ -165,3 +165,9 @@ def test_empty_description_is_not_a_problem() -> None:
 
 def test_blank_title_is_a_problem() -> None:
     assert texts("   ").problem == msg.SLOT_EMPTY_TITLE
+
+
+def test_merged_texts_keep_their_origin_through_the_platform_rules() -> None:
+    assert SlotTextOrigin.MERGED.value == "merged"
+    merged: SlotTexts = SlotTexts(title="Название <эфира>", description="Опис", origin=SlotTextOrigin.MERGED)
+    assert merged.for_youtube().origin is SlotTextOrigin.MERGED
