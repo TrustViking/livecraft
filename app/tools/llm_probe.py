@@ -3,11 +3,11 @@
 Запуск из корня репо: `python -m app.tools.llm_probe`. В поставку не идёт. Сети в тестах нет — SDK openai
 подменяется; боевую пробу делает Артур.
 
-Идёт тем же путём, что будущий merge: `Readiness` читает сейф и настройки, `OpenAiClient.from_vault` берёт
-ключ, `ModelChoice.select` проверяет основную модель (и запасную, если основная недоступна), затем выбранной
-модели уходит проверочный промт `prompt_startup_ping.txt` с настройками `llm` livecraft.json. Печатает
-выбранную модель и почему, ответ (не длиннее ANSWER_MAX_CHARS), токены и стоимость запуска. Ни ключа, ни
-текста промта. Фильтр секретов в логах ставится сразу после чтения сейфа, до первого обращения к OpenAI.
+Идёт тем же путём, что будущий merge: `Readiness` читает сейф и настройки, одна строка создаёт реализацию
+разъёма (`OpenAiClient.from_vault` берёт ключ), дальше всё — через `LlmBackend`: `ModelChoice.select` проверяет
+основную модель (и запасную, если основная недоступна), затем выбранной модели уходит проверочный промт
+`prompt_startup_ping.txt` с настройками `llm` livecraft.json. Печатает выбранную модель и почему, ответ
+(не длиннее ANSWER_MAX_CHARS), токены, тариф каждого запроса и стоимость запуска. Ни ключа, ни текста промта. Фильтр секретов в логах ставится сразу после чтения сейфа, до первого обращения к OpenAI.
 Коды: 0 — ответ получен; 1 — сбой запроса или модели нет; 2 — нет ключа, сейф или настройки не готовы.
 """
 from __future__ import annotations
@@ -23,9 +23,9 @@ from typing import Any, Final
 import openai
 
 from app.config.loader import LivecraftSettings, LlmSettings
-from app.llm.client import LlmRequest, LlmResponse, OpenAiClient
+from app.llm.backend import LlmBackend, LlmRequest, LlmResponse
+from app.llm.backends.openai import OpenAiClient
 from app.llm.errors import LlmRequestError
-from app.llm.model import LlmModel
 from app.llm.selection import ModelChoice
 from app.llm.usage import RunUsage
 from app.observability.logging_setup import close_logging, get_logger, install_secret_filter, setup_logging
@@ -59,15 +59,15 @@ class StartupPing:
 
     resource: TextResource = TextResource(PING_RESOURCE)
 
-    def render(self, model: LlmModel, now: datetime) -> str:
+    def render(self, model_name: str, now: datetime) -> str:
         template: str = self.resource.path.read_text(encoding=RESOURCE_ENCODING)
         moment: str = now.astimezone(timezone.utc).isoformat(timespec=UTC_TIMESPEC)
-        return template.format(model_name=model.name, utc_now=moment)
+        return template.format(model_name=model_name, utc_now=moment)
 
 
 @dataclass(frozen=True)
 class LlmProbeReport:
-    """Что показать человеку после запроса: ответ (коротко), токены и стоимость запуска. Ни ключа, ни промта."""
+    """Что показать человеку после запроса: ответ (коротко), токены, тариф каждого запроса, стоимость запуска."""
 
     usage: RunUsage
     response: LlmResponse | None
@@ -75,7 +75,7 @@ class LlmProbeReport:
     @property
     def lines(self) -> tuple[str, ...]:
         answer: tuple[str, ...] = (self._answer_line(self.response),) if self.response is not None else ()
-        return (*answer, self._tokens_line, self._cost_line)
+        return (*answer, self._tokens_line, self._requests_line, self._cost_line)
 
     @staticmethod
     def _answer_line(response: LlmResponse) -> str:
@@ -88,24 +88,31 @@ class LlmProbeReport:
     def _tokens_line(self) -> str:
         usage: RunUsage = self.usage
         if not usage.tokens_known:
-            return msg.LLM_PROBE_TOKENS_UNKNOWN.format(requests=usage.requests)
+            return msg.LLM_PROBE_TOKENS_UNKNOWN
         return msg.LLM_PROBE_TOKENS.format(
             input=usage.input_tokens,
             cached=usage.cached_input_tokens,
             output=usage.output_tokens,
-            reasoning=usage.reasoning_tokens,
+            thinking=usage.thinking_tokens,
             total=usage.tokens,
-            requests=usage.requests,
         )
+
+    @property
+    def _requests_line(self) -> str:
+        """Тариф у каждого запроса отдельно: «проверка — default, проба — flex», а не общий список тарифов."""
+        tiers: str = LIST_JOINER.join(
+            msg.LLM_PROBE_TIER_ENTRY.format(label=msg.LLM_REQUEST_LABEL_TEXT.get(label, label), tier=tier)
+            for label, tier in self.usage.tier_by_request
+        )
+        return msg.LLM_PROBE_REQUESTS.format(requests=self.usage.requests, tiers=tiers or msg.LLM_PROBE_NONE)
 
     @property
     def _cost_line(self) -> str:
         cost: str = COST_FORMAT.format(self.usage.cost_usd)
-        tiers: str = LIST_JOINER.join(sorted(self.usage.service_tiers)) or msg.LLM_PROBE_NONE
         if self.usage.cost_known:
-            return msg.LLM_PROBE_COST.format(cost=cost, tiers=tiers)
+            return msg.LLM_PROBE_COST.format(cost=cost)
         models: str = LIST_JOINER.join(sorted(self.usage.models)) or msg.LLM_PROBE_NONE
-        return msg.LLM_PROBE_COST_UNKNOWN.format(cost=cost, tiers=tiers, models=models)
+        return msg.LLM_PROBE_COST_UNKNOWN.format(cost=cost, models=models)
 
 
 @dataclass(frozen=True)
@@ -131,27 +138,27 @@ class LlmProbe:
         if settings is None:
             return self._refuse(str(readiness.settings_error))
         try:
-            client: OpenAiClient = OpenAiClient.from_vault(vault, settings.llm, sdk=self.sdk)
+            backend: LlmBackend = OpenAiClient.from_vault(vault, settings.llm, sdk=self.sdk)
         except LlmRequestError as error:
             return self._refuse(error.human)
-        return self._probe(client, settings.llm)
+        return self._probe(backend, settings.llm)
 
-    def _probe(self, client: OpenAiClient, llm: LlmSettings) -> int:
+    def _probe(self, backend: LlmBackend, llm: LlmSettings) -> int:
         self.say(self._settings_line(llm))
-        choice: ModelChoice = ModelChoice.select(client, llm)
+        choice: ModelChoice = ModelChoice.select(backend, llm.model, llm.fallback_model)
         self.say(choice.human)
         if choice.chosen is None:
-            return self._finish(client.run_usage, None, ProbeExit.ERRORS)
+            return self._finish(backend.run_usage, None, ProbeExit.ERRORS)
         request: LlmRequest = LlmRequest.from_settings(
             llm, choice.chosen, self.ping.render(choice.chosen, self.now()), PING_LABEL
         )
         try:
-            response: LlmResponse = client.send(request)
+            response: LlmResponse = backend.complete(request)
         except LlmRequestError as error:
             LOGGER.error("llm_probe_failed %s", error.log_line)
             self.say(error.human)
-            return self._finish(client.run_usage, None, ProbeExit.ERRORS)
-        return self._finish(client.run_usage, response, ProbeExit.OK)
+            return self._finish(backend.run_usage, None, ProbeExit.ERRORS)
+        return self._finish(backend.run_usage, response, ProbeExit.OK)
 
     def _finish(self, usage: RunUsage, response: LlmResponse | None, code: ProbeExit) -> int:
         for line in LlmProbeReport(usage=usage, response=response).lines:

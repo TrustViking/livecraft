@@ -1,9 +1,9 @@
-"""Модель OpenAI: что она умеет в запросе и сколько стоит (CLAUDE.md §2 строки про llm\\).
+"""Модель OpenAI: что она умеет в запросе и сколько стоит (CLAUDE.md §2 строки про llm\\). Только для OpenAI.
 
 Правила перенесены из restreamer: семейство и возможности модели — `models\\model_compatibility.py`
 (`_openai_model_family`, `*_supported`, правило имён), цены и множители тарифов — `model_pricing.py`
 (`MODEL_PRICES`, `SERVICE_TIER_MULTIPLIERS`, `price_for_model`, `estimate_cost_usd`). Здесь они — поля и
-методы объектов `LlmModel` и `ServiceTierRule`, а не свободные функции.
+методы объектов `OpenAiModel` и `ServiceTierRule`, а не свободные функции.
 """
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING, Final
 
 from app.config.loader import ServiceTier
 
-if TYPE_CHECKING:      # только для аннотаций: usage.py сам импортирует этот модуль
-    from app.llm.usage import RequestUsage
+if TYPE_CHECKING:      # только для аннотаций: openai_response.py сам импортирует этот модуль
+    from app.llm.backends.openai_response import OpenAiUsage
 
 TOKENS_PER_PRICE_UNIT: Final[float] = 1_000_000.0       # цены — в долларах за миллион токенов
 COST_DIGITS: Final[int] = 6
@@ -72,7 +72,7 @@ class ModelPrice:
     cache_write_usd: float
     output_usd: float
 
-    def standard_cost(self, usage: RequestUsage) -> float:
+    def standard_cost(self, usage: OpenAiUsage) -> float:
         """Стоимость ответа по тарифу Standard: кешированный вход и запись кеша — части входа, считаются отдельно."""
         uncached_input: int = max(0, usage.input_tokens - usage.cached_input_tokens - usage.cache_write_tokens)
         total: float = (
@@ -139,7 +139,7 @@ class ServiceTierRule:
 
 
 @dataclass(frozen=True)
-class LlmModel:
+class OpenAiModel:
     """Модель по имени из настроек или из ответа: семейство, возможности запроса и цена."""
 
     name: str
@@ -165,7 +165,7 @@ class LlmModel:
     def supports_temperature(self) -> bool:
         """Температура не шлётся моделям gpt-*: у gpt-5 рассуждение вместо неё, gpt-4x — по замыслу донора.
 
-        Прочим моделям шлётся; отказ «unsupported parameter: temperature» снимает её повтором (client.py).
+        Прочим моделям шлётся; отказ «unsupported parameter: temperature» снимает её повтором (openai.py).
         """
         return not self.normalized.startswith("gpt")
 
@@ -175,7 +175,7 @@ class LlmModel:
         base: str = SNAPSHOT_SUFFIX_PATTERN.sub("", self.normalized)
         return MODEL_PRICES.get(MODEL_ALIASES.get(base, base))
 
-    def cost(self, usage: RequestUsage, service_tier: ServiceTierRule) -> float | None:
+    def cost(self, usage: OpenAiUsage, service_tier: ServiceTierRule) -> float | None:
         """Стоимость одного ответа в долларах; модели нет в снимке цен — None (стоимость неизвестна)."""
         price: ModelPrice | None = self.price
         if price is None:

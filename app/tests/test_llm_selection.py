@@ -4,9 +4,8 @@ import dataclasses
 import random
 
 from app.config.loader import LlmSettings
-from app.llm.client import OpenAiClient
+from app.llm.backends.openai import OpenAiClient
 from app.llm.errors import LlmErrorKind
-from app.llm.model import LlmModel
 from app.llm.selection import ChoiceReason, ModelChoice
 from app.secretsafe.value import SecretField, SecretValue
 from app.tests.conftest import LLM_SETTINGS, SUPPLIED_VALUES, FakeLlmSdk, api_error, llm_answer, timeout_error
@@ -20,7 +19,7 @@ def choose(sdk: FakeLlmSdk, settings: LlmSettings = LLM_SETTINGS) -> ModelChoice
     client: OpenAiClient = OpenAiClient(
         key=KEY, settings=settings, sdk=sdk, rng=random.Random(1), sleep=lambda _: None, clock=lambda: 0.0
     )
-    return ModelChoice.select(client, settings)
+    return ModelChoice.select(client, settings.model, settings.fallback_model)
 
 
 def probed(sdk: FakeLlmSdk) -> list[object]:
@@ -30,8 +29,8 @@ def probed(sdk: FakeLlmSdk) -> list[object]:
 def test_primary_that_answers_is_chosen() -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(llm_answer(""))
     choice: ModelChoice = choose(sdk)
-    assert choice.chosen == LlmModel("gpt-5.6-sol") and choice.reason is ChoiceReason.PRIMARY_CONFIRMED
-    assert choice.fallback == LlmModel("gpt-5.4") and choice.error is None
+    assert choice.chosen == "gpt-5.6-sol" and choice.reason is ChoiceReason.PRIMARY_CONFIRMED
+    assert choice.fallback == "gpt-5.4" and choice.error is None
     assert probed(sdk) == ["gpt-5.6-sol"]
     assert choice.human == msg.LLM_CHOICE_LINE.format(model="gpt-5.6-sol", reason=ChoiceReason.PRIMARY_CONFIRMED.human)
 
@@ -39,7 +38,7 @@ def test_primary_that_answers_is_chosen() -> None:
 def test_access_denial_switches_to_the_fallback() -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(api_error(404, "The model does not exist", code="model_not_found"), llm_answer(""))
     choice: ModelChoice = choose(sdk)
-    assert choice.chosen == LlmModel("gpt-5.4") and choice.reason is ChoiceReason.FALLBACK_CONFIRMED
+    assert choice.chosen == "gpt-5.4" and choice.reason is ChoiceReason.FALLBACK_CONFIRMED
     assert choice.error is not None and choice.error.kind is LlmErrorKind.MODEL_NOT_FOUND
     assert probed(sdk) == ["gpt-5.6-sol", "gpt-5.4"]
     assert "llm_model_selected chosen=gpt-5.4 primary=gpt-5.6-sol fallback=gpt-5.4 reason=fallback_confirmed" in choice.log_line
@@ -47,14 +46,14 @@ def test_access_denial_switches_to_the_fallback() -> None:
 
 def test_fallback_that_cannot_be_checked_is_kept() -> None:
     choice: ModelChoice = choose(FakeLlmSdk(api_error(403, DENIED), timeout_error()))
-    assert choice.chosen == LlmModel("gpt-5.4") and choice.reason is ChoiceReason.FALLBACK_UNCHECKED
+    assert choice.chosen == "gpt-5.4" and choice.reason is ChoiceReason.FALLBACK_UNCHECKED
     assert choice.error is not None and choice.error.kind is LlmErrorKind.TIMEOUT
 
 
 def test_timeout_keeps_the_primary_unchecked_and_does_not_touch_the_fallback() -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(timeout_error())
     choice: ModelChoice = choose(sdk)
-    assert choice.chosen == LlmModel("gpt-5.6-sol") and choice.reason is ChoiceReason.PRIMARY_UNCHECKED
+    assert choice.chosen == "gpt-5.6-sol" and choice.reason is ChoiceReason.PRIMARY_UNCHECKED
     assert choice.is_usable and probed(sdk) == ["gpt-5.6-sol"]
 
 

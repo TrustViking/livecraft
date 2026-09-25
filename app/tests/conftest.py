@@ -222,7 +222,7 @@ def set_form_url(paths: LivecraftPaths, url: str) -> None:
     save_settings_file(paths.config_file, dataclasses.replace(settings, form=dataclasses.replace(settings.form, url=url)))
 
 
-# --- нейросеть без сети: подделка SDK openai (app\llm\client.py), ответы и отказы OpenAI
+# --- нейросеть без сети: подделка SDK openai (app\llm\backends\openai.py), ответы и отказы OpenAI
 
 OPENAI_URL: str = "https://api.openai.com/v1/responses"
 LLM_SETTINGS: LlmSettings = LlmSettings(

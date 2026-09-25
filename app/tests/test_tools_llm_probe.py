@@ -7,13 +7,13 @@ import pytest
 
 from app.config.loader import LivecraftSettings, load_settings
 from app.llm.errors import LlmErrorKind
-from app.llm.model import LlmModel
 from app.llm.selection import ChoiceReason
+from app.llm.usage import RequestUsage, RunUsage
 from app.paths import LivecraftPaths, ROOT_ENV_VAR
 from app.secretsafe.value import SecretField
 from app.tests.conftest import SUPPLIED_VALUES, FakeLlmSdk, api_error, llm_answer, write_supplied_vault
 from app.tools import llm_probe
-from app.tools.llm_probe import ANSWER_MAX_CHARS, LlmProbe, ProbeExit, StartupPing
+from app.tools.llm_probe import ANSWER_MAX_CHARS, LlmProbe, LlmProbeReport, ProbeExit, StartupPing
 from app.ui import messages_ru as msg
 
 MOMENT: datetime = datetime(2026, 9, 24, 18, 30, tzinfo=timezone.utc)
@@ -33,13 +33,13 @@ def assert_no_vault_values(lines: list[str]) -> None:
 
 
 def test_ping_prompt_gets_the_model_and_the_moment() -> None:
-    prompt: str = StartupPing().render(LlmModel("gpt-5.4"), MOMENT)
+    prompt: str = StartupPing().render("gpt-5.4", MOMENT)
     assert prompt.startswith("You are a health-check responder for the LLM API.")
     assert "expected_model=gpt-5.4" in prompt and "utc_now=2026-09-24T18:30:00+00:00" in prompt
 
 
 def test_probe_prints_the_model_the_answer_tokens_and_cost(ready_paths: LivecraftPaths) -> None:
-    sdk: FakeLlmSdk = FakeLlmSdk(llm_answer("", output_tokens=16), llm_answer(PING_ANSWER))
+    sdk: FakeLlmSdk = FakeLlmSdk(llm_answer("", service_tier="default", output_tokens=16), llm_answer(PING_ANSWER))
     code, lines = run_probe(ready_paths, sdk)
     assert code == ProbeExit.OK == 0
     settings: LivecraftSettings = load_settings(ready_paths.config_file)
@@ -52,8 +52,9 @@ def test_probe_prints_the_model_the_answer_tokens_and_cost(ready_paths: Livecraf
     )
     assert msg.LLM_CHOICE_LINE.format(model=settings.llm.model, reason=ChoiceReason.PRIMARY_CONFIRMED.human) in lines
     assert msg.LLM_PROBE_ANSWER.format(text=PING_ANSWER) in lines
-    assert msg.LLM_PROBE_TOKENS.format(input=2000, cached=400, output=116, reasoning=80, total=2116, requests=2) in lines
-    assert lines[-1].startswith("Стоимость: $0.00") and "(тариф flex)" in lines[-1]
+    assert msg.LLM_PROBE_TOKENS.format(input=2000, cached=400, output=116, thinking=80, total=2116) in lines
+    assert lines[-2] == "Запросов: 2; тарифы: проверка — default, проба — flex."
+    assert lines[-1].startswith("Стоимость: $0.00") and lines[-1].endswith(".")
     ping_call: dict[str, object] = sdk.calls[1]
     assert ping_call["model"] == settings.llm.model and ping_call["max_output_tokens"] == settings.llm.max_output_tokens
     assert "expected_model=" + settings.llm.model in json.dumps(ping_call["input"])
@@ -79,9 +80,10 @@ def test_failed_request_is_code_1(ready_paths: LivecraftPaths) -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(llm_answer(""), api_error(400, "bad input"))
     code, lines = run_probe(ready_paths, sdk)
     assert code == ProbeExit.ERRORS == 1
-    assert msg.LLM_REQUEST_FAILED_STATUS.format(reason=LlmErrorKind.BAD_REQUEST.human, status=400) in lines
+    assert msg.LLM_REQUEST_FAILED_STATUS.format(reason=LlmErrorKind.BAD_REQUEST.human("OpenAI"), status=400) in lines
     assert not any(line.startswith("Ответ модели") for line in lines)
-    assert lines[-2].startswith("Токены:")
+    assert lines[-3].startswith("Токены:")
+    assert lines[-2] == msg.LLM_PROBE_REQUESTS.format(requests=1, tiers="проверка — flex")
 
 
 def test_rejected_key_is_code_1_and_nothing_else_is_asked(ready_paths: LivecraftPaths) -> None:
@@ -101,7 +103,7 @@ def test_no_key_is_code_2_without_openai(ready_paths: LivecraftPaths) -> None:
     code, lines = run_probe(ready_paths, sdk)
     assert code == ProbeExit.CONFIG == 2
     assert sdk.created == [] and sdk.calls == []
-    assert msg.LLM_REQUEST_FAILED.format(reason=LlmErrorKind.NOT_CONFIGURED.human) in lines
+    assert msg.LLM_REQUEST_FAILED.format(reason=LlmErrorKind.NOT_CONFIGURED.human("OpenAI")) in lines
     assert lines[-1] == msg.SETUP_REQUIRED
 
 
@@ -121,3 +123,22 @@ def test_broken_vault_is_code_2(ready_paths: LivecraftPaths) -> None:
 def test_main_on_an_empty_root_is_code_2(monkeypatch: pytest.MonkeyPatch, livecraft_paths: LivecraftPaths) -> None:
     monkeypatch.setenv(ROOT_ENV_VAR, str(livecraft_paths.root))
     assert llm_probe.main([]) == ProbeExit.CONFIG
+
+
+def test_the_tier_line_names_each_request_and_unknown_labels_as_is() -> None:
+    def spent(label: str, tier: str) -> RequestUsage:
+        return RequestUsage(
+            input_tokens=1, cached_input_tokens=0, cache_write_tokens=0, output_tokens=1, thinking_tokens=0,
+            total_tokens=2, response_id="", model="gpt-5.4", tier=tier, label=label, cost_usd=0.0,
+        )
+
+    run: RunUsage = RunUsage()
+    for label, tier in (("model_probe", "default"), ("merge", "flex")):
+        run.add(spent(label, tier))
+    run.add(None)
+    lines: tuple[str, ...] = LlmProbeReport(usage=run, response=None).lines
+    assert lines[0] == msg.LLM_PROBE_TOKENS_UNKNOWN
+    assert lines[1] == "Запросов: 3; тарифы: проверка — default, merge — flex."
+    assert lines[2].startswith("Стоимость: не меньше $")
+    empty: tuple[str, ...] = LlmProbeReport(usage=RunUsage(), response=None).lines
+    assert empty[1] == msg.LLM_PROBE_REQUESTS.format(requests=0, tiers=msg.LLM_PROBE_NONE)

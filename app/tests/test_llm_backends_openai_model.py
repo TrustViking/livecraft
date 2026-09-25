@@ -3,12 +3,12 @@ from __future__ import annotations
 import pytest
 
 from app.config.loader import ServiceTier
-from app.llm.model import MODEL_PRICES, LlmModel, ModelFamily, ServiceTierRule
-from app.llm.usage import RequestUsage
+from app.llm.backends.openai_model import MODEL_PRICES, ModelFamily, OpenAiModel, ServiceTierRule
+from app.llm.backends.openai_response import OpenAiUsage
 
 
-def usage(input_tokens: int, cached: int, cache_write: int, output: int, tier: str = "default") -> RequestUsage:
-    return RequestUsage(
+def usage(input_tokens: int, cached: int, cache_write: int, output: int, tier: str = "default") -> OpenAiUsage:
+    return OpenAiUsage(
         input_tokens=input_tokens,
         cached_input_tokens=cached,
         cache_write_tokens=cache_write,
@@ -37,37 +37,37 @@ def usage(input_tokens: int, cached: int, cache_write: int, output: int, tier: s
     ],
 )
 def test_family_follows_the_donor_name_rule(name: str, family: ModelFamily) -> None:
-    assert LlmModel(name).family is family
+    assert OpenAiModel(name).family is family
 
 
 def test_request_capabilities_by_name() -> None:
-    gpt5: LlmModel = LlmModel("gpt-5.6-sol")
+    gpt5: OpenAiModel = OpenAiModel("gpt-5.6-sol")
     assert gpt5.supports_reasoning and gpt5.supports_structured_output and not gpt5.supports_temperature
-    gpt4o: LlmModel = LlmModel("gpt-4o")
+    gpt4o: OpenAiModel = OpenAiModel("gpt-4o")
     assert not gpt4o.supports_reasoning and not gpt4o.supports_temperature
-    o3: LlmModel = LlmModel("o3")
+    o3: OpenAiModel = OpenAiModel("o3")
     assert o3.supports_reasoning and o3.supports_temperature
-    assert not LlmModel("").supports_structured_output
+    assert not OpenAiModel("").supports_structured_output
 
 
 def test_snapshot_name_prices_as_its_model_and_the_alias_as_sol() -> None:
-    assert LlmModel("gpt-5.4-2026-03-05").price == MODEL_PRICES["gpt-5.4"]
-    assert LlmModel("GPT-5.4").price == MODEL_PRICES["gpt-5.4"]
-    assert LlmModel("gpt-5.6").price == MODEL_PRICES["gpt-5.6-sol"]
-    assert LlmModel("gpt-5.6-2026-08-01").price == MODEL_PRICES["gpt-5.6-sol"]
-    assert LlmModel("gpt-9").price is None
+    assert OpenAiModel("gpt-5.4-2026-03-05").price == MODEL_PRICES["gpt-5.4"]
+    assert OpenAiModel("GPT-5.4").price == MODEL_PRICES["gpt-5.4"]
+    assert OpenAiModel("gpt-5.6").price == MODEL_PRICES["gpt-5.6-sol"]
+    assert OpenAiModel("gpt-5.6-2026-08-01").price == MODEL_PRICES["gpt-5.6-sol"]
+    assert OpenAiModel("gpt-9").price is None
 
 
 def test_cost_counts_cached_input_and_cache_writes_separately() -> None:
     # gpt-5.6-sol: вход 4.00, кеш 0.40, запись кеша 5.00, выход 20.00 за миллион
-    spent: RequestUsage = usage(input_tokens=1_000_000, cached=200_000, cache_write=100_000, output=50_000)
+    spent: OpenAiUsage = usage(input_tokens=1_000_000, cached=200_000, cache_write=100_000, output=50_000)
     expected: float = (700_000 * 4.00 + 200_000 * 0.40 + 100_000 * 5.00 + 50_000 * 20.00) / 1_000_000
-    assert LlmModel("gpt-5.6-sol").cost(spent, ServiceTierRule.of("default")) == pytest.approx(expected)
+    assert OpenAiModel("gpt-5.6-sol").cost(spent, ServiceTierRule.of("default")) == pytest.approx(expected)
 
 
 def test_flex_is_half_and_fast_is_double() -> None:
-    spent: RequestUsage = usage(input_tokens=1_000_000, cached=0, cache_write=0, output=1_000_000)
-    model: LlmModel = LlmModel("gpt-5.4-2026-03-05")
+    spent: OpenAiUsage = usage(input_tokens=1_000_000, cached=0, cache_write=0, output=1_000_000)
+    model: OpenAiModel = OpenAiModel("gpt-5.4-2026-03-05")
     standard: float | None = model.cost(spent, ServiceTierRule.of(ServiceTier.DEFAULT))
     assert standard == pytest.approx(2.50 + 15.00)
     assert model.cost(spent, ServiceTierRule.of("flex")) == pytest.approx(standard / 2)
@@ -77,7 +77,7 @@ def test_flex_is_half_and_fast_is_double() -> None:
 
 
 def test_unknown_model_has_no_cost() -> None:
-    assert LlmModel("gpt-9").cost(usage(10, 0, 0, 10), ServiceTierRule.of("default")) is None
+    assert OpenAiModel("gpt-9").cost(usage(10, 0, 0, 10), ServiceTierRule.of("default")) is None
 
 
 def test_service_tier_rule() -> None:

@@ -1,5 +1,6 @@
 """Остаток лимитов OpenAI из заголовков ответа (CLAUDE.md §2 строки про llm\\: `llm_rate_limits.py` restreamer).
 
+Только для OpenAI: заголовки `x-ratelimit-*` — её; в общий ответ разъёма снимок не входит, он идёт в лог.
 Правила донора: из всех заголовков `x-ratelimit-*` берётся самый жёсткий остаток запросов и токенов и самое
 близкое обнуление; обнуление приходит как «1m30s», «200ms», «6s», число секунд или момент в секундах эпохи.
 """
@@ -11,7 +12,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
-from app.llm.usage import parse_int
+from app.llm.backends.openai_response import parse_int
 
 HEADER_PREFIX: Final[str] = "x-ratelimit-"
 MARK_REMAINING: Final[str] = "remaining"

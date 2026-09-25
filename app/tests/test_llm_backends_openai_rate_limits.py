@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.llm.rate_limits import RateLimitSnapshot, parse_reset_seconds
+from app.llm.backends.openai_rate_limits import RateLimitSnapshot, parse_reset_seconds
 
 NOW: float = 1_800_000_000.0
 

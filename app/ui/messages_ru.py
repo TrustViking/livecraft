@@ -560,24 +560,32 @@ SOURCE_PROBE_DETAIL: Final[str] = "  подробно: {detail}"
 SOURCE_PROBE_SUMMARY: Final[str] = "Источников: {total}, получено: {ok}, отказов: {failed}."
 
 # --- нейросеть (app\llm\): ни ключа, ни текста промта. Ключи LLM_ERROR_KIND_TEXT — значения LlmErrorKind,
-# ключи LLM_CHOICE_REASON_TEXT — значения ChoiceReason.
+# {provider} — название нейросети из LLM_BACKEND_TITLE (ключи — LlmBackend.name); ключи LLM_CHOICE_REASON_TEXT —
+# значения ChoiceReason; ключи LLM_REQUEST_LABEL_TEXT — ярлыки запросов (LlmRequest.label).
+LLM_BACKEND_TITLE: Final[dict[str, str]] = {
+    "openai": "OpenAI",
+}
 LLM_REQUEST_FAILED: Final[str] = "Запрос к нейросети не удался: {reason}."
 LLM_REQUEST_FAILED_STATUS: Final[str] = "Запрос к нейросети не удался: {reason} (код ответа {status})."
 LLM_ERROR_KIND_TEXT: Final[dict[str, str]] = {
-    "openai_timeout": "OpenAI не ответил вовремя",
-    "openai_connection_error": "нет связи с OpenAI — проверьте интернет",
-    "openai_quota_exhausted": "на счёте OpenAI кончились деньги или лимит — пополните баланс в кабинете OpenAI",
-    "openai_rate_limit": "OpenAI перегружен или превышен лимит запросов — запустите позже",
-    "openai_server_error": "сбой на стороне OpenAI — запустите позже",
-    "openai_authentication_failed": "OpenAI не принял ключ — проверьте ключ OpenAI в настройках",
-    "openai_model_access_denied": "у ключа OpenAI нет доступа к этой модели",
-    "openai_model_not_found": "такой модели нет или она недоступна этому ключу — проверьте имя модели в настройках",
-    "openai_incompatible_request_shape": "модель не умеет отвечать по заданной схеме JSON",
-    "openai_unsupported_parameter": "модель не принимает один из параметров запроса",
-    "openai_bad_request": "OpenAI отклонил запрос",
-    "openai_request_failed": "OpenAI не выполнил запрос",
-    "openai_empty_output": "модель вернула пустой ответ",
-    "openai_not_configured": "не задан ключ OpenAI — задайте его на вкладке «Ключи и ссылки» настройщика",
+    "timeout": "{provider} не ответил вовремя",
+    "connection_error": "нет связи с {provider} — проверьте интернет",
+    "quota_exhausted": "на счёте {provider} кончились деньги или лимит — пополните баланс в кабинете {provider}",
+    "rate_limit": "{provider} перегружен или превышен лимит запросов — запустите позже",
+    "server_error": "сбой на стороне {provider} — запустите позже",
+    "authentication_failed": "{provider} не принял ключ — проверьте ключ {provider} в настройках",
+    "model_access_denied": "у ключа {provider} нет доступа к этой модели",
+    "model_not_found": "такой модели нет или она недоступна этому ключу — проверьте имя модели в настройках",
+    "incompatible_request_shape": "модель не умеет отвечать по заданной схеме JSON",
+    "unsupported_parameter": "модель не принимает один из параметров запроса",
+    "bad_request": "{provider} отклонил запрос",
+    "request_failed": "{provider} не выполнил запрос",
+    "empty_output": "модель вернула пустой ответ",
+    "not_configured": "не задан ключ {provider} — задайте его на вкладке «Ключи и ссылки» настройщика",
+}
+LLM_REQUEST_LABEL_TEXT: Final[dict[str, str]] = {
+    "model_probe": "проверка",
+    "startup_ping": "проба",
 }
 LLM_CHOICE_REASON_TEXT: Final[dict[str, str]] = {
     "primary_confirmed": "основная, ответила на проверку",
@@ -596,14 +604,13 @@ LLM_PROBE_NO_FALLBACK: Final[str] = "нет"
 LLM_PROBE_ANSWER: Final[str] = "Ответ модели: {text}"
 LLM_PROBE_ANSWER_CUT: Final[str] = "{text}…"
 LLM_PROBE_TOKENS: Final[str] = (
-    "Токены: вход {input} (из кеша {cached}), выход {output} (из них рассуждение {reasoning}), всего {total}; "
-    "запросов: {requests}."
+    "Токены: вход {input} (из кеша {cached}), выход {output} (из них рассуждение {thinking}), всего {total}."
 )
-LLM_PROBE_TOKENS_UNKNOWN: Final[str] = "Токены: OpenAI не сообщил расход по части запросов (запросов: {requests})."
-LLM_PROBE_COST: Final[str] = "Стоимость: ${cost} (тариф {tiers})."
-LLM_PROBE_COST_UNKNOWN: Final[str] = (
-    "Стоимость: не меньше ${cost} (тариф {tiers}) — цены части моделей ({models}) в программе нет."
-)
+LLM_PROBE_TOKENS_UNKNOWN: Final[str] = "Токены: нейросеть не сообщила расход по части запросов."
+LLM_PROBE_REQUESTS: Final[str] = "Запросов: {requests}; тарифы: {tiers}."
+LLM_PROBE_TIER_ENTRY: Final[str] = "{label} — {tier}"
+LLM_PROBE_COST: Final[str] = "Стоимость: ${cost}."
+LLM_PROBE_COST_UNKNOWN: Final[str] = "Стоимость: не меньше ${cost} — цены части моделей ({models}) в программе нет."
 LLM_PROBE_NONE: Final[str] = "нет"
 
 # --- обрыв и падение запуска (app\main.py::run_cli)
