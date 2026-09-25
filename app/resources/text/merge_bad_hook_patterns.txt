@@ -1,0 +1,56 @@
+# перенесено из restreamer merge_validation_helpers.py::_BAD_HOOK_PATTERNS
+наш канал
+наш некомерційний
+наш неприбутковий
+наш неприбутков
+не просуває
+не пропагує
+не продвигает
+не пропагандирует
+our channel
+our nonprofit
+if you want more
+if you'd like more
+хочете продовження
+хотите продолжения
+write in the comments
+напишіть у коментарях
+напишите в комментариях
+поширюйте
+поділіться
+приєднуйтесь
+stay tuned
+поделитесь
+смотрите полный
+watch the full
+follow the full
+если вы смотрели стрим
+если вы смотрели стрим, напишите
+# Meta-editorial openings: preamble instead of a factual hook.
+матеріал подано
+матеріал представлено
+матеріал підготовлено
+матеріал розміщено
+цей матеріал є частиною
+цей матеріал подано
+матеріал публікується
+материал подан
+материал представлен
+материал подготовлен
+материал публикуется
+этот материал является частью
+данный материал
+this material is presented
+this material is part of
+this content is presented
+this video is part of
+presented as part of
+in the context of
+within the context of
+as part of an ongoing
+в контексті
+в рамках обговорення
+в рамках обсуждения
+в рамках розслідування
+в рамках расследования
+в рамках документального

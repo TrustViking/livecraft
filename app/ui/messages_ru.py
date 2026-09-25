@@ -597,6 +597,21 @@ LLM_CHOICE_REASON_TEXT: Final[dict[str, str]] = {
 LLM_CHOICE_LINE: Final[str] = "Модель: {model} — {reason}."
 LLM_CHOICE_REFUSED: Final[str] = "Модель не выбрана. {reason}"
 
+# --- ответ модели на merge (app\llm\merges\): причина отказа по коду; ключи — значения MergeRejectCode
+MERGE_REJECT_TEXT: Final[dict[str, str]] = {
+    "not_json_object": "модель ответила не одним объектом JSON",
+    "missing_keys": "в ответе модели нет названия или описания",
+    "extra_keys": "в ответе модели есть лишние поля кроме названия и описания",
+    "invalid_title": "название пустое или содержит эмодзи",
+    "invalid_description": "описание пустое",
+    "cta_as_first_paragraph": "описание начинается с призыва подписаться или написать комментарий",
+    "duplicate_paragraph": "в описании повторяются абзацы или тезис",
+    "empty": "в описании не осталось текста после удаления служебных строк",
+    "paragraph_underflow": "в описании слишком мало абзацев",
+    "paragraph_overflow": "в описании слишком много абзацев",
+    "unexpected_error": "модель вернула название или описание не текстом",
+}
+
 # --- пробник нейросети (app\tools\llm_probe.py): модель, токены, стоимость; ни ключа, ни промта
 LLM_PROBE_TITLE: Final[str] = "Проверка нейросети OpenAI"
 LLM_PROBE_SETTINGS: Final[str] = "Основная модель: {primary}; запасная: {fallback}; тариф: {tier}; рассуждение: {effort}."
