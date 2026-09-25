@@ -13,5 +13,8 @@
 `source.py` (`MergeSource`, `PreparedSourceDescription` — источник и его очищенное описание), `contract.py`
 (`MergeContract` — compact / expanded / narrative, предел абзацев тела), `retry.py` (`RetryProfile` — инструкция
 повтора по сигналу отказа), `prompt.py` (`MergePrompt` — текст промта; меньше двух источников — `MergePromptRefusal`).
+Четвёртый слой (задача 3.12b) — проверка ответа: `links.py` (`OfficialLinkSelection` — официальные ссылки источников),
+`check.py` (`MergeDiagnostics` — диагностика стиля и строки лога, `MergeCheck` — проверка покрытия в порядке донора,
+`FormattingRecovery` — снятие лишних эмодзи и повторная проверка); правила над текстом ответа — `MergedDescription`.
 Модель merge видит только через разъём `app\\llm\\backend.py::LlmBackend`.
 """

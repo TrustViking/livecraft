@@ -5,6 +5,7 @@
 снимаются короткие служебные абзацы («подпишитесь», «ссылки ниже» — лексикон `merge_service_hints.txt`).
 `AnalysisTextReport` — та же чистка со счётчиками (`_clean_description_for_analysis_report` донора): сколько ссылок
 и хештегов убрано и сколько абзацев выпало; счётчики пишет в лог подготовка описаний источников для промта merge.
+`is_service_tail_paragraph` — правило служебного абзаца, общее для чистки и проверки ответа merge.
 Лексикон приходит аргументом: модуль остаётся чистым преобразованием строки (§0).
 """
 from __future__ import annotations
@@ -37,8 +38,12 @@ def _is_heading_line(text: str) -> bool:
     return bool(stripped) and bool(HEADING_LINE_PATTERN.fullmatch(stripped))
 
 
-def _is_service_tail(paragraph: str, service_hints: tuple[str, ...]) -> bool:
-    """Короткий абзац с подсказкой служебного хвоста или заголовок ссылок; пустой — тоже служебный."""
+def is_service_tail_paragraph(paragraph: str, service_hints: tuple[str, ...]) -> bool:
+    """Короткий абзац с подсказкой служебного хвоста или заголовок ссылок; пустой — тоже служебный.
+
+    Правило донора `core\\description_cleaner.py::_looks_like_service_tail_paragraph`: им же чистка снимает хвост
+    текста, а проверка ответа merge узнаёт служебную строку в тезисе и в начале описания.
+    """
     text: str = ANY_SPACE_PATTERN.sub(" ", paragraph.strip()).lower()
     if not text or _is_heading_line(text):
         return True
@@ -91,7 +96,7 @@ class AnalysisTextReport:
         ]
         paragraphs: list[str] = [paragraph.text for paragraph in cleaned if paragraph.text]
         dropped: int = len(cleaned) - len(paragraphs)
-        while paragraphs and _is_service_tail(paragraphs[-1], service_hints):
+        while paragraphs and is_service_tail_paragraph(paragraphs[-1], service_hints):
             paragraphs.pop()
             dropped += 1
         return cls(

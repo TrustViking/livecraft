@@ -9,7 +9,7 @@ import pytest
 from app.llm.backend import LlmResponse
 from app.llm.merges.answer import AnswerParseMode, MergeAnswer
 from app.llm.merges.layout import TailBlock
-from app.llm.merges.reject import MergeReject, MergeRejectCode
+from app.llm.merges.reject import MergeReject, MergeRejectCode, MergeRejectStage
 
 TWO_PARAGRAPHS: str = "Paragraph one.\n\nParagraph two."
 
@@ -252,7 +252,10 @@ def test_every_code_is_reachable(result: LlmResponse, code: MergeRejectCode) -> 
 
 
 def test_all_codes_are_covered_by_the_reachability_cases() -> None:
-    assert {code for _, code in REACHABILITY_CASES} == set(MergeRejectCode)
+    """Случаи покрывают ровно коды шага разбора ответа (`MergeRejectCode.stages`)."""
+    assert {code for _, code in REACHABILITY_CASES} == {
+        code for code in MergeRejectCode if MergeRejectStage.ANSWER in code.stages
+    }
 
 
 def test_list_value_detail_names_the_key() -> None:

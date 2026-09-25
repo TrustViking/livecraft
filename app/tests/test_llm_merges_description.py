@@ -343,3 +343,125 @@ def test_quality_normalized_returns_a_new_description() -> None:
     )
     assert result.description.text == "Hook paragraph with enough words here.\n\n🔹 one point\n🔹 two point"
     assert result.normalization_applied is True
+
+
+# --- правила проверки покрытия (задача 3.12b): ссылки, эмодзи, повторы строк и абзацев, призыв в начале
+
+CTA: CtaLexicon = CtaLexicon.load()
+BAD_HOOKS: BadHookLexicon = BadHookLexicon.load()
+SERVICE_HINTS: tuple[str, ...] = TextResource("merge_service_hints.txt").lines
+NEUTRAL: str = chr(0x1F539)
+PIN: str = chr(0x1F4CC)
+FIRE: str = chr(0x1F525)
+LINE_60: str = "Tonight we align the Brussels vote with the Kharkiv transport shock"
+
+
+def test_official_links_are_counted_once_per_key_without_youtube() -> None:
+    text: str = (
+        "Sites: https://www.example.org/ https://example.org/uk (https://example.org/about?utm_source=x).\n"
+        "https://youtu.be/aaaaaaaaaaa https://t.me/channel?si=1 https://[bad"
+    )
+    # example.org (три записи одного сайта), example.org/about), t.me/channel
+    assert MergedDescription(text).official_link_count == 3
+
+
+def test_youtube_links_are_counted_by_video_id() -> None:
+    text: str = (
+        "https://youtu.be/aaaaaaaaaaa https://www.youtube.com/watch?v=aaaaaaaaaaa&t=5 "
+        "https://m.youtube.com/watch?feature=share&v=bbbbbbbbbbb https://youtube.com/@channel "
+        "https://example.org/watch?v=ccccccccccc https://[bad"
+    )
+    assert MergedDescription(text).youtube_link_count == 2
+
+
+def test_emoji_count_subtracts_every_bullet_marker() -> None:
+    text: str = f"{FIRE} Hook {FIRE}\n{NEUTRAL} point\n{PIN} point with {NEUTRAL} inside"
+    assert MergedDescription(text).emoji_count == 2
+    assert MergedDescription(f"{NEUTRAL} one\n{NEUTRAL} two").emoji_count == 0
+
+
+def test_non_structural_emoji_are_removed_and_markers_kept() -> None:
+    text: str = f"{FIRE} Hook {FIRE} , text  here {FIRE}!\n\n  {NEUTRAL} point {FIRE} one\n{PIN} {FIRE}"
+    stripped, changed = MergedDescription(text).without_non_structural_emoji()
+    assert changed
+    assert stripped.text == f"Hook, text here!\n\n{NEUTRAL} point one\n{PIN}"   # отступ строки снимается, как у донора
+
+
+def test_text_without_emoji_is_unchanged_by_emoji_removal() -> None:
+    stripped, changed = MergedDescription("Hook text.  \n\n- plain point").without_non_structural_emoji()
+    assert not changed
+    assert stripped.text == "Hook text.\n\n- plain point"
+
+
+def test_adjacent_lines_with_a_long_common_start_repeat() -> None:
+    assert MergedDescription(f"{LINE_60} tonight\n{LINE_60} again").has_adjacent_duplicate_lines
+
+
+def test_adjacent_lines_with_the_same_words_repeat() -> None:
+    first: str = "sanctions vote budget amendments customs delays commission session Brussels today"
+    second: str = "Brussels today: commission session, customs delays, budget amendments and the sanctions vote"
+    assert MergedDescription(f"{first}\n{second}").has_adjacent_duplicate_lines
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Short line one\nShort line one",                     # короче 60 знаков
+        f"{LINE_60} tonight\n\n{LINE_60} again",              # между ними пустая строка
+        f"{LINE_60} tonight\nA completely different line that talks about other things entirely.",
+    ],
+)
+def test_lines_that_do_not_repeat(text: str) -> None:
+    assert not MergedDescription(text).has_adjacent_duplicate_lines
+
+
+def test_paragraphs_with_a_long_common_start_are_similar() -> None:
+    body: str = LINE_60 + " and explain why the next operational window matters to everyone"
+    text: str = f"{body} tonight.\n\nMiddle.\n\n{body} tomorrow and later."
+    assert MergedDescription(text).has_similar_paragraph_prefixes
+
+
+def test_short_or_different_paragraphs_are_not_similar() -> None:
+    assert not MergedDescription("Same start here.\n\nSame start here too.").has_similar_paragraph_prefixes
+    assert not MergedDescription(f"{LINE_60} and more words to pass eighty chars.\n\nOther text " + "x" * 90).has_similar_paragraph_prefixes
+
+
+def opening(text: str) -> bool:
+    return MergedDescription(text).cta_in_opening_lines(CTA, BAD_HOOKS, SERVICE_HINTS)
+
+
+def test_cta_before_the_hook_is_found() -> None:
+    assert opening("Subscribe to the channel.\nTonight we map the sanctions vote.\n\n🔹 point")
+
+
+def test_bad_hook_line_before_the_bullets_is_found() -> None:
+    """Донор: test_soft_cta_opener_is_rejected_by_merge_stage_validator."""
+    soft_cta: str = (
+        "Если вы смотрели стрим, напишите, какие эпизоды февраля 2026 года показались вам самыми показательными."
+    )
+    assert opening(f"{soft_cta}\n\n{NEUTRAL} Первый факт из эфира с проверяемым источником.")
+
+
+def test_only_cta_and_service_lines_in_the_window_count_as_cta_first() -> None:
+    assert opening("Subscribe to the channel.\n\nLinks below")
+
+
+def test_cta_after_the_hook_or_a_bullet_is_not_cta_first() -> None:
+    assert not opening("Tonight we map the sanctions vote.\nSubscribe to the channel.")
+    assert not opening(f"{NEUTRAL} Subscribe to the channel point.\nSubscribe to the channel.")
+
+
+def test_cta_outside_the_three_line_window_is_not_seen() -> None:
+    assert not opening("Line one here.\nLine two here.\nLine three here.\nSubscribe to the channel.")
+    assert not opening("Hook.\n\nBody.\n\nSubscribe to the channel.")   # третий абзац в окно не входит
+
+
+def test_no_text_has_no_cta_first() -> None:
+    assert not opening("")
+
+
+def test_service_line_or_bad_hook_as_first_paragraph_is_cta_in_hook() -> None:
+    assert MergedDescription("Links below\n\nTonight we map the vote.").cta_in_hook(BAD_HOOKS, SERVICE_HINTS)
+    assert MergedDescription("Our channel covers the vote tonight.\n\nBody.").cta_in_hook(BAD_HOOKS, SERVICE_HINTS)
+    assert not MergedDescription("Tonight we map the vote.\n\nBody.").cta_in_hook(BAD_HOOKS, SERVICE_HINTS)
+    assert not MergedDescription("").cta_in_hook(BAD_HOOKS, SERVICE_HINTS)

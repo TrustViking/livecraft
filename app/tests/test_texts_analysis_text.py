@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.resources.loader import TextResource
-from app.texts.analysis_text import AnalysisTextReport, clean_text_for_analysis
+from app.texts.analysis_text import AnalysisTextReport, clean_text_for_analysis, is_service_tail_paragraph
 
 HINTS: tuple[str, ...] = TextResource("merge_service_hints.txt").lines
 
@@ -94,3 +94,32 @@ def test_report_of_empty_text_counts_nothing(text: str) -> None:
     assert AnalysisTextReport.of(text, HINTS) == AnalysisTextReport(
         text="", urls_removed=0, hashtags_removed=0, service_paragraphs_dropped=0
     )
+
+
+# --- правило служебного абзаца (общее для чистки и проверки ответа merge)
+
+
+@pytest.mark.parametrize(
+    "paragraph",
+    ["", "   ", "Subscribe to the channel", "Посилання  нижче: підписуйтесь", "🌐 Official links:", "Links below #stream"],
+)
+def test_service_tail_paragraph(paragraph: str) -> None:
+    assert is_service_tail_paragraph(paragraph, HINTS)
+
+
+@pytest.mark.parametrize(
+    "paragraph",
+    [
+        "Tonight we map the sanctions vote and the transport shock in Kharkiv.",
+        "watch " + "word " * 12,                                  # тринадцать смысловых слов — уже не служебная строка
+        "Subscribe " + "x" * 220,                                 # длиннее 220 знаков
+    ],
+)
+def test_not_a_service_tail_paragraph(paragraph: str) -> None:
+    assert not is_service_tail_paragraph(paragraph, HINTS)
+
+
+def test_service_tail_rule_is_the_one_the_cleaning_uses() -> None:
+    text: str = "Main paragraph with facts.\n\nSubscribe to the channel"
+    assert is_service_tail_paragraph("Subscribe to the channel", HINTS)
+    assert clean_text_for_analysis(text, HINTS) == "Main paragraph with facts."

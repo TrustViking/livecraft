@@ -10,7 +10,12 @@
 - нормализация качества — `quality_normalizer.py::normalize_merge_description` (объекты шагов — `quality.py`);
 - перегруженные пункты — `quality_diagnostics.py::count_overloaded_bullets`;
 - заголовок повестки и выгрузка по источникам — `merge_text_utils.py` (`_contains_agenda_heading`,
-  `_looks_like_per_source_dump`).
+  `_looks_like_per_source_dump`);
+- счёт ссылок в ответе — `merge_links.py::_count_output_official_links`, `merge_youtube.py::_count_youtube_urls_in_text`;
+- правила проверки покрытия — `merge_validation.py` (`_count_emoji`, `_has_adjacent_duplicate_lines`,
+  `_has_cta_in_opening_lines_before_hook_or_bullet`, призыв и служебная строка в тезисе, общее начало абзацев из
+  `_validate_coverage_preserving_merge_or_raise`); снятие неструктурных эмодзи —
+  `merge_formatting.py::_strip_non_structural_emoji_from_line` и `_strip_non_structural_emoji_from_description`.
 """
 from __future__ import annotations
 
@@ -19,7 +24,8 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Final
+from typing import TYPE_CHECKING, Final
+from urllib.parse import SplitResult, urlsplit
 
 from app.llm.merges.agenda import AgendaLexicon
 from app.llm.merges.blocks import DescriptionBlocks
@@ -33,14 +39,35 @@ from app.llm.merges.quality import (
     QualityRules,
     ServiceLineFix,
 )
+from app.core.sheet_text import normalize_youtube_link
+from app.core.url_text import canonical_link_key, is_youtube_host, normalize_link_candidate, split_url
 from app.llm.merges.rules import (
+    ADJACENT_LINE_JACCARD,
+    ADJACENT_LINE_MIN_CHARS,
+    ADJACENT_LINE_MIN_TOKENS,
+    ADJACENT_LINE_PREFIX_RATIO,
     BULLET_ABSOLUTE_MAX_CHAR_LIMIT,
     BULLET_OVERLOAD_CHAR_LIMIT,
     BULLET_OVERLOAD_NAME_LIMIT,
+    OPENING_LINES,
+    OPENING_PARAGRAPHS,
+    PARAGRAPH_PREFIX_MIN_CHARS,
+    PARAGRAPH_PREFIX_RATIO,
 )
 from app.observability.logging_setup import get_logger
-from app.texts.description_marks import ALLOWED_BULLET_MARKERS, BULLET_PREFIXES, SEMANTIC_TOKEN_PATTERN, CtaLexicon
+from app.texts.analysis_text import is_service_tail_paragraph
+from app.texts.description_marks import (
+    ALLOWED_BULLET_MARKERS,
+    BULLET_PREFIXES,
+    SEMANTIC_TOKEN_PATTERN,
+    URL_PATTERN,
+    CtaLexicon,
+    bullet_marker_for_line,
+)
 from app.texts.paragraphs import has_duplicate_paragraphs, normalize_newlines, split_paragraphs
+
+if TYPE_CHECKING:
+    from app.llm.merges.hook import BadHookLexicon
 
 PARAGRAPH_JOINER: Final[str] = "\n\n"
 LINE_JOINER: Final[str] = "\n"
@@ -95,6 +122,10 @@ PROPER_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(
 SOURCE_LINE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\s*(?:source|video)\s*\d+[:.)-]?", flags=re.IGNORECASE)
 SOURCE_LINE_MIN_HITS: Final[int] = 2
 SOURCE_DUMP_PAIRS: Final[tuple[tuple[str, str], ...]] = (("source 1", "source 2"), ("video 1", "video 2"))
+# Эмодзи для счёта и снятия (`merge_validation.py::_count_emoji`, `merge_formatting.py::_EMOJI_PATTERN`).
+EMOJI_PATTERN: Final[re.Pattern[str]] = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", flags=re.UNICODE)
+SPACE_BEFORE_PUNCTUATION_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+([,.;:!?])")
+REPEATED_SPACE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s{2,}")
 
 
 def _line_starts_with_bullet(line_text: str) -> bool:
@@ -104,6 +135,23 @@ def _line_starts_with_bullet(line_text: str) -> bool:
 
 def _semantic_token_set(text: str) -> set[str]:
     return {token.lower() for token in SEMANTIC_TOKEN_PATTERN.findall(str(text or "")) if token.strip()}
+
+
+def _without_emoji_in_line(line: str) -> tuple[str, bool]:
+    """Строка без эмодзи вне маркера пункта в её начале и без пробелов перед знаками препинания; изменилась ли она."""
+    indent: str = line[: len(line) - len(line.lstrip())]
+    content: str = line[len(indent) :]
+    protected_prefix: str = ""
+    for marker in ALLOWED_BULLET_MARKERS:
+        if content.startswith(f"{marker} "):
+            protected_prefix = f"{indent}{marker} "
+            content = content[len(marker) + 1 :]
+            break
+    tail: str = EMOJI_PATTERN.sub("", content)
+    tail = SPACE_BEFORE_PUNCTUATION_PATTERN.sub(r"\1", tail)
+    tail = REPEATED_SPACE_PATTERN.sub(" ", tail).strip()
+    sanitized: str = f"{protected_prefix}{tail}".strip()
+    return sanitized, sanitized != line.strip()
 
 
 def _jaccard(first: set[str], second: set[str]) -> float | None:
@@ -422,3 +470,126 @@ class MergedDescription:
             return True
         lowered_text: str = str(self.text or "").lower()
         return any(first in lowered_text and second in lowered_text for first, second in SOURCE_DUMP_PAIRS)
+
+    @property
+    def official_link_count(self) -> int:
+        """Разных ссылок (не YouTube) в тексте — по ключу повтора после снятия меток слежения."""
+        keys: set[str] = set()
+        for match in URL_PATTERN.finditer(str(self.text or "")):
+            url: str | None = normalize_link_candidate(match.group(0))
+            if url is None or is_youtube_host(urlsplit(url).netloc):
+                continue
+            keys.add(canonical_link_key(url))
+        return len(keys)
+
+    @property
+    def youtube_link_count(self) -> int:
+        """Разных видео YouTube в тексте — по короткой ссылке `https://youtu.be/<id>`."""
+        links: set[str] = set()
+        for match in URL_PATTERN.finditer(str(self.text or "")):
+            raw_url: str = match.group(0).strip()
+            parts: SplitResult | None = split_url(raw_url)
+            if parts is None or not is_youtube_host(parts.netloc):
+                continue
+            link: str | None = normalize_youtube_link(raw_url)
+            if link is not None:
+                links.add(link)
+        return len(links)
+
+    @property
+    def emoji_count(self) -> int:
+        """Эмодзи вне маркеров пунктов: все эмодзи минус все вхождения маркеров (как у донора — где бы они ни стояли)."""
+        text: str = str(self.text or "")
+        structural: int = sum(text.count(marker) for marker in ALLOWED_BULLET_MARKERS)
+        return max(0, len(EMOJI_PATTERN.findall(text)) - structural)
+
+    def without_non_structural_emoji(self) -> tuple[MergedDescription, bool]:
+        """Описание без эмодзи вне маркеров пунктов (пустые строки — пустыми) и изменилось ли оно."""
+        lines: list[str] = []
+        changed: bool = False
+        for raw_line in normalize_newlines(self.text).split(LINE_JOINER):
+            if not raw_line.strip():
+                lines.append("")
+                continue
+            line, line_changed = _without_emoji_in_line(raw_line)
+            lines.append(line)
+            changed = changed or line_changed
+        return MergedDescription(LINE_JOINER.join(lines).strip()), changed
+
+    @property
+    def has_adjacent_duplicate_lines(self) -> bool:
+        """Две соседние строки почти одинаковы: длинное общее начало или почти те же смысловые слова."""
+        lines: list[str] = [line.strip() for line in normalize_newlines(self.text).split(LINE_JOINER)]
+        return any(_lines_repeat(current, following) for current, following in zip(lines, lines[1:]))
+
+    @property
+    def has_similar_paragraph_prefixes(self) -> bool:
+        """Два абзаца (не короче 80 знаков) начинаются почти одинаково: общее начало больше 70 % короткого."""
+        paragraphs: list[str] = self.paragraphs
+        for first_index, first in enumerate(paragraphs):
+            for second in paragraphs[first_index + 1 :]:
+                if min(len(first), len(second)) < PARAGRAPH_PREFIX_MIN_CHARS:
+                    continue
+                if _common_prefix_ratio(first, second) > PARAGRAPH_PREFIX_RATIO:
+                    return True
+        return False
+
+    def cta_in_opening_lines(self, cta: CtaLexicon, bad_hooks: BadHookLexicon, service_hints: tuple[str, ...]) -> bool:
+        """В окне первых трёх строк первых двух абзацев призыв (или негодный тезис) стоит раньше тезиса и пунктов.
+
+        Тезис или пункт — первая строка окна, которая не призыв, не негодный тезис и не служебная строка; строка
+        с маркером пункта — пункт в любом случае. Ни тезиса, ни пункта в окне нет — призыв стоит первым.
+        """
+        window: list[str] = self._opening_lines()
+        cta_indexes: list[int] = [
+            index for index, line in enumerate(window) if cta.starts_with_prefix(line) or bad_hooks.matches(line)
+        ]
+        if not cta_indexes:
+            return False
+        content_index: int | None = next(
+            (
+                index
+                for index, line in enumerate(window)
+                if bullet_marker_for_line(line)
+                or not (
+                    cta.starts_with_prefix(line)
+                    or bad_hooks.matches(line)
+                    or is_service_tail_paragraph(line, service_hints)
+                )
+            ),
+            None,
+        )
+        return content_index is None or min(cta_indexes) < content_index
+
+    def _opening_lines(self) -> list[str]:
+        lines: list[str] = [
+            line.strip()
+            for paragraph in self.paragraphs[:OPENING_PARAGRAPHS]
+            for line in paragraph.split(LINE_JOINER)
+            if line.strip()
+        ]
+        return lines[:OPENING_LINES]
+
+    def cta_in_hook(self, bad_hooks: BadHookLexicon, service_hints: tuple[str, ...]) -> bool:
+        """Первый абзац — служебная строка (призыв, заголовок ссылок) или негодный тезис."""
+        paragraphs: list[str] = self.paragraphs
+        if not paragraphs:
+            return False
+        first: str = paragraphs[0]
+        return is_service_tail_paragraph(first, service_hints) or bad_hooks.matches(first)
+
+
+def _lines_repeat(current: str, following: str) -> bool:
+    """Соседние строки — повтор (пороги `rules.py`); пустая строка не повтор."""
+    if not current or not following:
+        return False
+    if min(len(current), len(following)) < ADJACENT_LINE_MIN_CHARS:
+        return False
+    if _common_prefix_ratio(current, following) > ADJACENT_LINE_PREFIX_RATIO:
+        return True
+    current_tokens: list[str] = [token.lower() for token in SEMANTIC_TOKEN_PATTERN.findall(current)]
+    following_tokens: list[str] = [token.lower() for token in SEMANTIC_TOKEN_PATTERN.findall(following)]
+    if len(current_tokens) < ADJACENT_LINE_MIN_TOKENS or len(following_tokens) < ADJACENT_LINE_MIN_TOKENS:
+        return False
+    similarity: float | None = _jaccard(set(current_tokens), set(following_tokens))
+    return similarity is not None and similarity >= ADJACENT_LINE_JACCARD

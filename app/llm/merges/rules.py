@@ -35,3 +35,45 @@ COMPACT_MAX_BODY_PARAGRAPHS: Final[int] = 4
 # Строка-якорь спикеров: от четырёх источников, не больше восьми имён, самые длинные первыми.
 SPEAKER_ANCHOR_MIN_SOURCES: Final[int] = 4
 SPEAKER_NAMES_MAX: Final[int] = 8
+
+# Официальные ссылки источников (`merge_links.py::_extract_official_links_from_sources`): оценка ссылки — https +20,
+# контекст «official», «сайт» и т. п. в строке +20, частота домена по 5 за ссылку (не больше 20), query −5, короткая
+# ссылка — до +15 (минус 1 за каждые 15 знаков); после повтора по ключу остаются не больше трёх лучших.
+OFFICIAL_LINK_HTTPS_SCORE: Final[int] = 20
+OFFICIAL_LINK_CONTEXT_SCORE: Final[int] = 20
+OFFICIAL_LINK_DOMAIN_SCORE_STEP: Final[int] = 5
+OFFICIAL_LINK_DOMAIN_SCORE_CAP: Final[int] = 20
+OFFICIAL_LINK_QUERY_PENALTY: Final[int] = 5
+OFFICIAL_LINK_LENGTH_SCORE: Final[int] = 15
+OFFICIAL_LINK_LENGTH_STEP: Final[int] = 15
+OFFICIAL_LINKS_KEPT_MAX: Final[int] = 3
+
+# Проверка покрытия (`merge_validation.py`). Соседние строки — повтор: обе не короче 60 знаков и общее начало больше
+# 65 % короткой; или в обеих не меньше 8 смысловых слов и доля общих (Жаккар) не меньше 0,75.
+ADJACENT_LINE_MIN_CHARS: Final[int] = 60
+ADJACENT_LINE_PREFIX_RATIO: Final[float] = 0.65
+ADJACENT_LINE_MIN_TOKENS: Final[int] = 8
+ADJACENT_LINE_JACCARD: Final[float] = 0.75
+# Два любых абзаца — повтор: оба не короче 80 знаков и общее начало больше 70 % короткого.
+PARAGRAPH_PREFIX_MIN_CHARS: Final[int] = 80
+PARAGRAPH_PREFIX_RATIO: Final[float] = 0.7
+# Призыв в начале: окно — первые три непустые строки первых двух абзацев.
+OPENING_PARAGRAPHS: Final[int] = 2
+OPENING_LINES: Final[int] = 3
+# Пунктов при двух и больше источниках — не меньше max(источников + 1, 5).
+MIN_BULLETS_FLOOR: Final[int] = 5
+MIN_BULLETS_EXTRA_OVER_SOURCES: Final[int] = 1
+MIN_BULLETS_MIN_SOURCES: Final[int] = 2
+# Эмодзи вне маркеров пунктов — не больше десяти.
+EMOJI_MAX: Final[int] = 10
+# Перегруженных пунктов не меньше двух при списке от четырёх пунктов — отказ.
+OVERLOADED_BULLETS_REJECT: Final[int] = 2
+OVERLOADED_BULLETS_MIN_LIST: Final[int] = 4
+# Тезис есть: первый абзац не короче 60 знаков и в нём «!», «?» или «:». Список есть: от трёх пунктов.
+HOOK_MIN_CHARS: Final[int] = 60
+HOOK_MARKS: Final[tuple[str, ...]] = ("!", "?", ":")
+AGENDA_MIN_BULLETS: Final[int] = 3
+# Восстановление форматирования (`merge_formatting.py::_attempt_expanded_formatting_recovery`) — от трёх источников.
+FORMATTING_RECOVERY_MIN_SOURCES: Final[int] = 3
+# Версия контракта стиля в строке лога `merge_style_coverage` (`merge_constants.py::STYLE_CONTRACT_VERSION`).
+STYLE_CONTRACT_VERSION: Final[str] = "v4_merge_quality_hardening"
