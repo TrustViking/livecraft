@@ -675,3 +675,123 @@ RUN_CRASHED: Final[str] = (
     "Livecraft аварийно остановился — подробности в логе {log}. "
     "Что уже сделано на YouTube, найдёт и учтёт следующий запуск; перешлите лог оператору."
 )
+
+# --- замок эталона кода (app\tools\code_standard, REFACTORING_STANDARD.md §5, §6): инструмент разработки,
+# в поставку не идёт. Ключи словарей — коды правил (Rule), признаков (Sign) и видов изменений (ChangeKind).
+CODE_STANDARD_DESCRIPTION: Final[str] = (
+    "Замок эталона кода livecraft: отчёт по правилам E1–E21 и реестр долгов, который может только сокращаться."
+)
+CODE_STANDARD_HELP_INIT: Final[str] = (
+    "создать реестр долгов по текущему коду, если его нет; в существующий реестр — только добавить разделы "
+    "правил, которых в нём ещё нет"
+)
+CODE_STANDARD_HELP_WRITE_DEBT: Final[str] = (
+    "переписать реестр по текущему коду — только если ни один долг не появился и не вырос"
+)
+CODE_STANDARD_HELP_COMPARE: Final[str] = (
+    "сравнить реестр с прежней версией: git-ссылка (HEAD, хеш коммита) или путь к файлу реестра"
+)
+CODE_STANDARD_HELP_FILES: Final[str] = "показать долги реестра в этих файлах или папках (путь от корня репозитория)"
+CODE_STANDARD_METAVAR_VERSION: Final[str] = "ВЕРСИЯ"
+CODE_STANDARD_METAVAR_PATH: Final[str] = "ПУТЬ"
+CODE_STANDARD_RULE_LABELS: Final[dict[str, str]] = {
+    "E1": "свободные функции",
+    "E2": "статические методы",
+    "E3": "длина определения",
+    "E4": "число параметров",
+    "E5": "литералы в телах функций",
+    "E6": "кириллица в коде",
+    "E7": "текст в исключениях",
+    "E8": "одно значение — одно объявление",
+    "E9": "регулярные выражения",
+    "E10": "логгеры",
+    "E11": "структурные клоны",
+    "E12": "пустые обёртки",
+    "E13": "кортежи-состояния",
+    "E14": "сырые данные",
+    "E15": "защитные преобразования",
+    "E16": "слои и кольца импорта",
+    "E17": "время",
+    "E18": "размеры модулей и классов",
+    "E19": "код в __init__.py",
+    "E20": "тесты",
+    "E21": "имя определено в модуле дважды",
+}
+CODE_STANDARD_SIGN_LABELS: Final[dict[str, str]] = {
+    "names_app_class": "(а) в аннотациях класс app",
+    "one_class_use": "(б) нужна одному классу",
+    "unused": "(в) никто не использует",
+    "forwarding": "(а) пересылка",
+    "two_layers": "(б) два слоя",
+    "foreign_body": "(в) чужое тело",
+    "module": "модулей",
+    "class": "классов",
+}
+CODE_STANDARD_REPORT_TITLE: Final[str] = "Эталон кода livecraft: нарушения, долги реестра и исключения"
+CODE_STANDARD_REPORT_ROW: Final[str] = "{rule:<4} {label:<34} {now:>7} {ledger:>10} {exempt:>11} {goal:>5}"
+CODE_STANDARD_REPORT_COLUMNS: Final[dict[str, str]] = {
+    "rule": "код",
+    "label": "правило",
+    "now": "сейчас",
+    "ledger": "в реестре",
+    "exempt": "исключений",
+    "goal": "цель",
+}
+CODE_STANDARD_REPORT_NO_VALUE: Final[str] = "—"
+CODE_STANDARD_REPORT_SIGNS: Final[str] = "     {signs}"
+CODE_STANDARD_REPORT_SIGN: Final[str] = "{label}: {count}"
+CODE_STANDARD_REPORT_SIGN_JOINER: Final[str] = "; "
+CODE_STANDARD_REPORT_RULE_JOINER: Final[str] = ", "
+CODE_STANDARD_REPORT_NOT_MEASURED: Final[str] = "Ещё не проверяются: {rules}."
+CODE_STANDARD_REPORT_STATE: Final[str] = (
+    "Код против реестра: новых {new}, выросших {grown}, уменьшившихся {shrunk}, снятых {gone}."
+)
+CODE_STANDARD_REPORT_NO_LEDGER: Final[str] = (
+    "Реестра долгов нет — создайте его: python -m app.tools.code_standard --init"
+)
+CODE_STANDARD_CHANGE_LINES: Final[dict[str, str]] = {
+    "new": "  {rule} {key} — новое: {after}",
+    "grown": "  {rule} {key} — выросло: было {before}, стало {after}",
+    "shrunk": "  {rule} {key} — уменьшилось: было {before}, стало {after}",
+    "gone": "  {rule} {key} — снято (было {before})",
+    "same": "  {rule} {key} — без изменений: {after}",
+}
+CODE_STANDARD_EXEMPTION_NO_REASON: Final[str] = "Исключение {rule} {key}: пустое обоснование."
+CODE_STANDARD_EXEMPTION_NOT_CAUGHT: Final[str] = (
+    "Исключение {rule} {key}: правило его больше не ловит — уберите его из exceptions.json."
+)
+CODE_STANDARD_STALE_ENTRIES: Final[str] = (
+    "В реестре устаревшие записи — долг снят или уменьшился в коде. "
+    "Обновите реестр: python -m app.tools.code_standard --write-debt"
+)
+CODE_STANDARD_GROWTH: Final[str] = (
+    "Появились или выросли нарушения эталона кода. Уберите их из кода — в реестр новые долги не записываются:"
+)
+CODE_STANDARD_INIT_CREATED: Final[str] = "Реестр долгов создан: {file}; записей: {count}."
+CODE_STANDARD_INIT_EXTENDED: Final[str] = "В реестр добавлены разделы правил {rules}; записей: {count}."
+CODE_STANDARD_INIT_EXISTS: Final[str] = (
+    "Реестр {file} уже есть и покрывает все проверяемые правила — переписать его может только --write-debt."
+)
+CODE_STANDARD_NO_LEDGER: Final[str] = "Реестра долгов нет — сначала выполните --init."
+CODE_STANDARD_WRITE_REFUSED: Final[str] = (
+    "Реестр не переписан: долги появились или выросли. Уберите их из кода:"
+)
+CODE_STANDARD_WRITE_DONE: Final[str] = "Реестр {file} переписан по коду; снятых и уменьшившихся записей: {count}."
+CODE_STANDARD_COMPARE_GROWN: Final[str] = "Против {target} в реестре появилось или выросло:"
+CODE_STANDARD_COMPARE_REDUCED: Final[str] = "Против {target} из реестра снято или уменьшилось:"
+CODE_STANDARD_COMPARE_SAME: Final[str] = "Против {target} реестр не вырос."
+CODE_STANDARD_FILES_TITLE: Final[str] = "Долги реестра в {paths}:"
+CODE_STANDARD_FILES_NONE: Final[str] = "Долгов реестра в {paths} нет."
+CODE_STANDARD_FILES_LINE: Final[str] = "  {rule} {key} — {value}{signs}"
+CODE_STANDARD_FILES_SIGNS: Final[str] = "; {signs}"
+CODE_STANDARD_FILE_PROBLEMS: Final[dict[str, str]] = {
+    "unreadable": "Файл замка {file} не читается.",
+    "not_json": "Файл замка {file} — не JSON.",
+    "not_object": "В файле замка {file} на месте «{key}» ожидается объект JSON.",
+    "missing": "В файле замка {file} нет ключа «{key}».",
+    "not_integer": "В файле замка {file} значение «{key}» — не целое число.",
+    "not_text": "В файле замка {file} значение «{key}» — не строка.",
+    "not_text_list": "В файле замка {file} значение «{key}» — не список строк.",
+    "unknown_key": "В файле замка {file} неизвестный раздел «{key}».",
+    "git_failed": "git не отдал реестр версии {file}: проверьте ссылку или путь к файлу реестра.",
+}

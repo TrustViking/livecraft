@@ -1,0 +1,27 @@
+{
+  "max_definition_lines": 30,
+  "max_parameters": 4,
+  "max_module_lines": 400,
+  "max_class_members": 20,
+  "module_size_exempt": [
+    "app\\ui\\messages_ru.py"
+  ],
+  "wrapper_builtins": [
+    "len",
+    "bool",
+    "str",
+    "int",
+    "float",
+    "tuple",
+    "list",
+    "set",
+    "frozenset",
+    "dict",
+    "sorted",
+    "any",
+    "all",
+    "min",
+    "max",
+    "sum"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "E1": {
+    "app\\core\\safe_trim.py::safe_trim_right": "чистое преобразование, названное в CLAUDE.md §0",
+    "app\\observability\\logging_setup.py::mask_stream_key": "нужна контуру B (CLAUDE.md §6, инвариант 6)",
+    "app\\core\\dates.py::parse_iso_start": "нужна контуру B (CLAUDE.md §4)"
+  },
+  "E13": {
+    "app\\setup\\fields\\language_choice.py::LanguageOption.sort_key": "ключ сортировки (REFACTORING_STANDARD.md, E13)",
+    "app\\slots\\slot.py::SlotKey.sort_key": "ключ сортировки (REFACTORING_STANDARD.md, E13)"
+  }
+}
