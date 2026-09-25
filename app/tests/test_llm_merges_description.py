@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from app.llm.merges.agenda import AgendaLexicon
 from app.llm.merges.description import HomoglyphMap, HookParagraph, MergedDescription
 from app.llm.merges.hook import BAD_HOOK_PATTERNS_RESOURCE, BadHookLexicon
+from app.llm.merges.quality import QualityRequest, QualityRules
 from app.resources.loader import TextResource
 from app.texts.description_marks import CtaLexicon
 
@@ -279,3 +281,65 @@ def test_token_with_equal_latin_and_cyrillic_is_left() -> None:
 
 def test_no_repair_log_line() -> None:
     assert MergedDescription("x").with_homoglyphs_repaired("uk").log_line == "tokens_repaired=0 before_tokens=none after_tokens=none"
+
+
+# --- 3.11b: перегруженные пункты, повестка, выгрузка по источникам (донор: quality_diagnostics.py, merge_text_utils.py)
+def test_very_long_bullet_is_overloaded_without_names() -> None:
+    """Донор: test_compact_bullet_overflow.py::test_very_long_bullet_is_overloaded_without_names."""
+    assert MergedDescription(f"Hook paragraph.\n\n🔹 {'слово ' * 85}\n🔹 Short bullet.").overloaded_bullet_count >= 1
+
+
+def test_medium_bullet_without_names_is_not_overloaded() -> None:
+    """Донор: test_compact_bullet_overflow.py::test_medium_bullet_without_names_is_not_overloaded."""
+    assert MergedDescription(f"Hook paragraph.\n\n🔹 {'слово ' * 50}\n🔹 Short.").overloaded_bullet_count == 0
+
+
+def test_medium_bullet_with_three_names_is_overloaded() -> None:
+    names: str = "John Smith, Maria Ivanova and Luigi Corvaglia"
+    long_bullet: str = f"📌 {names} {'discuss the budget ' * 15}"
+    plain_bullet: str = f"- {names} {'discuss the budget ' * 15}"
+    assert MergedDescription(f"Hook.\n\n{long_bullet}\n{plain_bullet}").overloaded_bullet_count == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Hook.\n\nЧто в этом стриме:\n🔹 a", True),
+        ("Hook.\n\n  In   this stream — budget", True),
+        ("Hook.\n\nПро що поговоримо", True),
+        ("Hook.\n\nwhat’s in this stream!", True),
+        ("Hook.\n\nIn this stream you'll see:", False),
+        ("In this streamline", False),
+    ],
+)
+def test_agenda_heading(text: str, expected: bool) -> None:
+    assert MergedDescription(text).contains_agenda_heading(AgendaLexicon.load()) is expected
+
+
+def test_agenda_lexicon_is_the_donor_file() -> None:
+    assert AgendaLexicon.load().headings == (
+        "что в этом стриме", "в этом выпуске", "о чем поговорим", "що в цьому стрімі", "про що поговоримо",
+        "what's in this stream", "what’s in this stream", "in this stream",
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Source 1: a\nSource 2: b", True),
+        ("video 1) a\r\nVIDEO 2 - b", True),
+        ("We compare source 1 and source 2 today.", True),
+        ("Source 1: a only", False),
+        ("Video 1 and source 2", False),
+    ],
+)
+def test_per_source_dump(text: str, expected: bool) -> None:
+    assert MergedDescription(text).looks_like_per_source_dump is expected
+
+
+def test_quality_normalized_returns_a_new_description() -> None:
+    result = MergedDescription("Hook paragraph with enough words here.\n\n- one point\n- two point").quality_normalized(
+        QualityRequest(language="en"), QualityRules.load()
+    )
+    assert result.description.text == "Hook paragraph with enough words here.\n\n🔹 one point\n🔹 two point"
+    assert result.normalization_applied is True

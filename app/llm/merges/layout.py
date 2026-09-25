@@ -22,7 +22,7 @@ PARAGRAPH_JOINER: Final[str] = "\n\n"
 LINE_JOINER: Final[str] = "\n"
 SENTENCE_JOINER: Final[str] = " "
 HASHTAG_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"^#[^\s#]+$")
-SENTENCE_BREAK_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?<=[.!?…])\s+")
+SENTENCE_BREAK_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?<=[.!?\u2026])\s+")
 YOUTUBE_MARK: Final[str] = "youtu"
 # Один абзац тела делится, только если в нём не меньше четырёх фраз; левая часть — не меньше двух фраз.
 SPLIT_MIN_SENTENCES: Final[int] = 4

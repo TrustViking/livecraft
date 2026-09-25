@@ -2,15 +2,19 @@
 
 `TextResource` — один файл из `app\\resources\\text`: в dev-режиме папка лежит рядом с этим модулем,
 в собранном exe — внутри распакованной поставки PyInstaller (`sys._MEIPASS\\app\\resources\\text`).
-Файлы переносятся из restreamer побайтно; правило чтения строк — `load_lines_resource` донора.
+Файлы переносятся из restreamer побайтно; правило чтения строк — `load_lines_resource` донора,
+разбора JSON — `load_json_resource` донора (в корне файла — объект).
 """
 from __future__ import annotations
 
+import json
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Final
+from types import MappingProxyType
+from typing import Any, Final
 
 RESOURCE_ENCODING: Final[str] = "utf-8"
 COMMENT_PREFIX: Final[str] = "#"
@@ -18,6 +22,7 @@ TEXT_DIR_NAME: Final[str] = "text"
 FROZEN_TEXT_PARTS: Final[tuple[str, ...]] = ("app", "resources", TEXT_DIR_NAME)
 FROZEN_ATTR: Final[str] = "frozen"
 BUNDLE_DIR_ATTR: Final[str] = "_MEIPASS"
+NOT_AN_OBJECT: Final[str] = "resource {name} must contain a JSON object"
 
 
 @dataclass(frozen=True)
@@ -46,3 +51,15 @@ class TextResource:
     def _read_lines(self) -> tuple[str, ...]:
         stripped: list[str] = [line.strip() for line in self.path.read_text(encoding=RESOURCE_ENCODING).splitlines()]
         return tuple(line for line in stripped if line and not line.startswith(COMMENT_PREFIX))
+
+    @property
+    def data(self) -> Mapping[str, Any]:
+        """Объект JSON файла (ключи — строки); в корне не объект — `ValueError`, как у донора."""
+        return self._read_data()
+
+    @lru_cache(maxsize=None)
+    def _read_data(self) -> Mapping[str, Any]:
+        parsed: Any = json.loads(self.path.read_text(encoding=RESOURCE_ENCODING))
+        if not isinstance(parsed, dict):
+            raise ValueError(NOT_AN_OBJECT.format(name=self.name))
+        return MappingProxyType({str(key): value for key, value in parsed.items()})

@@ -38,7 +38,7 @@ TITLE_MAX_CHARS: Final[int] = 99
 MIN_BODY_PARAGRAPHS: Final[int] = 2
 # Предел тела, начиная с которого ответ ровно на один абзац длиннее отвергается до восстановления.
 SINGLE_STEP_OVERFLOW_MIN_LIMIT: Final[int] = 7
-EMOJI_PATTERN: Final[re.Pattern[str]] = re.compile(r"[\U0001F300-\U0001FAFF☀-➿]", flags=re.UNICODE)
+EMOJI_PATTERN: Final[re.Pattern[str]] = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", flags=re.UNICODE)
 WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 INVALID_TYPE_DETAIL: Final[str] = "invalid_type:{key}"
 PARAGRAPH_COUNT_DETAIL: Final[str] = "body_paragraphs={count} allowed={low}..{high}"

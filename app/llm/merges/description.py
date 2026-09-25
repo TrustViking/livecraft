@@ -6,17 +6,40 @@
   (+ `_split_hook_trailing_bullet`, `_line_starts_with_bullet`, `_semantic_token_set`);
 - призыв в первой строке — `merge_parser.py::_description_has_raw_opener_cta`;
 - снятие служебных строк «title:», «description:», «source(s):» — `merge_parser.py::strip_meta_lines`;
-- починка смешанного алфавита — `script_mix_repair.py` (`repair_script_mix_homoglyphs`, `_repair_token`).
+- починка смешанного алфавита — `script_mix_repair.py` (`repair_script_mix_homoglyphs`, `_repair_token`);
+- нормализация качества — `quality_normalizer.py::normalize_merge_description` (объекты шагов — `quality.py`);
+- перегруженные пункты — `quality_diagnostics.py::count_overloaded_bullets`;
+- заголовок повестки и выгрузка по источникам — `merge_text_utils.py` (`_contains_agenda_heading`,
+  `_looks_like_per_source_dump`).
 """
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Final
 
-from app.texts.description_marks import ALLOWED_BULLET_MARKERS, SEMANTIC_TOKEN_PATTERN, CtaLexicon
+from app.llm.merges.agenda import AgendaLexicon
+from app.llm.merges.blocks import DescriptionBlocks
+from app.llm.merges.quality import (
+    BulletNormalization,
+    CompactTrim,
+    QualityDiagnostics,
+    QualityFindings,
+    QualityNormalization,
+    QualityRequest,
+    QualityRules,
+    ServiceLineFix,
+)
+from app.llm.merges.rules import (
+    BULLET_ABSOLUTE_MAX_CHAR_LIMIT,
+    BULLET_OVERLOAD_CHAR_LIMIT,
+    BULLET_OVERLOAD_NAME_LIMIT,
+)
+from app.observability.logging_setup import get_logger
+from app.texts.description_marks import ALLOWED_BULLET_MARKERS, BULLET_PREFIXES, SEMANTIC_TOKEN_PATTERN, CtaLexicon
 from app.texts.paragraphs import has_duplicate_paragraphs, normalize_newlines, split_paragraphs
 
 PARAGRAPH_JOINER: Final[str] = "\n\n"
@@ -59,9 +82,19 @@ LANGUAGE_HOMOGLYPHS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
 CYRILLIC_CHAR_PATTERN: Final[re.Pattern[str]] = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґ]")
 LATIN_CHAR_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Za-z]")
 # Слово — буквы латиницы и кириллицы с апострофами (ʼ и '); цифры, знаки и пробелы — границы слова.
-WORD_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile("[A-Za-zА-Яа-яЁёІіЇїЄєҐґʼ']+")
+WORD_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile("[A-Za-zА-Яа-яЁёІіЇїЄєҐґ\u02bc']+")
 TOKENS_JOINER: Final[str] = ","
 LOG_NONE: Final[str] = "none"
+
+LOGGER: logging.Logger = get_logger("llm")
+# Имя собственное для перегруженного пункта: от двух до четырёх слов подряд с заглавной буквы.
+PROPER_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b[A-ZА-ЯЁІЇЄҐ][a-zа-яёіїєґ'`-]{1,25}(?:\s+[A-ZА-ЯЁІЇЄҐ][a-zа-яёіїєґ'`-]{1,25}){1,3}\b", re.UNICODE
+)
+# Выгрузка по источникам: строки «Source 1:», «Video 2)» — хотя бы две; или в тексте есть «source 1» и «source 2».
+SOURCE_LINE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\s*(?:source|video)\s*\d+[:.)-]?", flags=re.IGNORECASE)
+SOURCE_LINE_MIN_HITS: Final[int] = 2
+SOURCE_DUMP_PAIRS: Final[tuple[tuple[str, str], ...]] = (("source 1", "source 2"), ("video 1", "video 2"))
 
 
 def _line_starts_with_bullet(line_text: str) -> bool:
@@ -333,3 +366,59 @@ class MergedDescription:
         return HomoglyphRepair(
             description=MergedDescription(repaired_text), tokens_before=tuple(before), tokens_after=tuple(after)
         )
+
+    @property
+    def _trimmed_lines_text(self) -> str:
+        """Переводы строки — `\\n`, концы строк и края текста без пробелов."""
+        return LINE_JOINER.join(line.rstrip() for line in normalize_newlines(self.text).split(LINE_JOINER)).strip()
+
+    def quality_normalized(self, request: QualityRequest, rules: QualityRules) -> QualityNormalization:
+        """Описание в виде донора и диагностика итогового текста.
+
+        Шаги донора по порядку: разбор на блоки → снятие повторов тезиса → служебные строки не того языка —
+        канонические → маркеры пунктов → лишние пункты компактного контракта → сборка текста. Любая правка
+        текста — `block_spacing_ok=False` (историческое имя донора) и `normalization_applied`.
+        """
+        source_text: str = self._trimmed_lines_text
+        if not source_text:
+            empty: QualityFindings = QualityFindings("", request, True, False, False, BulletNormalization(lines=()))
+            return QualityNormalization(MergedDescription(""), QualityDiagnostics.of(empty, rules), False)
+        fix: ServiceLineFix = ServiceLineFix.of(DescriptionBlocks.of(source_text, rules.cta), request.language, rules)
+        bullets: BulletNormalization = BulletNormalization.of(fix.blocks.theses_lines)
+        trim: CompactTrim = CompactTrim.of(bullets.lines, request.source_count)
+        if trim.applied:
+            LOGGER.info("merge_compact_bullet_trimmed %s", trim.log_line)
+        rendered: str = replace(fix.blocks, theses_lines=trim.lines).render()
+        spacing_ok: bool = rendered == source_text
+        findings: QualityFindings = QualityFindings(
+            rendered, request, spacing_ok, fix.wrong_language_heading_detected, fix.official_links_heading_mismatch, bullets
+        )
+        applied: bool = fix.applied or bullets.changed or trim.applied or not spacing_ok
+        return QualityNormalization(MergedDescription(rendered), QualityDiagnostics.of(findings, rules), applied)
+
+    @property
+    def overloaded_bullet_count(self) -> int:
+        """Пункты с маркером-эмодзи длиннее 500 знаков или длиннее 280 знаков с тремя и больше именами."""
+        count: int = 0
+        for line in normalize_newlines(self.text).split(LINE_JOINER):
+            stripped: str = line.strip()
+            if not stripped.startswith(BULLET_PREFIXES):
+                continue
+            if len(stripped) > BULLET_ABSOLUTE_MAX_CHAR_LIMIT:
+                count += 1
+            elif len(stripped) > BULLET_OVERLOAD_CHAR_LIMIT:
+                count += int(len(PROPER_NAME_PATTERN.findall(stripped)) >= BULLET_OVERLOAD_NAME_LIMIT)
+        return count
+
+    def contains_agenda_heading(self, lexicon: AgendaLexicon) -> bool:
+        """В описании есть строка-заголовок повестки («Что в этом стриме:»)."""
+        return lexicon.matches(self.text)
+
+    @property
+    def looks_like_per_source_dump(self) -> bool:
+        """Описание пересказывает источники по очереди («Source 1: …», «Video 2: …»), а не сводит их."""
+        lines: list[str] = [line.strip() for line in normalize_newlines(self.text).split(LINE_JOINER) if line.strip()]
+        if sum(1 for line in lines if SOURCE_LINE_PATTERN.match(line)) >= SOURCE_LINE_MIN_HITS:
+            return True
+        lowered_text: str = str(self.text or "").lower()
+        return any(first in lowered_text and second in lowered_text for first, second in SOURCE_DUMP_PAIRS)
