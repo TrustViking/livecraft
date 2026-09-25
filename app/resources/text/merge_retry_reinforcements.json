@@ -1,0 +1,54 @@
+{
+  "source": "restreamer 35324e5, app/llm/prompts/templates.yaml, загрузчик app/config/template_loader.py: llm.merge_retry_reinforcements (AppTemplates.llm_merge_retry_reinforcements), побайтно",
+  "value": {
+    "insufficient_bullet_coverage": [
+      "Previous attempt produced only {actual_bullets} bullet lines. Rewrite with at least {required_bullets} bullets.",
+      "Spread bullets across all {source_count} sources. Do not collapse multiple sources into one generic lane."
+    ],
+    "duplicate_paragraph": [
+      "CRITICAL: Previous attempt had a structural error - the opening paragraph was repeated or a CTA appeared where the hook should be.",
+      "RULE 1 - HOOK STRUCTURE: The very first paragraph must be the hook: a question, tension, or key thesis. It appears exactly ONCE.",
+      "RULE 2 - NO DUPLICATION: Paragraph 2 and later must NOT restate, paraphrase, or echo any sentence from paragraph 1. If paragraph 1 ends with a question, paragraph 2 must answer it with new facts - never repeat the question.",
+      "RULE 3 - NO CTA: Do NOT place 'Subscribe', 'Follow', 'Watch', 'Share', 'Like', 'Подпишитесь', 'Підпишіться', 'Поширюйте', 'Смотрите', or any call to action anywhere in the description. No CTA is added by post-processing either — your output must not contain any CTA paragraph at all.",
+      "RULE 4 - PARAGRAPH 2 MUST BE BULLETS: Immediately after the hook, start the bullet block. The second paragraph must begin with a bullet marker (🔹, ⚖, 📌, etc.), not with another prose sentence."
+    ],
+    "overloaded_bullet": [
+      "Previous attempt had {overloaded_count} overloaded bullet(s) - single bullets listing {bullet_name_limit}+ multi-word names or spanning {bullet_char_limit}+ characters.",
+      "RULE - SPLIT OVERLOADED BULLETS: If a bullet contains {bullet_name_limit} or more full names (first + last name) or is longer than {bullet_char_limit} characters, split it into 2 separate bullets.",
+      "Each bullet must carry ONE clear idea or ONE person's contribution - not a container for everything that didn't fit elsewhere.",
+      "It is better to have 7 focused bullets than 5 bullets where one is a dump of everything."
+    ],
+    "paragraph_overflow": [
+      "Previous attempt produced {actual_paragraphs} body paragraphs but the maximum is {max_paragraphs}.",
+      "STRUCTURE RULE: The output must have at most {max_paragraphs} visual paragraphs (blocks separated by blank lines).",
+      "Paragraph 1 = hook (1-2 sentences). Paragraph 2 = bullet block. All bullet lines within one thematic group must be separated by single newlines, NOT double newlines.",
+      "If you use thematic micro-blocks, keep them inside the same paragraph - separate sub-groups with a single blank line only if absolutely needed, but the total paragraph count must stay within the limit.",
+      "Do NOT put each bullet on its own paragraph. Group related bullets together."
+    ],
+    "paragraph_underflow": [
+      "Previous attempt produced only 1 body paragraph. The minimum is 2.",
+      "STRUCTURE RULE: The output must have at least 2 visual paragraphs (blocks separated by blank lines).",
+      "Paragraph 1 = hook (1-2 editorial sentences setting the tension or key question).",
+      "Paragraph 2 = bullet block starting with the allowed markers (🔹, 📌, 🎤, 🎥, ⚖, 🌐, ✅). Separate the hook from the bullets with one blank line.",
+      "Do NOT merge the hook and bullets into a single block of text."
+    ],
+    "cta_as_first_paragraph": [
+      "CRITICAL: Previous attempt placed a CTA (subscribe/follow/watch) as the first paragraph.",
+      "RULE: The first paragraph must be the editorial hook — a question, tension, or key thesis.",
+      "Do not write a CTA at all. Remove any subscribe/follow/watch line.",
+      "Rewrite so paragraph 1 is the hook and there is no CTA paragraph anywhere in the description."
+    ],
+    "compact_bullet_overflow": [
+      "Previous attempt had {actual_bullets} bullets but the compact contract allows maximum {max_bullets}.",
+      "RULE: For 2-source merge, the bullet block must have exactly {min_bullets} to {max_bullets} bullets.",
+      "Merge related points into fewer, denser bullets. Each bullet = one distinct fact or angle. Do not pad."
+    ],
+    "hook_echo_in_body": [
+      "CRITICAL: Previous attempt repeated the hook thesis in the bullet block opening.",
+      "RULE 5 — NO HOOK ECHO: The first line of the bullet block must NOT restate the hook. If the hook asks a question, the first bullet must answer with a new fact, not repeat the question.",
+      "Paragraph 2 must start with a bullet marker and a NEW fact that was not in paragraph 1.",
+      "Do NOT reuse any phrase, quote, or sentence from paragraph 1 in paragraph 2 — not even rephrased. If the hook contains a direct quote, paragraph 2 must NOT open with the same quote. The opening of paragraph 2 must be a completely different statement.",
+      "STRUCTURAL REMINDER: Paragraph 1 = hook (1-2 sentences, ends with sentence-ending punctuation: period, exclamation mark, or question mark). Then one blank line. Paragraph 2 = bullet block starting with a bullet marker. Do NOT merge the first bullet into the hook line."
+    ]
+  }
+}

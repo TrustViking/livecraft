@@ -8,6 +8,10 @@
 качество описания: `blocks.py` (`DescriptionBlocks` — тезис, пункты, ссылки, призыв; смесь алфавитов),
 `service_lines.py` (`ServiceLineCatalog`, `ServiceLanguage` — служебные строки и их язык), `quality.py`
 (`QualityRules`, `QualityDiagnostics` — коды причин и статус, шаги нормализации; сама нормализация —
-`MergedDescription.quality_normalized`), `agenda.py` (`AgendaLexicon`), `rules.py` (пороги донора). Модель merge
-видит только через разъём `app\\llm\\backend.py::LlmBackend`.
+`MergedDescription.quality_normalized`), `agenda.py` (`AgendaLexicon`), `rules.py` (пороги донора). Третий слой
+(задача 3.12) — промт: `prompt_texts.py` (`MergePromptTexts` — боевые шаблоны донора и встроенные тексты ресурсами),
+`source.py` (`MergeSource`, `PreparedSourceDescription` — источник и его очищенное описание), `contract.py`
+(`MergeContract` — compact / expanded / narrative, предел абзацев тела), `retry.py` (`RetryProfile` — инструкция
+повтора по сигналу отказа), `prompt.py` (`MergePrompt` — текст промта; меньше двух источников — `MergePromptRefusal`).
+Модель merge видит только через разъём `app\\llm\\backend.py::LlmBackend`.
 """

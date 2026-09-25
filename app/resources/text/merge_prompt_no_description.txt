@@ -1,0 +1,2 @@
+# restreamer 35324e5, app/llm/prompts/templates.yaml, загрузчик app/config/template_loader.py: common.no_description_text (AppTemplates.common_no_description_text), побайтно
+(no description)

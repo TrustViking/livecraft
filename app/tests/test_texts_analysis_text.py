@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.resources.loader import TextResource
-from app.texts.analysis_text import clean_text_for_analysis
+from app.texts.analysis_text import AnalysisTextReport, clean_text_for_analysis
 
 HINTS: tuple[str, ...] = TextResource("merge_service_hints.txt").lines
 
@@ -59,3 +59,38 @@ def test_long_paragraph_with_a_hint_is_not_a_service_tail() -> None:
 def test_without_hints_no_tail_is_dropped() -> None:
     text: str = "Начало.\n\nПодписывайтесь на канал!"
     assert clean_text_for_analysis(text, ()) == text
+
+
+# --- отчёт чистки (донор: `_clean_description_for_analysis_report`)
+
+
+def test_report_text_is_the_cleaned_text() -> None:
+    text: str = "Первый абзац https://a.example.\r\n\r\n#тег https://b.example\n\nПодписывайтесь на канал!"
+    report: AnalysisTextReport = AnalysisTextReport.of(text, HINTS)
+    assert report.text == clean_text_for_analysis(text, HINTS) == "Первый абзац"
+
+
+def test_report_counts_links_hashtags_and_dropped_paragraphs() -> None:
+    text: str = (
+        "Начало https://a.example и http://b.example #один\n\n"
+        "https://only.example #два #три\n\n"
+        "Середина текста.\n\n"
+        "Подписывайтесь на канал!\n\n"
+        "Смотрите подробности ниже"
+    )
+    assert AnalysisTextReport.of(text, HINTS) == AnalysisTextReport(
+        text="Начало и\n\nСередина текста.", urls_removed=3, hashtags_removed=3, service_paragraphs_dropped=3
+    )
+
+
+def test_hashtags_are_counted_after_links_are_removed() -> None:
+    """Ссылка с «#» внутри уходит целиком раньше хештегов и хештегом не считается."""
+    report: AnalysisTextReport = AnalysisTextReport.of("Текст https://a.example/#part #тег", HINTS)
+    assert (report.text, report.urls_removed, report.hashtags_removed) == ("Текст", 1, 1)
+
+
+@pytest.mark.parametrize("text", ["", "  \r\n\r\n  "])
+def test_report_of_empty_text_counts_nothing(text: str) -> None:
+    assert AnalysisTextReport.of(text, HINTS) == AnalysisTextReport(
+        text="", urls_removed=0, hashtags_removed=0, service_paragraphs_dropped=0
+    )
