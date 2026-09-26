@@ -22,8 +22,9 @@ from enum import Enum
 from typing import Final
 
 from app.config.loader import LivecraftSettings
+from app.core.dates import require_aware
 from app.google.auth import GoogleLogin
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 from app.packages.package import PackageResult, SlotPackage
 from app.paths import LivecraftPaths
 from app.secretsafe.vault import Vault
@@ -35,10 +36,8 @@ from app.slots.builder import SlotBuild, SlotBuilder
 from app.sources.video import SourceCatalog, SourceTally, SourceVideo
 from app.ui import messages_ru as msg
 
-LOGGER_NAME: Final[str] = "intake"
-LOGGER = get_logger(LOGGER_NAME)
+LOGGER = get_logger(LogArea.INTAKE)
 
-NO_VALUE: Final[str] = "-"
 # Сбой таблицы, который лечится настройкой или входом, — ошибка конфигурации или авторизации (§10, код 2).
 CONFIG_SHEETS_REASONS: Final[frozenset[SheetsReadReason]] = frozenset(
     {SheetsReadReason.NOT_CONFIGURED, SheetsReadReason.AUTH}
@@ -65,8 +64,7 @@ class IntakeRequest:
     package_id: str
 
     def __post_init__(self) -> None:
-        if self.now.tzinfo is None or self.now.utcoffset() is None:
-            raise ValueError("now must be timezone-aware")
+        require_aware(self.now)
 
 
 @dataclass(frozen=True)
@@ -89,7 +87,7 @@ class RowTally:
         skipped: Counter[RowSkipReason] = self.skipped
         reasons: str = ""
         if skipped:
-            items: str = msg.INTAKE_ITEM_JOINER.join(
+            items: str = msg.ITEM_JOINER.join(
                 msg.INTAKE_COUNT_ITEM.format(name=reason.human, count=count) for reason, count in skipped.items()
             )
             reasons = msg.INTAKE_TABLE_REASONS.format(items=items)
@@ -192,11 +190,11 @@ class IntakeResult:
         """Счётчики и причина остановки key=value; без значений сейфа, ссылки формы и текстов видео."""
         rows: RowTally = RowTally(self.rows)
         sources: SourceTally = SourceTally(self.videos)
-        slots: str = NO_VALUE if self.build is None else str(len(self.build.slots))
-        refused: str = NO_VALUE if self.build is None else str(len(self.build.refused))
-        package: str = NO_VALUE if self.package is None else self.package.log_line
-        sheets: str = NO_VALUE if self.sheets_error is None else self.sheets_error.reason.value
-        stopped: str = NO_VALUE if self.stopped_at is None else self.stopped_at.value
+        slots: str = LogValue.EMPTY.value if self.build is None else str(len(self.build.slots))
+        refused: str = LogValue.EMPTY.value if self.build is None else str(len(self.build.refused))
+        package: str = LogValue.EMPTY.value if self.package is None else self.package.log_line
+        sheets: str = LogValue.EMPTY.value if self.sheets_error is None else self.sheets_error.reason.value
+        stopped: str = LogValue.EMPTY.value if self.stopped_at is None else self.stopped_at.value
         return (
             f"stopped_at={stopped} sheets_error={sheets} plan_problem={self.plan_problem is not None} "
             f"rows={len(self.rows)} admitted={rows.admitted} sources={len(self.videos)} ready={sources.ready} "
@@ -208,7 +206,7 @@ class IntakeResult:
         tally: SourceTally = SourceTally(self.videos)
         failures: str = ""
         if tally.failures:
-            items: str = msg.INTAKE_ITEM_JOINER.join(
+            items: str = msg.ITEM_JOINER.join(
                 msg.INTAKE_COUNT_ITEM.format(name=reason.human, count=count)
                 for reason, count in tally.failures.items()
             )
@@ -220,7 +218,7 @@ class IntakeResult:
     def _slots_line(self, build: SlotBuild) -> str:
         languages: str = ""
         if build.languages:
-            items: str = msg.INTAKE_LANGUAGE_JOINER.join(
+            items: str = msg.LIST_JOINER.join(
                 msg.INTAKE_COUNT_ITEM.format(name=code, count=count) for code, count in build.languages.items()
             )
             languages = msg.INTAKE_SLOTS_LANGUAGES.format(items=items)

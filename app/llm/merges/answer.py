@@ -23,16 +23,15 @@ from app.llm.json_text import PARSE_CANDIDATE, PARSE_DIRECT, parse_json_tolerant
 from app.llm.merges.description import EMOJI_PATTERN, MergedDescription
 from app.llm.merges.layout import DescriptionLayout
 from app.llm.merges.reject import MergeReject, MergeRejectCode
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 from app.texts.description_marks import CtaLexicon
 from app.texts.paragraphs import split_paragraphs
 
-LOGGER: logging.Logger = get_logger("llm")
+LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
 TITLE_KEY: Final[str] = "title"
 DESCRIPTION_KEY: Final[str] = "description"
 REQUIRED_KEYS: Final[tuple[str, ...]] = (TITLE_KEY, DESCRIPTION_KEY)
-KEYS_JOINER: Final[str] = ","
 TITLE_MIN_CHARS: Final[int] = 1
 TITLE_MAX_CHARS: Final[int] = 99
 MIN_BODY_PARAGRAPHS: Final[int] = 2
@@ -93,10 +92,10 @@ class MergePayload:
         keys: set[str] = set(self.data.keys())
         missing: list[str] = sorted(key for key in REQUIRED_KEYS if key not in keys)
         if missing:
-            return MergeReject(MergeRejectCode.MISSING_KEYS, KEYS_JOINER.join(missing))
+            return MergeReject(MergeRejectCode.MISSING_KEYS, LogValue.LIST_SEPARATOR.join(missing))
         extra: list[str] = sorted(key for key in keys if key not in REQUIRED_KEYS)
         if extra:
-            return MergeReject(MergeRejectCode.EXTRA_KEYS, KEYS_JOINER.join(extra))
+            return MergeReject(MergeRejectCode.EXTRA_KEYS, LogValue.LIST_SEPARATOR.join(extra))
         for key in REQUIRED_KEYS:
             if isinstance(self.data.get(key), (list, dict)):
                 return MergeReject(MergeRejectCode.UNEXPECTED, INVALID_TYPE_DETAIL.format(key=key))

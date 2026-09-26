@@ -21,41 +21,40 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from app.core.dates import FILE_STAMP_FORMAT
+from app.core.clock import Clock
+from app.core.dates import FILE_STAMP_FORMAT, require_aware
+from app.core.text_format import TEXT_ENCODING
+from app.observability.log_event import LogValue
+from app.version import APP_NAME
 
 if TYPE_CHECKING:      # только для аннотаций: в рантайме наблюдаемость о сейфе не знает и кольца нет
     from app.secretsafe.value import SecretValue
     from app.secretsafe.vault import Vault
 
-ROOT_LOGGER_NAME: Final[str] = "livecraft"
 LOG_FORMAT: Final[str] = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 LOG_FILE_TEMPLATE: Final[str] = "{stamp}_livecraft.log"
-LOG_ENCODING: Final[str] = "utf-8"
 MASK_PREFIX: Final[str] = "****-"
 MASK_HIDDEN: Final[str] = "****"
-MASK_EMPTY: Final[str] = "-"
 MASK_VISIBLE_CHARS: Final[int] = 4
 THIRD_PARTY_LEVEL: Final[int] = logging.WARNING   # сторонние логгеры — в файл от этого уровня
 
 _THIRD_PARTY_HANDLERS: list[logging.Handler] = []   # свои обработчики на корневом логгере Python
 
 
-def get_logger(name: str) -> logging.Logger:
-    """Дочерний логгер livecraft: livecraft.<name> (CLAUDE.md §11)."""
-    return logging.getLogger(f"{ROOT_LOGGER_NAME}.{name}")
+def setup_logging(logs_dir: Path, debug: bool, started: datetime) -> Path:
+    """Файл — всегда DEBUG (сторонние — от WARNING); терминал — только с --debug (DEBUG в stderr).
 
-
-def setup_logging(logs_dir: Path, debug: bool) -> Path:
-    """Файл — всегда DEBUG (сторонние — от WARNING); терминал — только с --debug (DEBUG в stderr)."""
+    `started` — момент начала запуска по часам программы: он даёт имя файлу, а его пояс — время каждой записи.
+    """
     close_logging()
     formatter: logging.Formatter = logging.Formatter(LOG_FORMAT)
-    stamp: str = datetime.now().astimezone().strftime(FILE_STAMP_FORMAT)
-    log_path: Path = logs_dir / LOG_FILE_TEMPLATE.format(stamp=stamp)
-    file_handler: logging.FileHandler = logging.FileHandler(log_path, encoding=LOG_ENCODING)
+    formatter.converter = Clock(require_aware(started).tzinfo).local_time
+    log_path: Path = logs_dir / LOG_FILE_TEMPLATE.format(stamp=started.strftime(FILE_STAMP_FORMAT))
+    file_handler: logging.FileHandler = logging.FileHandler(log_path, encoding=TEXT_ENCODING)
     handlers: list[logging.Handler] = [file_handler]
     if debug:
         handlers.append(logging.StreamHandler(sys.stderr))
-    livecraft_logger: logging.Logger = logging.getLogger(ROOT_LOGGER_NAME)
+    livecraft_logger: logging.Logger = logging.getLogger(APP_NAME)
     livecraft_logger.setLevel(logging.DEBUG)
     livecraft_logger.propagate = False
     for handler in handlers:
@@ -76,7 +75,7 @@ def close_logging() -> None:
     for handler in _THIRD_PARTY_HANDLERS:
         python_root.removeHandler(handler)
     _THIRD_PARTY_HANDLERS.clear()
-    livecraft_logger: logging.Logger = logging.getLogger(ROOT_LOGGER_NAME)
+    livecraft_logger: logging.Logger = logging.getLogger(APP_NAME)
     for handler in list(livecraft_logger.handlers):
         livecraft_logger.removeHandler(handler)
         handler.close()
@@ -86,7 +85,7 @@ def close_logging() -> None:
 def mask_stream_key(value: str | None) -> str:
     """None → "-"; короче 4 символов → "****"; иначе "****-" + последние 4 символа."""
     if value is None:
-        return MASK_EMPTY
+        return LogValue.EMPTY.value
     if len(value) < MASK_VISIBLE_CHARS:
         return MASK_HIDDEN
     return MASK_PREFIX + value[-MASK_VISIBLE_CHARS:]
@@ -145,7 +144,7 @@ class _ThirdPartyFilter(logging.Filter):
     """Записи livecraft проходят с любым уровнем, чужие — от THIRD_PARTY_LEVEL."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if record.name == ROOT_LOGGER_NAME or record.name.startswith(ROOT_LOGGER_NAME + "."):
+        if record.name == APP_NAME or record.name.startswith(APP_NAME + "."):
             return True
         return record.levelno >= THIRD_PARTY_LEVEL
 
@@ -166,7 +165,7 @@ def install_secret_filter(vault: Vault) -> None:
 
 def _own_handlers() -> list[logging.Handler]:
     """Обработчики логгера livecraft и свои обработчики на корневом логгере Python, каждый по одному разу."""
-    handlers: list[logging.Handler] = list(logging.getLogger(ROOT_LOGGER_NAME).handlers)
+    handlers: list[logging.Handler] = list(logging.getLogger(APP_NAME).handlers)
     for handler in _THIRD_PARTY_HANDLERS:
         if not any(handler is known for known in handlers):
             handlers.append(handler)

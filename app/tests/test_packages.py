@@ -14,6 +14,7 @@ import pytest
 
 from app.config.loader import FormSettings, LivecraftSettings
 from app.core.dates import build_slot_id, parse_iso_start
+from app.observability.log_event import LogArea
 from app.packages import package as package_module
 from app.packages.package import (
     MANIFEST_NAME,
@@ -29,7 +30,8 @@ from app.slots.builder import SlotBuilder
 from app.slots.slot import StreamSlot
 from app.sources.preview import Preview
 from app.sources.video import SourceVideo
-from app.tests.conftest import SHIPPED_SETTINGS, LogCollector, ready_source
+from app.tests.conftest import SHIPPED_SETTINGS, ready_source
+from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
 
@@ -96,17 +98,9 @@ def read_archive(path: Path) -> tuple[list[str], dict[str, Any], dict[str, bytes
 
 
 @pytest.fixture
-def package_log() -> Iterator[LogCollector]:
-    logger: logging.Logger = logging.getLogger("livecraft.packages")
-    collector: LogCollector = LogCollector()
-    level: int = logger.level
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(collector)
-    try:
-        yield collector
-    finally:
-        logger.removeHandler(collector)
-        logger.setLevel(level)
+def package_log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.PACKAGES, logging.DEBUG) as capture:
+        yield capture
 
 
 @pytest.fixture
@@ -219,7 +213,7 @@ def test_naive_generated_at_is_a_programming_error() -> None:
 # --- пакет не пишется
 
 
-def test_no_slots_writes_nothing(livecraft_paths: LivecraftPaths, package_log: LogCollector) -> None:
+def test_no_slots_writes_nothing(livecraft_paths: LivecraftPaths, package_log: LogCapture) -> None:
     result: PackageResult = make_package(()).write(livecraft_paths.bcast_dir)
     assert result.problem is PackageProblem.NO_SLOTS and result.path is None and not result.is_written
     assert list(livecraft_paths.bcast_dir.iterdir()) == []
@@ -242,7 +236,7 @@ def test_every_problem_has_a_text() -> None:
         assert problem.human == msg.PACKAGE_PROBLEMS[problem.value]
 
 
-def test_a_slot_with_a_problem_does_not_get_into_the_package(package_log: LogCollector) -> None:
+def test_a_slot_with_a_problem_does_not_get_into_the_package(package_log: LogCapture) -> None:
     good, *_ = build_slots()
     empty: StreamSlot = dataclasses.replace(good, slot_id="17-10-2026_1900_uk", title="  ")
     package: SlotPackage = make_package((good, empty))
@@ -250,7 +244,7 @@ def test_a_slot_with_a_problem_does_not_get_into_the_package(package_log: LogCol
     assert any(line.startswith("package_slot_refused ") for line in package_log.messages(logging.WARNING))
 
 
-def test_a_repeated_slot_id_keeps_the_later_slot(package_log: LogCollector) -> None:
+def test_a_repeated_slot_id_keeps_the_later_slot(package_log: LogCapture) -> None:
     good, *_ = build_slots()
     later: StreamSlot = dataclasses.replace(good, title="Позднее название")
     package: SlotPackage = make_package((good, later))
@@ -271,16 +265,14 @@ def test_bcast_being_a_file_is_an_os_error_and_leaves_no_temp_file(livecraft_pat
     assert [item.name for item in livecraft_paths.root.iterdir() if item.name.startswith(".plan_")] == []
 
 
-def test_failed_replace_removes_the_temp_file(
-    livecraft_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def refuse(source: object, target: object) -> None:
-        raise PermissionError("target is locked")
-
-    monkeypatch.setattr(package_module.os, "replace", refuse)
+def test_failed_replace_removes_the_temp_file(livecraft_paths: LivecraftPaths) -> None:
+    """Имя пакета занято непустой папкой: замена не удаётся — OSError, недописанного пакета рядом нет."""
+    blocker: Path = livecraft_paths.bcast_dir / make_package().file_name
+    blocker.mkdir()
+    (blocker / "inside.txt").write_text("занято", encoding="utf-8")
     with pytest.raises(OSError):
         make_package().write(livecraft_paths.bcast_dir)
-    assert list(livecraft_paths.bcast_dir.iterdir()) == []
+    assert [item.name for item in livecraft_paths.bcast_dir.iterdir()] == [blocker.name]
 
 
 def test_writing_the_same_name_again_replaces_the_package(livecraft_paths: LivecraftPaths) -> None:
@@ -306,7 +298,7 @@ def test_log_line_has_no_form_url_and_no_slot_texts(written: PackageResult) -> N
 
 
 def test_writing_logs_one_line_without_the_form_url(
-    livecraft_paths: LivecraftPaths, package_log: LogCollector
+    livecraft_paths: LivecraftPaths, package_log: LogCapture
 ) -> None:
     result: PackageResult = make_package().write(livecraft_paths.bcast_dir)
     (line,) = package_log.messages(logging.INFO)

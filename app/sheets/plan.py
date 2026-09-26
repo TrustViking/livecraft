@@ -20,18 +20,18 @@ from datetime import datetime
 from typing import Final
 from zoneinfo import ZoneInfo
 
+from app.core.dates import require_aware
 from app.core.sheet_text import (
     is_real_local_time,
     normalize_header_name,
     normalize_youtube_link,
     parse_sheet_datetime,
 )
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, get_logger
 from app.sheets.rows import PlanRow, RowSkipReason
 from app.ui import messages_ru as msg
 
-LOGGER_NAME: Final[str] = "sheets"
-LOGGER = get_logger(LOGGER_NAME)
+LOGGER = get_logger(LogArea.SHEETS)
 
 # Псевдонимы колонок шапки (донор): сначала точное совпадение имени, затем вхождение псевдонима в имя.
 # У ссылки донор знал только латиницу; «ссылка» и «видео» добавлены по образцу «дата» и «время».
@@ -39,7 +39,6 @@ LINK_ALIASES: Final[tuple[str, ...]] = ("links", "link", "url", "video", "youtub
 DATE_ALIASES: Final[tuple[str, ...]] = ("date", "дата", "day")
 TIME_ALIASES: Final[tuple[str, ...]] = ("time", "время", "hour")
 FIRST_DATA_ROW_NUMBER: Final[int] = 2        # строка 1 таблицы — шапка
-HEADER_JOINER: Final[str] = ", "
 HEADER_ITEM_TEMPLATE: Final[str] = "«{name}»"
 SUMMARY_COUNT_TEMPLATE: Final[str] = " {reason}={count}"
 
@@ -58,8 +57,7 @@ class SheetRow:
 
         `now` — aware datetime (часы — параметром, в тестах фиксированы).
         """
-        if now.utcoffset() is None:
-            raise ValueError("now must be an aware datetime")
+        require_aware(now)
         if not self.link:
             return PlanRow.skipped(self, RowSkipReason.EMPTY_LINK)
         if not self.date_raw or not self.time_raw:
@@ -169,7 +167,7 @@ class SheetPlan:
     @property
     def _header_text(self) -> str:
         names: list[str] = [HEADER_ITEM_TEMPLATE.format(name=name) for name in self.header if name]
-        return HEADER_JOINER.join(names) if names else msg.SHEET_PLAN_HEADER_NONE
+        return msg.LIST_JOINER.join(names) if names else msg.SHEET_PLAN_HEADER_NONE
 
     def plan_rows(self, zone: ZoneInfo, now: datetime) -> tuple[PlanRow, ...]:
         """Разбор каждого ряда и отсев повторов «та же ссылка — тот же момент»; порядок — порядок таблицы.

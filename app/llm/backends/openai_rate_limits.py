@@ -7,12 +7,13 @@
 from __future__ import annotations
 
 import re
-import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
+from app.core.clock import Clock
 from app.llm.backends.openai_response import parse_int
+from app.observability.log_event import LogValue
 
 HEADER_PREFIX: Final[str] = "x-ratelimit-"
 MARK_REMAINING: Final[str] = "remaining"
@@ -26,7 +27,6 @@ UNIT_SECONDS: Final[dict[str, float]] = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 
 EPOCH_THRESHOLD_SEC: Final[float] = 1_000_000_000.0
 # Где у ответа SDK лежат заголовки: у сырого ответа, у его response или у http_response.
 HEADER_HOLDERS: Final[tuple[str, ...]] = ("response", "http_response")
-UNKNOWN: Final[str] = "unknown"
 
 
 def parse_reset_seconds(raw: str, now: float) -> float | None:
@@ -61,8 +61,8 @@ class RateLimitSnapshot:
     reset_tokens_sec: float | None
 
     @classmethod
-    def from_headers(cls, headers: Mapping[str, str], clock: Callable[[], float] = time.time) -> RateLimitSnapshot:
-        now: float = clock()
+    def from_headers(cls, headers: Mapping[str, str], clock: Clock) -> RateLimitSnapshot:
+        now: float = clock.now().timestamp()     # обнуление моментом эпохи считается от «сейчас» часов программы
         remaining_requests: list[int] = []
         remaining_tokens: list[int] = []
         reset_requests: list[float] = []
@@ -92,7 +92,7 @@ class RateLimitSnapshot:
         )
 
     @classmethod
-    def from_raw_response(cls, raw: Any, clock: Callable[[], float] = time.time) -> RateLimitSnapshot | None:
+    def from_raw_response(cls, raw: Any, clock: Clock) -> RateLimitSnapshot | None:
         """Снимок из сырого ответа SDK; заголовков нет — None."""
         headers: dict[str, str] = {}
         for holder in (raw, *(getattr(raw, name, None) for name in HEADER_HOLDERS)):
@@ -104,7 +104,8 @@ class RateLimitSnapshot:
 
     def log_line(self, model: str, label: str) -> str:
         """Строка лога: только найденные значения, обнуления — целыми секундами (как у донора)."""
-        parts: list[str] = ["llm_rate_limits", f"model={model or UNKNOWN}", f"label={label or UNKNOWN}"]
+        unknown: str = LogValue.UNKNOWN.value
+        parts: list[str] = ["llm_rate_limits", f"model={model or unknown}", f"label={label or unknown}"]
         if self.remaining_requests is not None:
             parts.append(f"rem_req={self.remaining_requests}")
         if self.remaining_tokens is not None:

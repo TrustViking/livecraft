@@ -8,18 +8,20 @@
 там только ярлыки с отпечатком (`SecretValue.log_label`) и код ответа. Текст `HttpError` содержит URL с id
 таблицы — поэтому он не пишется никуда, а исходная ошибка доступна только как `__cause__`.
 
-Повторы — только через `RetryPolicy` (§11): первое обращение и до `max_retries` повторов на 429, 5xx
+Повторы — только через `RetryLoop` (§11): первое обращение и до `max_retries` повторов на 429, 5xx
 и транспортных сбоях. Запасного диапазона при «Unable to parse range» нет (он был в restreamer): диапазон —
 значение пользователя, своё программа не подставляет.
 """
 from __future__ import annotations
 
 import http.client
+import logging
 import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from http import HTTPStatus
 from typing import Any, Final
 
 from google.auth.exceptions import RefreshError, TransportError
@@ -27,21 +29,19 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from httplib2 import ServerNotFoundError
 
-from app.core.retry import RetryPolicy
+from app.core.retry import RETRYABLE_HTTP_STATUSES, AttemptFailure, RetryLoop, RetryPolicy, RetryRun, RetryStep
 from app.google.auth import AuthError, AuthErrorReason, GoogleLogin
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault
 from app.sheets.plan import SheetPlan
 from app.ui import messages_ru as msg
 
-LOGGER_NAME: Final[str] = "sheets"
-LOGGER = get_logger(LOGGER_NAME)
+LOGGER = get_logger(LogArea.SHEETS)
 
 SHEETS_API_NAME: Final[str] = "sheets"
 SHEETS_API_VERSION: Final[str] = "v4"
 VALUES_KEY: Final[str] = "values"
-RETRYABLE_STATUSES: Final[frozenset[int]] = frozenset({429, 500, 502, 503, 504})
 # Сбои ниже HTTP: обрыв, таймаут, SSL, сервер не найден (DNS), сбой транспорта google-auth при обновлении
 # токена по ходу запроса. Повторяются с той же паузой, что и 429.
 TRANSPORT_ERRORS: Final[tuple[type[Exception], ...]] = (
@@ -50,7 +50,6 @@ TRANSPORT_ERRORS: Final[tuple[type[Exception], ...]] = (
     ServerNotFoundError,
     TransportError,
 )
-FIELD_JOINER: Final[str] = ", "
 
 
 class SheetsReadReason(str, Enum):
@@ -66,7 +65,9 @@ class SheetsReadReason(str, Enum):
 
     @classmethod
     def for_status(cls, status: int) -> SheetsReadReason:
-        """Причина по коду ответа, который не повторяется."""
+        """Причина по коду ответа: 429 и 5xx — таблица временно недоступна, прочие коды — по таблице причин."""
+        if status in RETRYABLE_HTTP_STATUSES:
+            return cls.UNAVAILABLE
         return _STATUS_REASONS.get(status, cls.REJECTED)
 
     @property
@@ -75,11 +76,20 @@ class SheetsReadReason(str, Enum):
 
 
 _STATUS_REASONS: Final[dict[int, SheetsReadReason]] = {
-    400: SheetsReadReason.BAD_RANGE,
-    401: SheetsReadReason.NO_ACCESS,
-    403: SheetsReadReason.NO_ACCESS,
-    404: SheetsReadReason.NOT_FOUND,
+    HTTPStatus.BAD_REQUEST: SheetsReadReason.BAD_RANGE,
+    HTTPStatus.UNAUTHORIZED: SheetsReadReason.NO_ACCESS,
+    HTTPStatus.FORBIDDEN: SheetsReadReason.NO_ACCESS,
+    HTTPStatus.NOT_FOUND: SheetsReadReason.NOT_FOUND,
 }
+
+
+class SheetsEvent(str, Enum):
+    """События чтения таблицы в логе."""
+
+    READ_STARTED = "sheets_read_started"
+    READ_RETRY = "sheets_read_retry"
+    READ_DONE = "sheets_read_done"
+    READ_FAILED = "sheets_read_failed"
 
 
 class SheetsReadError(Exception):
@@ -96,6 +106,14 @@ class SheetsReadError(Exception):
         self.status: int | None = status
         self.detail: str = detail
         super().__init__(self.human)
+
+    @classmethod
+    def from_failure(cls, failure: AttemptFailure, label: str) -> SheetsReadError:
+        """Последняя неудача чтения → ошибка. Токен отозван по ходу запроса — нужен новый вход (браузер здесь
+        не открывается)."""
+        reason: SheetsReadReason = SheetsReadReason(failure.reason)
+        detail: str = AuthErrorReason.LOGIN_REQUIRED.human if reason is SheetsReadReason.AUTH else ""
+        return cls(reason, label, failure.status, detail)
 
     @property
     def human(self) -> str:
@@ -129,45 +147,12 @@ class SheetsTarget:
                 if value is None
             ]
             label: str = sheet_id.log_label if sheet_id is not None else SecretField.SHEETS_ID.log_label
-            raise SheetsReadError(SheetsReadReason.NOT_CONFIGURED, label, detail=FIELD_JOINER.join(absent))
+            raise SheetsReadError(SheetsReadReason.NOT_CONFIGURED, label, detail=msg.LIST_JOINER.join(absent))
         return cls(sheet_id=sheet_id, sheet_range=sheet_range)
 
-
-@dataclass(frozen=True)
-class SheetsFailure:
-    """Одно неудачное обращение: причина, код, повторять ли и исходная ошибка (её текст не выводится)."""
-
-    reason: SheetsReadReason
-    status: int | None
-    is_retryable: bool
-    cause: Exception
-    detail: str = ""
-
-    @classmethod
-    def from_http(cls, error: HttpError) -> SheetsFailure:
-        status: int = int(error.resp.status)
-        if status in RETRYABLE_STATUSES:
-            return cls(reason=SheetsReadReason.UNAVAILABLE, status=status, is_retryable=True, cause=error)
-        return cls(reason=SheetsReadReason.for_status(status), status=status, is_retryable=False, cause=error)
-
-    @classmethod
-    def from_transport(cls, error: Exception) -> SheetsFailure:
-        return cls(reason=SheetsReadReason.UNAVAILABLE, status=None, is_retryable=True, cause=error)
-
-    @classmethod
-    def from_refresh(cls, error: RefreshError) -> SheetsFailure:
-        """Токен отозван по ходу запроса: браузер тут не открывается — нужен новый вход."""
-        detail: str = AuthErrorReason.LOGIN_REQUIRED.human
-        return cls(reason=SheetsReadReason.AUTH, status=None, is_retryable=False, cause=error, detail=detail)
-
-    def to_error(self, label: str) -> SheetsReadError:
-        return SheetsReadError(self.reason, label, self.status, self.detail)
-
-    @property
-    def log_line(self) -> str:
-        """Код и тип ошибки; её текст не пишется — у HttpError в нём URL с id таблицы."""
-        status: str = str(self.status) if self.status is not None else "-"
-        return f"status={status} error={type(self.cause).__name__}"
+    def event(self, name: SheetsEvent) -> LogEvent:
+        """Строка лога о чтении этой таблицы: ярлыки с отпечатком вместо значений (§7.4)."""
+        return LogEvent.of(name, sheet=self.sheet_id.log_label, range=self.sheet_range.log_label)
 
 
 @dataclass(frozen=True)
@@ -205,35 +190,39 @@ class SheetsReader:
 
     def read_values(self, sheet_id: SecretValue, sheet_range: SecretValue) -> list[list[str]]:
         """Значения диапазона строками; сбои 429, 5xx и транспорта — повторами по `policy`."""
-        target: str = f"sheet={sheet_id.log_label} range={sheet_range.log_label}"
-        LOGGER.info("sheets_read_started %s", target)
-        retry_number: int = 0
-        while True:
-            outcome: list[list[str]] | SheetsFailure = self._attempt(sheet_id, sheet_range)
-            if not isinstance(outcome, SheetsFailure):
-                LOGGER.info("sheets_read_done %s rows=%d attempts=%d", target, len(outcome), retry_number + 1)
-                return outcome
-            retry_number += 1
-            if not outcome.is_retryable or not self.policy.has_retry_left(retry_number):
-                error: SheetsReadError = outcome.to_error(sheet_id.log_label)
-                LOGGER.error("sheets_read_failed %s %s attempts=%d", error.log_line, outcome.log_line, retry_number)
-                raise error from outcome.cause
-            delay: float = self.policy.delay_sec(retry_number, self.rng)
-            LOGGER.warning(
-                "sheets_read_retry %s %s retry=%d delay_sec=%.1f", target, outcome.log_line, retry_number, delay
-            )
-            self.sleep(delay)
+        target: SheetsTarget = SheetsTarget(sheet_id=sheet_id, sheet_range=sheet_range)
+        target.event(SheetsEvent.READ_STARTED).emit(LOGGER)
+        run: RetryRun[list[list[str]]] = RetryLoop(self.policy, self.rng, self.sleep).run(
+            lambda: self._attempt(sheet_id, sheet_range), lambda step: self._note_retry(target, step)
+        )
+        if run.failure is not None:
+            error: SheetsReadError = SheetsReadError.from_failure(run.failure, sheet_id.log_label)
+            failed: LogEvent = LogEvent.of(SheetsEvent.READ_FAILED, reason=error.reason, sheet=error.label)
+            failed.extended(**run.failure.log_fields, attempts=run.attempts).emit(LOGGER, logging.ERROR)
+            raise error from run.failure.cause
+        rows: list[list[str]] = run.value or []
+        target.event(SheetsEvent.READ_DONE).extended(rows=len(rows), attempts=run.attempts).emit(LOGGER)
+        return rows
 
-    def _attempt(self, sheet_id: SecretValue, sheet_range: SecretValue) -> list[list[str]] | SheetsFailure:
-        """Одно обращение: значения или неудача; неожиданное исключение — наружу, это ошибка программы."""
+    def _note_retry(self, target: SheetsTarget, step: RetryStep) -> None:
+        retry: LogEvent = target.event(SheetsEvent.READ_RETRY).extended(**step.failure.log_fields)
+        retry.extended(retry=step.retry, delay_sec=round(step.delay_sec, 1)).emit(LOGGER, logging.WARNING)
+
+    def _attempt(self, sheet_id: SecretValue, sheet_range: SecretValue) -> list[list[str]] | AttemptFailure:
+        """Одно обращение: значения или неудача; неожиданное исключение — наружу, это ошибка программы.
+
+        Текст исходной ошибки не выводится никуда — у HttpError в нём URL с id таблицы: в лог идут код и имя.
+        """
         try:
             response: Any = self._request(sheet_id, sheet_range)
         except HttpError as error:
-            return SheetsFailure.from_http(error)
+            status: int = int(error.resp.status)
+            reason: SheetsReadReason = SheetsReadReason.for_status(status)
+            return AttemptFailure(reason, reason is SheetsReadReason.UNAVAILABLE, status, type(error).__name__, error)
         except RefreshError as error:
-            return SheetsFailure.from_refresh(error)
+            return AttemptFailure(SheetsReadReason.AUTH, False, error_name=type(error).__name__, cause=error)
         except TRANSPORT_ERRORS as error:
-            return SheetsFailure.from_transport(error)
+            return AttemptFailure(SheetsReadReason.UNAVAILABLE, True, error_name=type(error).__name__, cause=error)
         rows: Any = response.get(VALUES_KEY, []) if isinstance(response, dict) else []
         return [[str(cell) for cell in row] for row in rows]
 

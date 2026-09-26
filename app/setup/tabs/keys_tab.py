@@ -25,13 +25,14 @@ from collections.abc import Callable
 from tkinter import messagebox, ttk
 from typing import Final
 
+from app.core.text_format import PARAGRAPH_BREAK
 from app.paths import LivecraftPaths
 from app.secretsafe.crypto import VaultFormatError
 from app.secretsafe.dpapi import DpapiUnavailable
 from app.secretsafe.store import VaultStore
 from app.secretsafe.value import SecretField
 from app.setup.panels.keys_panel import KeyRow, KeysPanel, KeysPanelEdit, RowAction
-from app.setup.tabs import BREAK, COPY_EVENT, CUT_EVENT, NOTICE_JOINER, PAD, TEXT_WRAP_PIXELS, ProblemLine
+from app.setup.tabs import BREAK, COPY_EVENT, CUT_EVENT, PAD, TEXT_WRAP_PIXELS, ProblemLine
 from app.ui import messages_ru as msg
 
 SECRET_ECHO: Final[str] = "•"             # символ вместо каждого введённого: значение не видно через плечо
@@ -248,6 +249,6 @@ class KeysTab:
             self.notice.configure(text=self.load_error.human)
             self.rows_frame.pack_forget()
             return
-        self.notice.configure(text=NOTICE_JOINER.join(self.panel.notices))
+        self.notice.configure(text=PARAGRAPH_BREAK.join(self.panel.notices))
         for row in self.panel.rows:
             self.rows[row.field].show(row)

@@ -10,9 +10,10 @@ import pytest
 
 from app.llm.merges.attempt import MergeRules
 from app.llm.merges.publication import PRIMARY_SOURCE_LABEL, MergePublication, PublishGate, SanitizedDescription
+from app.observability.log_event import LogArea
 from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.sources.video import SourceVideo
-from app.tests.conftest import LogCollector
+from app.tests.fixtures.logs import LogCapture
 from app.tests.test_llm_merges_source import merge_video
 from app.texts.description_marks import CtaLexicon
 
@@ -24,15 +25,9 @@ TITLE: str = "Merged title"
 
 
 @pytest.fixture
-def llm_log() -> Iterator[LogCollector]:
-    collector: LogCollector = LogCollector()
-    logger: logging.Logger = logging.getLogger("livecraft.llm")
-    logger.addHandler(collector)
-    previous: int = logger.level
-    logger.setLevel(logging.INFO)
-    yield collector
-    logger.setLevel(previous)
-    logger.removeHandler(collector)
+def llm_log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.LLM, logging.INFO) as capture:
+        yield capture
 
 
 def source(metadata_url: str = "", description: str = "", row: int = 2) -> SourceVideo:
@@ -52,7 +47,7 @@ def sanitize(text: str, language: str = "en") -> SanitizedDescription:
     return SanitizedDescription.of(text, language, "merge", CTA)
 
 
-def applied_line(log: LogCollector) -> str:
+def applied_line(log: LogCapture) -> str:
     lines: list[str] = [line for line in log.messages() if line.startswith("publish_sanitation_applied=yes ")]
     assert len(lines) == 1
     return lines[0]
@@ -61,7 +56,7 @@ def applied_line(log: LogCollector) -> str:
 # --- санация текста
 
 
-def test_embedded_hashtags_are_split_from_the_cta(llm_log: LogCollector) -> None:
+def test_embedded_hashtags_are_split_from_the_cta(llm_log: LogCapture) -> None:
     sanitized: SanitizedDescription = sanitize(
         "Scientists compare nanoplastics data across multiple studies.\n\n"
         "Join us tonight and share if you find these scientific findings important. #nanoplastics #microplastics"
@@ -108,7 +103,7 @@ def test_double_bullet_markers_and_broken_tail_links() -> None:
     assert sanitized.malformed_source_urls_dropped == 2 and sanitized.source_urls == ()
 
 
-def test_a_final_cta_paragraph_left_by_the_tail_is_removed(llm_log: LogCollector) -> None:
+def test_a_final_cta_paragraph_left_by_the_tail_is_removed(llm_log: LogCapture) -> None:
     """Абзац из одной строки с хештегом без подсказки призыва хвост не снимает — его снимает проверка тела."""
     sanitized: SanitizedDescription = sanitize("Budget decision and what it means for the regions.\n \n#stream \U0001F3AF")
     assert sanitized.body == "Budget decision and what it means for the regions."
@@ -158,7 +153,7 @@ def test_gate_opener_cta(text: str, expected: bool) -> None:
 # --- публикация целиком
 
 
-def test_embedded_hashtags_are_split_in_the_publication(llm_log: LogCollector) -> None:
+def test_embedded_hashtags_are_split_in_the_publication(llm_log: LogCapture) -> None:
     publication: MergePublication = publish(
         "Body paragraph.\n\nJoin us tonight and share your thoughts. #nanoplastics #microplastics"
     )
@@ -195,14 +190,14 @@ def test_a_closing_cta_is_never_published() -> None:
     assert "#Танзания" in russian.description and "Свидетельства жертв" in russian.description
 
 
-def test_an_empty_official_links_heading_is_suppressed(llm_log: LogCollector) -> None:
+def test_an_empty_official_links_heading_is_suppressed(llm_log: LogCapture) -> None:
     publication: MergePublication = publish(f"Body paragraph.\n\n{HEADING}\n\nJoin us tonight and share your thoughts.")
     assert HEADING not in publication.description
     line: str = applied_line(llm_log)
     assert "official_links_final_count=0 official_links_block=suppressed " in line
 
 
-def test_a_non_empty_official_links_block_stays_cohesive(llm_log: LogCollector) -> None:
+def test_a_non_empty_official_links_block_stays_cohesive(llm_log: LogCapture) -> None:
     publication: MergePublication = publish(
         f"Body paragraph.\n\n{HEADING}\n\nhttps://example.org/official\nhttps://allatra.org/resource\n\n"
         "Join us tonight and share your thoughts. #nanoplastics #microplastics"
@@ -216,7 +211,7 @@ def test_a_non_empty_official_links_block_stays_cohesive(llm_log: LogCollector) 
         assert fragment in line
 
 
-def test_text_and_source_links_are_deduped_into_one_block(llm_log: LogCollector) -> None:
+def test_text_and_source_links_are_deduped_into_one_block(llm_log: LogCapture) -> None:
     publication: MergePublication = publish(
         f"Body paragraph.\n\n{HEADING}\n\nhttps://example.org/official?utm_source=yt\n\n"
         "Join us tonight and share your thoughts.\n\n#nanoplastics #microplastics",
@@ -229,7 +224,7 @@ def test_text_and_source_links_are_deduped_into_one_block(llm_log: LogCollector)
         assert fragment in line
 
 
-def test_youtube_links_of_the_answer_are_ignored_and_not_recommended(llm_log: LogCollector) -> None:
+def test_youtube_links_of_the_answer_are_ignored_and_not_recommended(llm_log: LogCapture) -> None:
     publication: MergePublication = publish(
         f"Body paragraph.\n\n{HEADING}\n\nhttps://example.org/official?utm_source=yt\n\n{HEADING}\n"
         f"https://example.org/official\nhttps://example.org/second\n\n{HEADING}\n\nhttps://youtu.be/ccccccccccc\n\n"
@@ -273,7 +268,7 @@ def test_the_title_is_collapsed_to_single_spaces() -> None:
     assert publication.slot_texts == SlotTexts(title="Title with spaces", description="Body.", origin=SlotTextOrigin.MERGED)
 
 
-def test_a_duplicate_paragraph_blocks_the_publication(llm_log: LogCollector) -> None:
+def test_a_duplicate_paragraph_blocks_the_publication(llm_log: LogCapture) -> None:
     """Без источников тело не нормализуется повторно (правило донора) — повтор доходит до проверки как есть."""
     paragraph: str = "Budget amendments passed after the long commission session in Brussels today."
     publication: MergePublication = publish(f"{paragraph}\n\nMiddle facts.\n\n{paragraph}", sources=())
@@ -284,7 +279,7 @@ def test_a_duplicate_paragraph_blocks_the_publication(llm_log: LogCollector) -> 
     ]
 
 
-def test_a_cta_opener_blocks_the_publication(llm_log: LogCollector) -> None:
+def test_a_cta_opener_blocks_the_publication(llm_log: LogCapture) -> None:
     """Призыв первым предложением абзаца из нескольких предложений хвост не снимает — его ловит проверка."""
     publication: MergePublication = publish(
         "Subscribe to our channel for updates and facts. Budget amendments passed.\n\nFacts about the vote.", sources=()
@@ -293,7 +288,7 @@ def test_a_cta_opener_blocks_the_publication(llm_log: LogCollector) -> None:
     assert llm_log.messages(logging.ERROR)[0].startswith("publish_opener_cta_detected lang=en source=primary_success ")
 
 
-def test_no_description_text_reaches_the_log(llm_log: LogCollector) -> None:
+def test_no_description_text_reaches_the_log(llm_log: LogCapture) -> None:
     publish(
         f"Unique hook words about Brussels.\n\n\U0001F539 Distinct bullet about Kharkiv\n\n{HEADING}\nhttps://example.org\n\n"
         "Join us tonight and share. #tag"

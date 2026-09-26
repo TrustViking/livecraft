@@ -15,13 +15,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
+from app.core.text_format import NEWLINE
 from app.llm.merges import rules
 from app.llm.merges.prompt_texts import MergePromptTexts
+from app.observability.log_event import LogValue
 
 INSTRUCTION_HEADER: Final[str] = "RETRY INSTRUCTION:"
-LABEL_JOINER: Final[str] = ","
-NONE_LABEL: Final[str] = "none"
-LINE_BREAK: Final[str] = "\n"
 
 
 class RetryMode(str, Enum):
@@ -143,18 +142,18 @@ class RetryProfile:
 
     @property
     def focus_label(self) -> str:
-        return LABEL_JOINER.join(self.focus_tags) or NONE_LABEL
+        return LogValue.LIST_SEPARATOR.join(self.focus_tags) or LogValue.EMPTY.value
 
     @property
     def reject_signal_label(self) -> str:
-        return LABEL_JOINER.join(self.reject_signals) or NONE_LABEL
+        return LogValue.LIST_SEPARATOR.join(self.reject_signals) or LogValue.EMPTY.value
 
     @property
     def instruction_block(self) -> str:
         """`RETRY INSTRUCTION:` и строки профиля; выключенный профиль — пусто."""
         if not self.enabled:
             return ""
-        return f"{INSTRUCTION_HEADER}{LINE_BREAK}{LINE_BREAK.join(self.reinforcement_lines)}"
+        return f"{INSTRUCTION_HEADER}{NEWLINE}{NEWLINE.join(self.reinforcement_lines)}"
 
     @classmethod
     def targeted(cls, signal: RetrySignal, facts: RetryFacts, texts: MergePromptTexts) -> RetryProfile:

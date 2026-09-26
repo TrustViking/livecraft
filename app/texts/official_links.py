@@ -10,17 +10,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Final
 
+from app.core.text_format import PARAGRAPH_BREAK
 from app.core.url_text import SourceUrl, dedupe_nonempty, is_youtube_url
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, get_logger
 from app.texts.description_marks import is_official_links_heading
 from app.texts.paragraphs import split_paragraphs
 from app.texts.tail import is_source_url_line
 
-LOGGER = get_logger("texts")
-
-PARAGRAPH_JOINER: Final[str] = "\n\n"
+LOGGER = get_logger(LogArea.TEXTS)
 
 
 def official_link_urls(lines: Sequence[str]) -> tuple[str, ...]:
@@ -77,7 +75,7 @@ class OfficialLinksBlocks:
                 continue
             suppressed += 1
         return cls(
-            cleaned_text=PARAGRAPH_JOINER.join(item for item in kept if item).strip(),
+            cleaned_text=PARAGRAPH_BREAK.join(item for item in kept if item).strip(),
             heading_found=heading_found,
             source_urls=dedupe_nonempty(urls),
             empty_blocks_suppressed=suppressed,

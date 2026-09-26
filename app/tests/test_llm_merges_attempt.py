@@ -27,8 +27,10 @@ from app.llm.merges.prompt import MergePrompt
 from app.llm.merges.reject import MergeReject, MergeRejectCode
 from app.llm.merges.retry import RetryFacts, RetryMode, RetryProfile, RetrySignal
 from app.llm.usage import RunUsage
+from app.observability.log_event import LogArea
 from app.sources.video import SourceVideo
-from app.tests.conftest import LLM_SETTINGS, LogCollector
+from app.tests.conftest import LLM_SETTINGS
+from app.tests.fixtures.logs import LogCapture
 from app.tests.test_llm_merges_check import (
     EXPANDED_SOURCES,
     HOOK,
@@ -103,15 +105,9 @@ class QueueBackend:
 
 
 @pytest.fixture
-def llm_log() -> Iterator[LogCollector]:
-    collector: LogCollector = LogCollector()
-    logger: logging.Logger = logging.getLogger("livecraft.llm")
-    logger.addHandler(collector)
-    previous: int = logger.level
-    logger.setLevel(logging.INFO)
-    yield collector
-    logger.setLevel(previous)
-    logger.removeHandler(collector)
+def llm_log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.LLM, logging.INFO) as capture:
+        yield capture
 
 
 def three_sources() -> tuple[SourceVideo, ...]:
@@ -159,7 +155,7 @@ def test_the_request_carries_the_merge_schema_zero_temperature_and_settings() ->
 # --- принятый ответ
 
 
-def test_a_strong_answer_is_accepted_with_its_diagnostics(llm_log: LogCollector) -> None:
+def test_a_strong_answer_is_accepted_with_its_diagnostics(llm_log: LogCapture) -> None:
     result: MergeAttemptResult = run_once(answer(STRONG_ANSWER))
     assert result.accepted is not None and result.rejected is None and result.error is None
     assert result.accepted.title == TITLE
@@ -182,7 +178,7 @@ def test_the_structured_payload_is_used_when_the_backend_gives_it() -> None:
     assert result.accepted is not None
 
 
-def test_homoglyphs_are_repaired_and_logged_before_the_check(llm_log: LogCollector) -> None:
+def test_homoglyphs_are_repaired_and_logged_before_the_check(llm_log: LogCapture) -> None:
     videos: tuple[SourceVideo, ...] = sources_of(EXPANDED_SOURCES[:2])
     mixed: str = "Цей eфір розбирає рішення уряду щодо бюджету та наслідки для регіонів у найближчі тижні.\n\nДругий абзац."
     attempt_with(QueueBackend(replies=[answer(mixed)]), videos, language="uk").run()
@@ -340,7 +336,7 @@ def test_the_invalid_line_has_donor_keys_and_no_answer_text() -> None:
     assert "Paragraph number" not in line
 
 
-def test_no_answer_text_reaches_the_log(llm_log: LogCollector) -> None:
+def test_no_answer_text_reaches_the_log(llm_log: LogCapture) -> None:
     for reply in (answer(STRONG_ANSWER), answer(THIN_ANSWER), answer(OVERFLOW_ANSWER), "not json at all"):
         run_once(reply)
     joined: str = "\n".join(llm_log.messages())

@@ -20,6 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
 
+from app.core.text_format import NEWLINE
 from app.llm.merges.agenda import AgendaLexicon
 from app.llm.merges.description import MergedDescription
 from app.llm.merges.hook import BadHookLexicon
@@ -48,7 +49,7 @@ from app.llm.merges.rules import (
     OVERLOADED_BULLETS_REJECT,
     STYLE_CONTRACT_VERSION,
 )
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 from app.resources.loader import TextResource
 from app.texts.description_marks import ALLOWED_BULLET_MARKERS, bullet_marker_for_line, extract_named_entities
 from app.texts.paragraphs import normalize_newlines
@@ -57,16 +58,11 @@ if TYPE_CHECKING:
     from app.sources.language import TextLanguageDetector
     from app.sources.video import SourceVideo
 
-LOGGER: logging.Logger = get_logger("llm")
+LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
 # Название-перечень: «1) », «2) » — пункт под номером прямо в названии.
 NUMBERED_DUMP_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b\d\)\s")
 OVERLOADED_DETAIL: Final[str] = "count={count}"
-LINE_BREAK: Final[str] = "\n"
-LOG_JOINER: Final[str] = ","
-LOG_NONE: Final[str] = "none"
-YES: Final[str] = "yes"
-NO: Final[str] = "no"
 NAMED_ENTITIES_METRIC: Final[str] = "informational"
 # Действия восстановления форматирования — имена донора в строке лога.
 ACTION_REDUCED_EMOJI: Final[str] = "reduced_non_structural_emoji"
@@ -76,7 +72,7 @@ OUTCOME_REVEALED: Final[str] = "revealed_non_formatting_issue"
 
 
 def _flag(value: bool) -> str:
-    return YES if value else NO
+    return LogValue.YES.value if value else LogValue.NO.value
 
 
 @dataclass(frozen=True)
@@ -180,11 +176,11 @@ class MergeDiagnostics:
         """Диагностика описания; имена из источников — по названию и описанию видео до чистки, как у донора."""
         trimmed: MergedDescription = MergedDescription(str(description.text or "").strip())
         markers: list[str] = [
-            marker for marker in map(bullet_marker_for_line, normalize_newlines(trimmed.text).split(LINE_BREAK)) if marker
+            marker for marker in map(bullet_marker_for_line, normalize_newlines(trimmed.text).split(NEWLINE)) if marker
         ]
         semantic: int = sum(1 for marker in markers if marker in ALLOWED_BULLET_MARKERS)
         source_entities: set[str] = cls._source_entities(request.sources)
-        answer_entities: set[str] = extract_named_entities(f"{request.title.strip()}{LINE_BREAK}{trimmed.text}")
+        answer_entities: set[str] = extract_named_entities(f"{request.title.strip()}{NEWLINE}{trimmed.text}")
         paragraphs: list[str] = trimmed.paragraphs
         first: str = paragraphs[0] if paragraphs else ""
         return cls(
@@ -211,7 +207,7 @@ class MergeDiagnostics:
         for source in sources:
             title: str = source.metadata.title if source.metadata is not None else ""
             body: str = source.metadata.description if source.metadata is not None else ""
-            entities.update(extract_named_entities(f"{title.strip()}{LINE_BREAK}{body.strip()}"))
+            entities.update(extract_named_entities(f"{title.strip()}{NEWLINE}{body.strip()}"))
         return entities
 
     def log_lines(self, label: MergeAttemptLabel) -> tuple[str, str]:
@@ -226,9 +222,9 @@ class MergeDiagnostics:
             f"bullet_points_count={self.bullet_points_count} semantic_bullets_count={self.semantic_bullets_count} "
             f"bullets_with_emoji_count={self.bullets_with_emoji_count} "
             f"bullets_with_plain_marker_count={self.bullets_with_plain_marker_count} "
-            f"bullet_marker_types={LOG_JOINER.join(self.bullet_marker_types) or LOG_NONE} "
+            f"bullet_marker_types={LogValue.LIST_SEPARATOR.join(self.bullet_marker_types) or LogValue.EMPTY.value} "
             f"neutral_bullets_count={quality.neutral_bullets_count} accent_bullets_count={quality.accent_bullets_count} "
-            f"accent_marker_types={LOG_JOINER.join(quality.accent_marker_types) or LOG_NONE} "
+            f"accent_marker_types={LogValue.LIST_SEPARATOR.join(quality.accent_marker_types) or LogValue.EMPTY.value} "
             f"accent_overflow={_flag(quality.accent_overflow)} block_spacing_ok={_flag(quality.block_spacing_ok)} "
             f"named_entities_preserved={self.named_entities_preserved} "
             f"source_named_entities_total={self.source_named_entities_total} "
@@ -240,7 +236,7 @@ class MergeDiagnostics:
 
     def _gate_line(self, label: MergeAttemptLabel) -> str:
         quality: QualityDiagnostics = self.quality
-        codes: str = LOG_JOINER.join(code.value for code in quality.semantic_gate_reason_codes) or LOG_NONE
+        codes: str = LogValue.LIST_SEPARATOR.join(code.value for code in quality.semantic_gate_reason_codes) or LogValue.EMPTY.value
         return (
             f"merge_semantic_gate {label.prefix} block_language_expected={quality.block_language_expected} "
             f"hook_language_detected={quality.hook_language_detected} "
@@ -250,7 +246,7 @@ class MergeDiagnostics:
             f"language_consistency_ok={_flag(quality.language_consistency_ok)} "
             f"wrong_language_heading_detected={_flag(quality.wrong_language_heading_detected)} "
             f"script_mix_detected={_flag(quality.script_mix_detected)} "
-            f"script_mix_suspects={LOG_JOINER.join(quality.script_mix_suspects) or LOG_NONE} "
+            f"script_mix_suspects={LogValue.LIST_SEPARATOR.join(quality.script_mix_suspects) or LogValue.EMPTY.value} "
             f"semantic_gate_status={quality.semantic_gate_status.value} semantic_gate_reason_codes={codes}"
         )
 
@@ -415,11 +411,11 @@ class FormattingRecovery:
         replacement: str = (
             ""
             if self.reject is None
-            else f" replacement_reason_codes={LOG_JOINER.join(self.reject.reason_codes) or LOG_NONE}"
+            else f" replacement_reason_codes={LogValue.LIST_SEPARATOR.join(self.reject.reason_codes) or LogValue.EMPTY.value}"
         )
         return (
             f"merge_llm_validation_salvage {check.request.label.prefix} outcome={self.outcome} "
-            f"reason_codes={LOG_JOINER.join(original.reason_codes) or LOG_NONE}{replacement} "
-            f"actions={LOG_JOINER.join(self.actions) or LOG_NONE} "
+            f"reason_codes={LogValue.LIST_SEPARATOR.join(original.reason_codes) or LogValue.EMPTY.value}{replacement} "
+            f"actions={LogValue.LIST_SEPARATOR.join(self.actions) or LogValue.EMPTY.value} "
             f"emoji_before={check.diagnostics.emoji_count} emoji_after={emoji_after}"
         )

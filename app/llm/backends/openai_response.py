@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
+from app.core.text_format import NEWLINE
 from app.llm.backend import LlmResponse
 from app.llm.backends.openai_model import OpenAiModel, ServiceTierRule
 from app.llm.json_text import parse_json_object
@@ -24,7 +25,6 @@ INT_PATTERN: Final[re.Pattern[str]] = re.compile(r"-?\d+")
 THOUSANDS_SEPARATOR: Final[str] = ","
 INCOMPLETE_MAX_OUTPUT: Final[str] = "max_output_tokens"
 OUTPUT_TEXT_TYPES: Final[frozenset[str]] = frozenset({"output_text", "text"})
-TEXT_JOINER: Final[str] = "\n"
 
 
 def read_field(container: Any, name: str) -> Any:
@@ -150,7 +150,7 @@ class OpenAiReply:
                 kind: str = str(read_field(content, "type") or "").strip().lower()
                 if kind in OUTPUT_TEXT_TYPES and isinstance(text, str) and text.strip():
                     chunks.append(text.strip())
-        return TEXT_JOINER.join(chunks).strip()
+        return NEWLINE.join(chunks).strip()
 
     @staticmethod
     def _incomplete_reason(response: Any) -> str:

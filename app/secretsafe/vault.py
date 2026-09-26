@@ -18,13 +18,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
+from app.core.text_format import SPACE
+from app.observability.log_event import LogValue
 from app.secretsafe.value import SecretField, SecretValue
 from app.ui import messages_ru as msg
 
-FIELD_JOINER: Final[str] = ", "
 LOG_ENTRY_TEMPLATE: Final[str] = "{label}={origin}"
-LOG_LINE_JOINER: Final[str] = " "
-LOG_LINE_EMPTY: Final[str] = "-"
 
 
 class VaultOrigin(str, Enum):
@@ -108,7 +107,7 @@ class Vault:
         if not absent:
             return None
         return msg.VAULT_NOT_READY.format(
-            fields=FIELD_JOINER.join(field.human_label for field in absent)
+            fields=msg.LIST_JOINER.join(field.human_label for field in absent)
         )
 
     def secrets(self) -> tuple[SecretValue, ...]:
@@ -134,8 +133,8 @@ class Vault:
     def log_line(self) -> str:
         """Строка сейфа для лога: по каждому полю ярлык с отпечатком и происхождение, ни одного значения."""
         if not self.entries:
-            return LOG_LINE_EMPTY
-        return LOG_LINE_JOINER.join(
+            return LogValue.EMPTY.value
+        return SPACE.join(
             LOG_ENTRY_TEMPLATE.format(label=entry.log_label, origin=entry.origin.value)
             for entry in (self.entries[field] for field in SecretField if field in self.entries)
         )

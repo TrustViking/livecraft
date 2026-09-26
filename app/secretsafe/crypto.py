@@ -33,6 +33,8 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from app.core.text_format import TEXT_ENCODING
+from app.observability.log_event import LogValue
 from app.secretsafe.value import SecretField
 from app.ui import messages_ru as msg
 
@@ -42,7 +44,6 @@ VAULT_KEY_BYTES: Final[int] = 32       # AES-256
 FIELD_KEY_BYTES: Final[int] = 32       # столько же: HKDF выдаёт ключ поля под тот же шифр
 SALT_BYTES: Final[int] = 16
 NONCE_BYTES: Final[int] = 12           # рекомендованная длина нонса GCM
-PLAINTEXT_ENCODING: Final[str] = "utf-8"
 
 KEY_VERSION: Final[str] = "version"
 KEY_SALT: Final[str] = "salt"
@@ -65,7 +66,6 @@ DETAIL_CRYPTO_LENGTH: Final[str] = "vault {what} must be {expected} bytes, got {
 CRYPTO_PART_KEY: Final[str] = "key"
 CRYPTO_PART_SALT: Final[str] = "salt"
 ERROR_LOG_LINE_TEMPLATE: Final[str] = "file={file} source={source} reason={reason} detail={detail}"
-ERROR_LOG_ABSENT: Final[str] = "-"
 
 
 class VaultSource(str, Enum):
@@ -145,8 +145,8 @@ class VaultFormatError(Exception):
     def log_line(self) -> str:
         """Строка для лога: файл, чей он, причина и английская подробность."""
         return ERROR_LOG_LINE_TEMPLATE.format(
-            file=self.file_name or ERROR_LOG_ABSENT,
-            source=ERROR_LOG_ABSENT if self.source is None else self.source.value,
+            file=self.file_name or LogValue.EMPTY.value,
+            source=LogValue.EMPTY.value if self.source is None else self.source.value,
             reason=self.reason.value,
             detail=self.detail,
         )
@@ -315,7 +315,7 @@ class VaultCrypto:
         """Свой нонс на каждое шифрование; AAD привязывает блоб к имени поля и версии формата."""
         nonce: bytes = os.urandom(NONCE_BYTES)
         ciphertext: bytes = AESGCM(self._field_key(field)).encrypt(
-            nonce, plaintext.encode(PLAINTEXT_ENCODING), self._aad(field)
+            nonce, plaintext.encode(TEXT_ENCODING), self._aad(field)
         )
         return EncryptedField(nonce=nonce, ciphertext=ciphertext)
 
@@ -331,9 +331,9 @@ class VaultCrypto:
                 f"{FORMAT_VERSION}"
             ) from error
         try:
-            return plaintext.decode(PLAINTEXT_ENCODING)
+            return plaintext.decode(TEXT_ENCODING)
         except UnicodeDecodeError as error:
-            raise VaultDecryptError(f"field {field.value!r} decrypted to non-{PLAINTEXT_ENCODING} bytes") from error
+            raise VaultDecryptError(f"field {field.value!r} decrypted to non-{TEXT_ENCODING} bytes") from error
 
     def _field_key(self, field: SecretField) -> bytes:
         """Ключ шифрования по формуле §7.3: HKDF-SHA256 от ключа сейфа, соль файла, info HKDF_INFO.

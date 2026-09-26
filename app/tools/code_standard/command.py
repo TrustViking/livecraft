@@ -166,7 +166,7 @@ class StandardCommand:
             self._say((msg.CODE_STANDARD_INIT_EXISTS.format(file=self.files.ledger.name),))
             return CommandExit.REFUSED
         extended.save(self.files.ledger)
-        rules: str = msg.CODE_STANDARD_REPORT_RULE_JOINER.join(added)
+        rules: str = msg.LIST_JOINER.join(added)
         self._say((msg.CODE_STANDARD_INIT_EXTENDED.format(rules=rules, count=extended.count - registered.count),))
         return CommandExit.OK
 
@@ -206,13 +206,13 @@ class StandardCommand:
             for rule in debts.rules for key, value in debts.section(rule).items()
         ]
         heading: str = msg.CODE_STANDARD_FILES_TITLE if lines else msg.CODE_STANDARD_FILES_NONE
-        shown: str = msg.CODE_STANDARD_REPORT_RULE_JOINER.join(path.text for path in paths)
+        shown: str = msg.LIST_JOINER.join(path.text for path in paths)
         self._say((heading.format(paths=shown),) + tuple(lines))
         return CommandExit.OK
 
     def _signs_of(self, rule: Rule, key: str) -> str:
         """Признаки нарушения после величины; нет признаков — пусто."""
-        labels: str = msg.CODE_STANDARD_REPORT_SIGN_JOINER.join(
+        labels: str = msg.ITEM_JOINER.join(
             sign.label for sign in self._measurements.of(rule).signs_of(key)
         )
         return msg.CODE_STANDARD_FILES_SIGNS.format(signs=labels) if labels else ""

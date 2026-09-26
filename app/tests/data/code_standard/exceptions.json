@@ -2,10 +2,16 @@
   "E1": {
     "app\\core\\safe_trim.py::safe_trim_right": "чистое преобразование, названное в CLAUDE.md §0",
     "app\\observability\\logging_setup.py::mask_stream_key": "нужна контуру B (CLAUDE.md §6, инвариант 6)",
-    "app\\core\\dates.py::parse_iso_start": "нужна контуру B (CLAUDE.md §4)"
+    "app\\core\\dates.py::parse_iso_start": "нужна контуру B (CLAUDE.md §4)",
+    "app\\observability\\log_event.py::get_logger": "функция, которую называет CLAUDE.md §11 (логгер — get_logger(LogArea.X)); её вызов с членом LogArea проверяет правило E10"
+  },
+  "E8": {
+    "','": "два смысла: разделитель тысяч в числах ответа OpenAI (app\\llm\\backends\\openai_response.py) и десятичная запятая, которую человек вводит в настройщике (app\\setup\\fields\\settings_draft.py); список в строке лога — LogValue.LIST_SEPARATOR, член перечисления",
+    "'.'": "три смысла: разделитель пути ключа в livecraft.json (app\\config\\loader.py), разделитель частей имени хоста (app\\core\\url_text.py), десятичная точка числа из настройщика (app\\setup\\fields\\settings_draft.py)",
+    "'text'": "два смысла: имя папки текстовых ресурсов (app\\resources\\loader.py) и имя параметра виджета Tk (app\\setup\\tabs\\__init__.py)"
   },
   "E13": {
-    "app\\setup\\fields\\language_choice.py::LanguageOption.sort_key": "ключ сортировки (REFACTORING_STANDARD.md, E13)",
-    "app\\slots\\slot.py::SlotKey.sort_key": "ключ сортировки (REFACTORING_STANDARD.md, E13)"
+    "app\\setup\\fields\\language_choice.py::LanguageOption.sort_key": "ключ сортировки (CLAUDE.md §11, E13)",
+    "app\\slots\\slot.py::SlotKey.sort_key": "ключ сортировки (CLAUDE.md §11, E13)"
   }
 }

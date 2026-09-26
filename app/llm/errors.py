@@ -14,11 +14,11 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Final
 
+from app.observability.log_event import LogValue
 from app.ui import messages_ru as msg
 
 DETAIL_MAX_CHARS: Final[int] = 300
 TEMPERATURE_PARAM: Final[str] = "temperature"
-LOG_NONE: Final[str] = "-"
 
 
 class LlmErrorKind(str, Enum):
@@ -174,7 +174,7 @@ class LlmRequestError(Exception):
     def log_line(self) -> str:
         return (
             f"backend={self._backend} reason_code={self._kind.value} "
-            f"status_code={self._status_code if self._status_code is not None else LOG_NONE} "
-            f"api_error_code={self._api_error_code or LOG_NONE} api_error_param={self._api_error_param or LOG_NONE} "
-            f"detail={self._detail or LOG_NONE}"
+            f"status_code={self._status_code if self._status_code is not None else LogValue.EMPTY.value} "
+            f"api_error_code={self._api_error_code or LogValue.EMPTY.value} api_error_param={self._api_error_param or LogValue.EMPTY.value} "
+            f"detail={self._detail or LogValue.EMPTY.value}"
         )

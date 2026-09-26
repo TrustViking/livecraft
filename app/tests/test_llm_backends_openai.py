@@ -5,6 +5,7 @@ import logging
 import random
 import traceback
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from typing import Any
 
 import openai
@@ -17,18 +18,20 @@ from app.llm.backends.openai import FLEX_RETRY_DELAYS_SEC, OpenAiClient, OpenAiR
 from app.llm.backends.openai_model import ServiceTierRule
 from app.llm.errors import LlmErrorKind, LlmRequestError
 from app.llm.usage import RequestUsage
+from app.observability.log_event import LogArea
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
 from app.tests.conftest import (
     LLM_SETTINGS,
     SUPPLIED_VALUES,
     FakeLlmSdk,
-    LogCollector,
     api_error,
     connection_error,
     llm_answer,
     timeout_error,
 )
+from app.tests.fixtures.clock import StoppedClock
+from app.tests.fixtures.logs import LogCapture
 
 KEY_TEXT: str = SUPPLIED_VALUES[SecretField.OPENAI_API_KEY]
 KEY: SecretValue = SecretValue(field=SecretField.OPENAI_API_KEY, value=KEY_TEXT)
@@ -37,6 +40,7 @@ SCHEMA: dict[str, Any] = {
     "schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
 }
 DEFAULT_TIER: LlmSettings = dataclasses.replace(LLM_SETTINGS, service_tier=ServiceTier.DEFAULT)
+STOPPED_CLOCK: StoppedClock = StoppedClock.at(datetime(2026, 9, 24, 18, 30, tzinfo=timezone.utc))
 FALLBACK_EVENTS: tuple[str, ...] = (
     "llm_flex_fallback_to_default",
     "llm_max_output_retry",
@@ -45,37 +49,29 @@ FALLBACK_EVENTS: tuple[str, ...] = (
 
 
 @pytest.fixture
-def llm_log() -> Iterator[LogCollector]:
-    logger: logging.Logger = logging.getLogger("livecraft.llm")
-    collector: LogCollector = LogCollector()
-    level: int = logger.level
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(collector)
-    try:
-        yield collector
-    finally:
-        logger.removeHandler(collector)
-        logger.setLevel(level)
+def llm_log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.LLM, logging.DEBUG) as capture:
+        yield capture
 
 
 def make_client(sdk: FakeLlmSdk, settings: LlmSettings = LLM_SETTINGS) -> tuple[OpenAiClient, list[float]]:
     sleeps: list[float] = []
     client: OpenAiClient = OpenAiClient(
-        key=KEY, settings=settings, sdk=sdk, rng=random.Random(7), sleep=sleeps.append, clock=lambda: 0.0
+        key=KEY, settings=settings, sdk=sdk, rng=random.Random(7), sleep=sleeps.append, clock=STOPPED_CLOCK
     )
     return client, sleeps
 
 
-def lines_of(log: LogCollector, event: str) -> list[str]:
+def lines_of(log: LogCapture, event: str) -> list[str]:
     return [line for line in log.messages() if line.startswith(f"{event} ")]
 
 
-def fallbacks(log: LogCollector) -> list[str]:
+def fallbacks(log: LogCapture) -> list[str]:
     """События откатов обмена в порядке появления."""
     return [event for line in log.messages() for event in FALLBACK_EVENTS if line.startswith(f"{event} ")]
 
 
-def finish_reasons(log: LogCollector) -> list[str]:
+def finish_reasons(log: LogCapture) -> list[str]:
     """Причина завершения каждого полученного ответа по строкам `llm_response`."""
     return [line.rsplit("finish_reason=", 1)[1] for line in lines_of(log, "llm_response")]
 
@@ -142,7 +138,7 @@ def test_client_takes_the_key_from_the_vault_and_creates_the_sdk_once() -> None:
     assert sdk.created == [{"api_key": KEY_TEXT, "timeout": 900.0, "max_retries": 0}]
 
 
-def test_answer_text_usage_cost_and_limits(llm_log: LogCollector) -> None:
+def test_answer_text_usage_cost_and_limits(llm_log: LogCapture) -> None:
     headers: dict[str, str] = {"x-ratelimit-remaining-requests": "99", "x-ratelimit-reset-tokens": "1m30s"}
     sdk: FakeLlmSdk = FakeLlmSdk(llm_answer('```json\n{"title": "Эфир"}\n```', headers=headers))
     client, sleeps = make_client(sdk)
@@ -167,7 +163,7 @@ def test_plain_request_has_no_structured_payload() -> None:
     assert client.complete(request()).structured is None
 
 
-def test_flex_busy_waits_20_40_80_and_then_goes_to_the_default_tier(llm_log: LogCollector) -> None:
+def test_flex_busy_waits_20_40_80_and_then_goes_to_the_default_tier(llm_log: LogCapture) -> None:
     busy: list[Exception] = [api_error(429, "Resource unavailable", code="resource_unavailable") for _ in range(4)]
     sdk: FakeLlmSdk = FakeLlmSdk(*busy, llm_answer(service_tier="default"))
     client, sleeps = make_client(sdk)
@@ -180,7 +176,7 @@ def test_flex_busy_waits_20_40_80_and_then_goes_to_the_default_tier(llm_log: Log
     assert "service_tier=default" in lines_of(llm_log, "llm_flex_fallback_to_default")[0]
 
 
-def test_flex_recovers_on_the_second_try_without_leaving_flex(llm_log: LogCollector) -> None:
+def test_flex_recovers_on_the_second_try_without_leaving_flex(llm_log: LogCapture) -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(api_error(429, "Resource unavailable"), llm_answer())
     client, sleeps = make_client(sdk)
     client.complete(request())
@@ -196,7 +192,7 @@ def test_flex_quota_is_not_waited_out() -> None:
     assert caught.value.kind is LlmErrorKind.QUOTA and sleeps == []
 
 
-def test_max_output_hit_is_retried_once_with_double_limit(llm_log: LogCollector) -> None:
+def test_max_output_hit_is_retried_once_with_double_limit(llm_log: LogCapture) -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(
         llm_answer('{"title": "обр', incomplete="max_output_tokens"), llm_answer('{"title": "целое"}')
     )
@@ -210,7 +206,7 @@ def test_max_output_hit_is_retried_once_with_double_limit(llm_log: LogCollector)
     assert client.run_usage.requests == 2                    # оплачены оба ответа
 
 
-def test_max_output_hit_twice_is_returned_as_is(llm_log: LogCollector) -> None:
+def test_max_output_hit_twice_is_returned_as_is(llm_log: LogCapture) -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(
         llm_answer("часть", incomplete="max_output_tokens"), llm_answer("часть 2", incomplete="max_output_tokens")
     )
@@ -256,7 +252,7 @@ def test_configuration_errors_are_not_retried() -> None:
     assert caught.value.kind is LlmErrorKind.MODEL_NOT_FOUND and len(sdk.calls) == 1 and sleeps == []
 
 
-def test_temperature_unsupported_is_retried_without_it(llm_log: LogCollector) -> None:
+def test_temperature_unsupported_is_retried_without_it(llm_log: LogCapture) -> None:
     refusal: Exception = api_error(
         400, "Unsupported parameter: 'temperature' is not supported with this model.", code="unsupported_parameter",
         param="temperature",
@@ -295,7 +291,7 @@ def test_probe_timeout_is_not_longer_than_the_settings() -> None:
     assert probe.service_tier == ServiceTierRule.of("default") and probe.reasoning_effort is ReasoningEffort.MEDIUM
 
 
-def test_the_key_never_leaves_the_client(llm_log: LogCollector) -> None:
+def test_the_key_never_leaves_the_client(llm_log: LogCapture) -> None:
     leak: Exception = api_error(401, f"Incorrect API key provided: {KEY_TEXT}. You can find your API key at …")
     sdk: FakeLlmSdk = FakeLlmSdk(leak)
     client, _ = make_client(sdk)

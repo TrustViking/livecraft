@@ -10,8 +10,9 @@ import pytest
 from app.llm.errors import LlmErrorKind
 from app.llm.merges.job import MergeJob, MergeOutcome, MergeSkipReason
 from app.llm.merges.run import MergeArtifactStatus, MergeDayBlocks, MergeStopReason, MergeTally
+from app.observability.log_event import LogArea
 from app.slots.texts import SlotTextOrigin, SlotTexts
-from app.tests.conftest import LogCollector
+from app.tests.fixtures.logs import LogCapture
 from app.tests.test_llm_merges_attempt import STRONG_ANSWER, UNDERFLOW_ANSWER, answer, error
 from app.tests.test_llm_merges_check import EXPANDED_SOURCES
 from app.tests.test_llm_merges_job import NOT_JSON, START, group_of, run_with
@@ -47,15 +48,9 @@ def outcome(
 
 
 @pytest.fixture
-def llm_log() -> Iterator[LogCollector]:
-    collector: LogCollector = LogCollector()
-    logger: logging.Logger = logging.getLogger("livecraft.llm")
-    logger.addHandler(collector)
-    previous: int = logger.level
-    logger.setLevel(logging.INFO)
-    yield collector
-    logger.setLevel(previous)
-    logger.removeHandler(collector)
+def llm_log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.LLM, logging.INFO) as capture:
+        yield capture
 
 
 # --- счётчики
@@ -117,9 +112,9 @@ def test_the_summary_line_has_the_donor_keys_in_order() -> None:
 # --- остановка
 
 
-def test_the_first_stop_reason_stays(llm_log: LogCollector) -> None:
+def test_the_first_stop_reason_stays(llm_log: LogCapture) -> None:
     merge_run, _ = run_with()
-    assert merge_run.stop_reason is None and merge_run.log_line.endswith(" stop_reason=none")
+    assert merge_run.stop_reason is None and merge_run.log_line.endswith(" stop_reason=-")
     merge_run.stop(MergeStopReason.QUOTA)
     merge_run.stop(MergeStopReason.MODEL)
     assert merge_run.stop_reason is MergeStopReason.QUOTA

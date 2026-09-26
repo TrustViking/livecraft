@@ -28,29 +28,29 @@ import io
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Final
 from uuid import uuid4
 
 from app.config.loader import ConfigProblem, ShippedSettings
+from app.core.clock import Clock
 from app.core.dates import format_datetime_text
-from app.observability.logging_setup import close_logging, get_logger, install_secret_filter, setup_logging
+from app.observability.log_event import LogArea, get_logger
+from app.observability.logging_setup import close_logging, install_secret_filter, setup_logging
 from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
-from app.runtime.single_instance import AnotherInstanceRunning, InstanceLock, LockOwner
+from app.runtime.single_instance import AnotherInstanceRunning, InstanceLock
 from app.setup.migration import FormUrlMigration, FormUrlMigrationResult
 from app.setup.readiness import ModeReadiness, Readiness
 from app.setup.run_mode import ExitCode, RunMode, RunPart
 from app.slots.intake import IntakeRequest, IntakeResult, PlanIntake
 from app.ui import messages_ru as msg
-from app.version import APP_VERSION
+from app.version import APP_NAME, APP_VERSION
 
-LOGGER = get_logger("main")
+LOGGER = get_logger(LogArea.MAIN)
+SHIPPED_SETTINGS: ShippedSettings = ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE)
 
-PROGRAM_NAME: Final[str] = "livecraft"
 
-
-__all__ = ["PROGRAM_NAME", "ExitCode", "RunRequest", "build_parser", "run_cli"]   # ExitCode — из run_mode
+__all__ = ["ExitCode", "RunRequest", "build_parser", "run_cli"]   # ExitCode — из run_mode
 
 
 @dataclass(frozen=True)
@@ -101,7 +101,7 @@ class RunRequest:
 
 def build_parser() -> argparse.ArgumentParser:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
-        prog=PROGRAM_NAME, description=msg.CLI_DESCRIPTION
+        prog=APP_NAME, description=msg.CLI_DESCRIPTION
     )
     parser.add_argument("--dry-run", action="store_true", help=msg.HELP_DRY_RUN)
     parser.add_argument("--no-llm", action="store_true", help=msg.HELP_NO_LLM)
@@ -130,26 +130,22 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
     request: RunRequest = RunRequest.from_args(build_parser().parse_args(argv))
     paths: LivecraftPaths = build_paths(resolve_root())
     ensure_dirs(paths)
+    # Настройки ещё не прочитаны: часы замка, startup.log, лога и шапки идут в поясе поставочного шаблона.
+    clock: Clock = SHIPPED_SETTINGS.clock
     # Замок — до настройки логов и после ensure_dirs: без state\ и logs\ ему некуда лечь
     # (CLAUDE.md §6, инвариант 12). Сбой файловой системы здесь не перехватывается: лога,
     # в который пишется причина падения, ещё нет.
-    lock: InstanceLock = InstanceLock(path=paths.lock_file, startup_log=paths.startup_log_file)
+    lock: InstanceLock = InstanceLock(path=paths.lock_file, startup_log=paths.startup_log_file, clock=clock)
     try:
         lock.acquire()
     except AnotherInstanceRunning as conflict:
-        _say_lock_rejected(conflict.owner)
+        _say_error(str(conflict))
         return int(ExitCode.ERRORS)
     try:
-        log_path: Path = setup_logging(paths.logs_dir, debug=request.debug)
-        LOGGER.info(
-            "run_started version=%s root=%s %s log=%s",
-            APP_VERSION,
-            paths.root,
-            request.log_line,
-            log_path,
-        )
-        now_utc: datetime = datetime.now(timezone.utc)
-        _say_title(now_utc)
+        started: datetime = clock.now()
+        log_path: Path = setup_logging(paths.logs_dir, debug=request.debug, started=started)
+        LOGGER.info("run_started version=%s root=%s %s log=%s", APP_VERSION, paths.root, request.log_line, log_path)
+        _say_title(started)
         exit_code: int = _run_guarded(request, paths, log_path)
         LOGGER.info("run_finished exit_code=%d", exit_code)
         return exit_code
@@ -241,7 +237,7 @@ def _run_intake(paths: LivecraftPaths, readiness: Readiness) -> IntakeResult | N
         paths=paths,
         settings=readiness.settings,
         vault=readiness.vault,
-        now=datetime.now(readiness.settings.zone),
+        now=Clock(readiness.settings.zone).now(),
         package_id=uuid4().hex,
     )
     return PlanIntake.of(request, on_login=lambda: _say(msg.SHEETS_LOGIN_BROWSER)).run()
@@ -249,7 +245,7 @@ def _run_intake(paths: LivecraftPaths, readiness: Readiness) -> IntakeResult | N
 
 def _install_settings(paths: LivecraftPaths) -> None:
     """livecraft.json в git нет (§5): нет файла — программа кладёт поставочный вид сама, человеку делать нечего."""
-    if not ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE).install(paths.config_file):
+    if not SHIPPED_SETTINGS.install(paths.config_file):
         return
     LOGGER.info("settings_file_created path=%s", paths.config_file)
     _say(msg.SETTINGS_FILE_CREATED.format(path=paths.config_file))
@@ -334,21 +330,9 @@ def _say_error(text: str) -> None:
     print(text, file=sys.stderr, flush=True)
 
 
-def _say_lock_rejected(owner: LockOwner) -> None:
-    """Замок занят: называем владельца, если его удалось опознать (инвариант 12)."""
-    if owner.is_known:
-        _say_error(msg.LOCK_REJECTED.format(pid=owner.pid, started_at=owner.started_at))
-        return
-    _say_error(msg.LOCK_REJECTED_UNKNOWN_OWNER)
-
-
-def _say_title(now_utc: datetime) -> None:
-    """Шапка — первая строка любого запуска; время — то же, что в отчёте этого запуска."""
-    _say(
-        msg.CONSOLE_TITLE.format(
-            version=APP_VERSION, generated_at=format_datetime_text(now_utc.astimezone())
-        )
-    )
+def _say_title(now: datetime) -> None:
+    """Шапка — первая строка любого запуска; время — по часам программы, как в отчёте этого запуска."""
+    _say(msg.CONSOLE_TITLE.format(version=APP_VERSION, generated_at=format_datetime_text(now)))
 
 
 def _quoted(value: str | None) -> str:

@@ -11,16 +11,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Final
 
 from app.llm.backend import LlmBackend, LlmResponse
 from app.llm.errors import LlmRequestError
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 from app.ui import messages_ru as msg
 
-LOGGER_NAME: Final[str] = "llm"
-LOGGER = get_logger(LOGGER_NAME)
-LOG_NONE: Final[str] = "none"
+LOGGER = get_logger(LogArea.LLM)
 
 
 class ChoiceReason(str, Enum):
@@ -116,9 +113,9 @@ class ModelChoice:
 
     @property
     def log_line(self) -> str:
-        error: str = self.error.log_line if self.error is not None else f"reason_code={LOG_NONE}"
+        error: str = self.error.log_line if self.error is not None else f"reason_code={LogValue.EMPTY.value}"
         return (
-            f"llm_model_selected chosen={self.chosen if self.chosen is not None else LOG_NONE} "
-            f"primary={self.primary} fallback={self.fallback if self.fallback is not None else LOG_NONE} "
+            f"llm_model_selected chosen={self.chosen if self.chosen is not None else LogValue.EMPTY.value} "
+            f"primary={self.primary} fallback={self.fallback if self.fallback is not None else LogValue.EMPTY.value} "
             f"reason={self.reason.value} {error}"
         )

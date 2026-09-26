@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Final
 
 # `URL_PATTERN` здесь не используется — остаётся для прежних импортёров разметки (фасад, CLAUDE.md §11).
+from app.core.text_format import NEWLINE
 from app.core.url_text import URL_LINE_PATTERN, URL_PATTERN
 from app.resources.loader import TextResource
 from app.texts.paragraphs import starts_with_any_prefix
@@ -40,7 +41,6 @@ NAMED_ENTITY_PATTERN: Final[re.Pattern[str]] = re.compile(
 OFFICIAL_LINKS_HEADING_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\s*\U0001F310\s*[^\s:][^:\n]*:\s*$")
 HASHTAG_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?<!\w)#[^\s#]+")
 WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
-LINE_BREAK: Final[str] = "\n"
 
 CTA_PREFIXES_RESOURCE: Final[str] = "lexicon_cta_prefixes.txt"
 CTA_HINTS_RESOURCE: Final[str] = "lexicon_cta_hints.txt"
@@ -127,7 +127,7 @@ class CtaLexicon:
     def looks_like_cta_paragraph(self, text: str) -> bool:
         """Абзац — призыв: одна-две строки без заголовка ссылок, пунктов и строк-ссылок, и в нём хештег
         (абзац не длиннее 220 знаков) или подсказка призыва."""
-        lines: list[str] = [line.strip() for line in str(text or "").split(LINE_BREAK) if line.strip()]
+        lines: list[str] = [line.strip() for line in str(text or "").split(NEWLINE) if line.strip()]
         if not lines or len(lines) > CTA_PARAGRAPH_MAX_LINES:
             return False
         if any(is_official_links_heading(line) for line in lines):

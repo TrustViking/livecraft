@@ -19,7 +19,7 @@ from typing import Final
 import pycountry
 
 from app.config.loader import SettingProblem
-from app.setup.fields.channel_draft import LANGUAGES_DISPLAY_JOINER, LANGUAGES_SEPARATOR
+from app.setup.fields.channel_draft import LANGUAGES_SEPARATOR
 from app.ui import messages_ru as msg
 
 TRANSLATION_DOMAIN: Final[str] = "iso639-3"
@@ -138,7 +138,7 @@ class LanguageCatalog:
 
     def names(self, codes: Sequence[str]) -> str:
         """Языки канала названиями — для таблицы каналов."""
-        return LANGUAGES_DISPLAY_JOINER.join(self.name(code) for code in codes)
+        return msg.LIST_JOINER.join(self.name(code) for code in codes)
 
     def foreign(self, codes: Sequence[str]) -> tuple[str, ...]:
         """Выбранные коды, которых нет среди вариантов формы; языки формы неизвестны — пусто."""

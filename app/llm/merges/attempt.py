@@ -33,7 +33,7 @@ from app.llm.merges.quality import QualityNormalization, QualityRequest
 from app.llm.merges.reject import MergeReject, MergeRejectCode
 from app.llm.merges.retry import RetryFacts, RetryProfile
 from app.llm.merges.rules import MIN_BULLETS_EXTRA_OVER_SOURCES, MIN_BULLETS_FLOOR
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 from app.texts.composer import PublishHeadings
 
 if TYPE_CHECKING:
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from app.sources.language import TextLanguageDetector
     from app.sources.video import SourceVideo
 
-LOGGER: logging.Logger = get_logger("llm")
+LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
 # Схема ответа merge (донор: `MergeExecutor._STRUCTURED_SCHEMA`): ровно название до 99 знаков и описание.
 MERGE_SCHEMA_NAME: Final[str] = "merge_summary_v2"
@@ -65,12 +65,10 @@ UNEXPECTED_CODE: Final[str] = MergeRejectCode.UNEXPECTED.value
 OVERLOADED_COUNT_UNKNOWN: Final[int] = 1
 OVERFLOW_PARAGRAPHS_UNKNOWN: Final[int] = 8
 STAGE_PRIMARY: Final[str] = "primary"
-YES: Final[str] = "yes"
-NO: Final[str] = "no"
 
 
 def _flag(value: bool) -> str:
-    return YES if value else NO
+    return LogValue.YES.value if value else LogValue.NO.value
 
 
 @dataclass(frozen=True)

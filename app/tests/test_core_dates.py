@@ -10,13 +10,17 @@ from app.core.dates import (
     FILE_STAMP_FORMAT,
     SLOT_TIME_FORMAT,
     TIME_FORMAT,
+    TIMESTAMP_FORMAT,
+    NaiveMomentError,
     build_slot_id,
     format_date,
     format_datetime_text,
     format_time,
+    format_timestamp,
     parse_date,
     parse_iso_start,
     parse_time,
+    require_aware,
 )
 
 KYIV_WINTER: timezone = timezone(timedelta(hours=2))
@@ -97,3 +101,30 @@ def test_file_stamp_is_the_name_of_the_log_and_the_report() -> None:
     """logs\\{DD-MM-YYYY}_{HHMMSS}_… — имя и лога, и отчёта (CLAUDE.md §5)."""
     moment: datetime = datetime(2026, 9, 16, 19, 5, 7, tzinfo=KYIV_WINTER)
     assert moment.strftime(FILE_STAMP_FORMAT) == "16-09-2026_190507"
+
+
+# --- момент с поясом и отметка журнала
+
+
+def test_an_aware_moment_passes_as_it_is() -> None:
+    moment: datetime = datetime(2026, 9, 16, 19, 0, tzinfo=KYIV_WINTER)
+    assert require_aware(moment) is moment
+
+
+def test_a_moment_without_a_zone_is_one_error_everywhere() -> None:
+    """Одна проверка «время с поясом»: одна ошибка и один текст для разработчика."""
+    with pytest.raises(NaiveMomentError) as raised:
+        require_aware(datetime(2026, 9, 16, 19, 0))
+    assert isinstance(raised.value, ValueError)
+    assert str(raised.value) == NaiveMomentError.TEXT.format(value=datetime(2026, 9, 16, 19, 0))
+
+
+def test_the_iso_start_without_an_offset_is_the_same_error() -> None:
+    with pytest.raises(NaiveMomentError):
+        parse_iso_start("2026-09-16T19:00:00")
+
+
+def test_the_journal_stamp_carries_seconds() -> None:
+    """Два события одной минуты в startup.log различимы: отметка — до секунды."""
+    assert format_timestamp(datetime(2026, 9, 16, 19, 5, 7, tzinfo=KYIV_WINTER)) == "16-09-2026 19:05:07"
+    assert TIMESTAMP_FORMAT == f"{DATETIME_FORMAT}:%S"

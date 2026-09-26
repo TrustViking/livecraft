@@ -15,7 +15,8 @@ from app.slots.texts import SlotTextOrigin
 from app.sources.fetcher import SourceFailureReason
 from app.sources.preview import Preview
 from app.sources.video import SourceVideo
-from app.tests.conftest import LogCollector, ready_source
+from app.tests.conftest import ready_source
+from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
 
 KYIV: ZoneInfo = ZoneInfo("Europe/Kyiv")
@@ -108,7 +109,7 @@ def test_unfit_source_does_not_get_into_a_slot() -> None:
     assert slot.text_origin is SlotTextOrigin.SOURCE_SINGLE
 
 
-def test_no_fit_sources_give_no_slots(slot_log: LogCollector) -> None:
+def test_no_fit_sources_give_no_slots(slot_log: LogCapture) -> None:
     (row,) = plan([link(0), "16.10.2026", "19:00"])
     result: SlotBuild = build((failed(row),))
     assert (result.groups, result.slots, result.refused) == ((), (), ())
@@ -163,7 +164,7 @@ def test_slot_key_sort_follows_start_then_language_priority() -> None:
 # --- проблема и страховка повторов
 
 
-def test_slot_with_an_empty_title_is_refused_not_dropped(slot_log: LogCollector) -> None:
+def test_slot_with_an_empty_title_is_refused_not_dropped(slot_log: LogCapture) -> None:
     rows: tuple[PlanRow, ...] = plan([link(0), "16.10.2026", "19:00"], [link(1), "16.10.2026", "20:00"])
     first, second = rows
     result: SlotBuild = build(
@@ -180,7 +181,7 @@ def test_slot_with_an_empty_title_is_refused_not_dropped(slot_log: LogCollector)
     assert "slots_built slots=1 refused=1 languages=uk:1" in slot_log.messages(logging.INFO)
 
 
-def test_same_link_twice_in_a_group_keeps_the_earlier_row(slot_log: LogCollector) -> None:
+def test_same_link_twice_in_a_group_keeps_the_earlier_row(slot_log: LogCapture) -> None:
     earlier: SourceVideo = row_source(3, 0, "Ранний")
     later: SourceVideo = row_source(7, 0, "Поздний")
     other: SourceVideo = row_source(5, 1, "Другой")

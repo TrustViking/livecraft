@@ -11,9 +11,11 @@ from app.llm.selection import ChoiceReason
 from app.llm.usage import RequestUsage, RunUsage
 from app.paths import LivecraftPaths, ROOT_ENV_VAR
 from app.secretsafe.value import SecretField
+from app.setup.run_mode import ExitCode
 from app.tests.conftest import SUPPLIED_VALUES, FakeLlmSdk, api_error, llm_answer, write_supplied_vault
+from app.tests.fixtures.clock import StoppedClock
 from app.tools import llm_probe
-from app.tools.llm_probe import ANSWER_MAX_CHARS, LlmProbe, LlmProbeReport, ProbeExit, StartupPing
+from app.tools.llm_probe import ANSWER_MAX_CHARS, LlmProbe, LlmProbeReport, StartupPing
 from app.ui import messages_ru as msg
 
 MOMENT: datetime = datetime(2026, 9, 24, 18, 30, tzinfo=timezone.utc)
@@ -22,7 +24,7 @@ PING_ANSWER: str = json.dumps({"status": "ok", "provider": "openai", "model": "g
 
 def run_probe(paths: LivecraftPaths, sdk: FakeLlmSdk) -> tuple[int, list[str]]:
     lines: list[str] = []
-    code: int = LlmProbe(paths=paths, say=lines.append, sdk=sdk, now=lambda: MOMENT).run()
+    code: int = LlmProbe(paths=paths, say=lines.append, sdk=sdk, clock=StoppedClock.at(MOMENT)).run()
     return code, lines
 
 
@@ -41,7 +43,7 @@ def test_ping_prompt_gets_the_model_and_the_moment() -> None:
 def test_probe_prints_the_model_the_answer_tokens_and_cost(ready_paths: LivecraftPaths) -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(llm_answer("", service_tier="default", output_tokens=16), llm_answer(PING_ANSWER))
     code, lines = run_probe(ready_paths, sdk)
-    assert code == ProbeExit.OK == 0
+    assert code == ExitCode.OK == 0
     settings: LivecraftSettings = load_settings(ready_paths.config_file)
     assert lines[0] == msg.LLM_PROBE_TITLE
     assert lines[1] == msg.LLM_PROBE_SETTINGS.format(
@@ -65,21 +67,21 @@ def test_probe_prints_the_model_the_answer_tokens_and_cost(ready_paths: Livecraf
 def test_long_answer_is_cut(ready_paths: LivecraftPaths) -> None:
     code, lines = run_probe(ready_paths, FakeLlmSdk(llm_answer(""), llm_answer("слово " * 100)))
     answer: str = next(line for line in lines if line.startswith("Ответ модели: "))
-    assert code == ProbeExit.OK
+    assert code == ExitCode.OK
     assert answer.endswith("…") and len(answer) <= len("Ответ модели: ") + ANSWER_MAX_CHARS + 1
 
 
 def test_unknown_served_model_makes_the_cost_a_lower_bound(ready_paths: LivecraftPaths) -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(llm_answer("", model="gpt-9-preview"), llm_answer(PING_ANSWER, model="gpt-9-preview"))
     code, lines = run_probe(ready_paths, sdk)
-    assert code == ProbeExit.OK
+    assert code == ExitCode.OK
     assert "gpt-9-preview" in lines[-1] and lines[-1].startswith("Стоимость: не меньше $")
 
 
 def test_failed_request_is_code_1(ready_paths: LivecraftPaths) -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(llm_answer(""), api_error(400, "bad input"))
     code, lines = run_probe(ready_paths, sdk)
-    assert code == ProbeExit.ERRORS == 1
+    assert code == ExitCode.ERRORS == 1
     assert msg.LLM_REQUEST_FAILED_STATUS.format(reason=LlmErrorKind.BAD_REQUEST.human("OpenAI"), status=400) in lines
     assert not any(line.startswith("Ответ модели") for line in lines)
     assert lines[-3].startswith("Токены:")
@@ -89,7 +91,7 @@ def test_failed_request_is_code_1(ready_paths: LivecraftPaths) -> None:
 def test_rejected_key_is_code_1_and_nothing_else_is_asked(ready_paths: LivecraftPaths) -> None:
     sdk: FakeLlmSdk = FakeLlmSdk(api_error(401, f"Incorrect API key provided: {SUPPLIED_VALUES[SecretField.OPENAI_API_KEY]}"))
     code, lines = run_probe(ready_paths, sdk)
-    assert code == ProbeExit.ERRORS
+    assert code == ExitCode.ERRORS
     assert len(sdk.calls) == 1
     assert any(line.startswith("Модель не выбрана.") for line in lines)
     assert_no_vault_values(lines)
@@ -101,7 +103,7 @@ def test_no_key_is_code_2_without_openai(ready_paths: LivecraftPaths) -> None:
     )
     sdk: FakeLlmSdk = FakeLlmSdk()
     code, lines = run_probe(ready_paths, sdk)
-    assert code == ProbeExit.CONFIG == 2
+    assert code == ExitCode.CONFIG == 2
     assert sdk.created == [] and sdk.calls == []
     assert msg.LLM_REQUEST_FAILED.format(reason=LlmErrorKind.NOT_CONFIGURED.human("OpenAI")) in lines
     assert lines[-1] == msg.SETUP_REQUIRED
@@ -110,14 +112,14 @@ def test_no_key_is_code_2_without_openai(ready_paths: LivecraftPaths) -> None:
 def test_no_settings_is_code_2(livecraft_paths: LivecraftPaths) -> None:
     sdk: FakeLlmSdk = FakeLlmSdk()
     code, lines = run_probe(livecraft_paths, sdk)
-    assert code == ProbeExit.CONFIG
+    assert code == ExitCode.CONFIG
     assert sdk.created == [] and lines[-1] == msg.SETUP_REQUIRED
 
 
 def test_broken_vault_is_code_2(ready_paths: LivecraftPaths) -> None:
     ready_paths.vault_file.write_text("{не json", encoding="utf-8")
     code, lines = run_probe(ready_paths, FakeLlmSdk())
-    assert code == ProbeExit.CONFIG and lines[-1] == msg.SETUP_REQUIRED
+    assert code == ExitCode.CONFIG and lines[-1] == msg.SETUP_REQUIRED
     refusal: str = lines[-2]
     assert ready_paths.vault_file.name in refusal and msg.VAULT_FILE_ADVICE_SUPPLIED in refusal
     assert "JSON" not in refusal
@@ -125,7 +127,7 @@ def test_broken_vault_is_code_2(ready_paths: LivecraftPaths) -> None:
 
 def test_main_on_an_empty_root_is_code_2(monkeypatch: pytest.MonkeyPatch, livecraft_paths: LivecraftPaths) -> None:
     monkeypatch.setenv(ROOT_ENV_VAR, str(livecraft_paths.root))
-    assert llm_probe.main([]) == ProbeExit.CONFIG
+    assert llm_probe.main([]) == ExitCode.CONFIG
 
 
 def test_the_tier_line_names_each_request_and_unknown_labels_as_is() -> None:
@@ -144,4 +146,4 @@ def test_the_tier_line_names_each_request_and_unknown_labels_as_is() -> None:
     assert lines[1] == "Запросов: 3; тарифы: проверка — default, merge — flex."
     assert lines[2].startswith("Стоимость: не меньше $")
     empty: tuple[str, ...] = LlmProbeReport(usage=RunUsage(), response=None).lines
-    assert empty[1] == msg.LLM_PROBE_REQUESTS.format(requests=0, tiers=msg.LLM_PROBE_NONE)
+    assert empty[1] == msg.LLM_PROBE_REQUESTS.format(requests=0, tiers=msg.NONE_TEXT)

@@ -11,9 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Final
 
-UNKNOWN: Final[str] = "unknown"
+from app.observability.log_event import LogValue
+
 COST_FORMAT: Final[str] = "{:.6f}"
-LOG_JOINER: Final[str] = ","
 
 
 @dataclass(frozen=True)
@@ -42,8 +42,8 @@ class RequestUsage:
             f"input_tokens={self.input_tokens} cached_input_tokens={self.cached_input_tokens} "
             f"cache_write_tokens={self.cache_write_tokens} output_tokens={self.output_tokens} "
             f"thinking_tokens={self.thinking_tokens} total_tokens={self.total_tokens} "
-            f"served_model={self.model or UNKNOWN} tier={self.tier or UNKNOWN} "
-            f"response_id={self.response_id or UNKNOWN}"
+            f"served_model={self.model or LogValue.UNKNOWN.value} tier={self.tier or LogValue.UNKNOWN.value} "
+            f"response_id={self.response_id or LogValue.UNKNOWN.value}"
         )
 
 
@@ -126,6 +126,6 @@ class RunUsage:
             f"cache_write_tokens={self.cache_write_tokens} output_tokens={self.output_tokens} "
             f"thinking_tokens={self.thinking_tokens} total_tokens={self.tokens} "
             f"cost_usd={COST_FORMAT.format(self.cost_usd)} cost_known={'yes' if self.cost_known else 'no'} "
-            f"models={LOG_JOINER.join(sorted(self.models)) or UNKNOWN} "
-            f"tiers={LOG_JOINER.join(sorted(self.tiers)) or UNKNOWN}"
+            f"models={LogValue.LIST_SEPARATOR.join(sorted(self.models)) or LogValue.UNKNOWN.value} "
+            f"tiers={LogValue.LIST_SEPARATOR.join(sorted(self.tiers)) or LogValue.UNKNOWN.value}"
         )

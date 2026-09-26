@@ -16,19 +16,18 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
+from app.core.language_code import LanguageCode
+from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
 from app.core.url_text import normalize_official_link_display
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, get_logger
 from app.resources.loader import TextResource
 
-LOGGER = get_logger("texts")
+LOGGER = get_logger(LogArea.TEXTS)
 
 HEADINGS_RESOURCE: Final[str] = "publish_headings.json"
 FALLBACK_LANGUAGE: Final[str] = "en"
-LANGUAGE_CODE_LENGTH: Final[int] = 2
 INVALID_LANGUAGES: Final[frozenset[str]] = frozenset({"", "unknown", "other", "none", "und", "xx"})
 RECOMMENDED_ENTRY: Final[str] = "👉 {url}"
-PARAGRAPH_JOINER: Final[str] = "\n\n"
-LINE_JOINER: Final[str] = "\n"
 LAYOUT_JOINER: Final[str] = "_"
 LAYOUT_EMPTY: Final[str] = "empty"
 LAYOUT_BLANK: Final[str] = "blank"
@@ -73,7 +72,7 @@ class PublishHeadings:
         normalized: str = str(language or "").strip().lower()
         if normalized in INVALID_LANGUAGES:
             return by_language[FALLBACK_LANGUAGE]
-        if not (len(normalized) == LANGUAGE_CODE_LENGTH and normalized.isascii() and normalized.isalpha()):
+        if not LanguageCode(normalized).is_shaped:
             LOGGER.warning("heading_cache_invalid_language_format kind=%s language=%r", kind.value, language)
             return by_language[FALLBACK_LANGUAGE]
         heading: str | None = by_language.get(normalized)
@@ -123,11 +122,11 @@ class DescriptionParts:
             parts.append(self.cta.strip())
         if self.hashtags_line:
             parts.append(self.hashtags_line.strip())
-        return PARAGRAPH_JOINER.join(part for part in parts if part).strip()
+        return PARAGRAPH_BREAK.join(part for part in parts if part).strip()
 
     def _official_block(self, language: str, headings: PublishHeadings) -> str:
         urls: list[str] = [normalize_official_link_display(url.strip()) for url in self.official_urls if url.strip()]
-        return LINE_JOINER.join([headings.official_links(language), *urls]).strip()
+        return NEWLINE.join([headings.official_links(language), *urls]).strip()
 
     def _recommended_block(self, language: str, headings: PublishHeadings) -> str:
         entries: list[str] = [RECOMMENDED_ENTRY.format(url=url.strip()) for url in self.recommended_urls if url.strip()]
@@ -137,4 +136,4 @@ class DescriptionParts:
             "recommended_block_rendered_with_titles urls=%d titles_rendered=0 title_fetch_failures=%d",
             len(entries), len(entries),
         )
-        return PARAGRAPH_JOINER.join([headings.recommended_materials(language), *entries]).strip()
+        return PARAGRAPH_BREAK.join([headings.recommended_materials(language), *entries]).strip()

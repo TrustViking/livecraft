@@ -1,4 +1,4 @@
-"""Отчёт замка: по строке на правило — сейчас, в реестре, исключений, цель (REFACTORING_STANDARD.md §6).
+"""Отчёт замка: по строке на правило — сейчас, в реестре, исключений, цель (CLAUDE.md §11).
 
 «Сейчас» — всё, что правило находит в коде, вместе с исключениями; «в реестре» — долги, «исключений» —
 постоянные исключения. Под строкой правила с признаками — разбивка по признакам: у E5 — литералы по видам,
@@ -60,7 +60,7 @@ class StandardReport:
             ReportColumn.EXEMPT.value: self.exceptions.count(rule),
             ReportColumn.GOAL.value: 0,
         })
-        signs: str = msg.CODE_STANDARD_REPORT_SIGN_JOINER.join(
+        signs: str = msg.ITEM_JOINER.join(
             msg.CODE_STANDARD_REPORT_SIGN.format(label=sign.label, count=count)
             for sign, count in measurement.sign_counts().items()
         )

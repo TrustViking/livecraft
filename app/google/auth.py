@@ -27,12 +27,14 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow, WSGITimeoutError
 
-from app.observability.logging_setup import get_logger
+from app.core.dates import SECONDS_PER_MINUTE
+from app.core.errors import os_error_reason
+from app.core.text_format import TEXT_ENCODING
+from app.observability.log_event import LogArea, get_logger
 from app.paths import LivecraftPaths, write_text_atomically
 from app.ui import messages_ru as msg
 
-LOGGER_NAME: Final[str] = "auth"
-LOGGER = get_logger(LOGGER_NAME)
+LOGGER = get_logger(LogArea.AUTH)
 
 # Единственный источник скоупов в проекте (CLAUDE.md §9).
 SHEETS_SCOPE: Final[str] = "https://www.googleapis.com/auth/spreadsheets.readonly"
@@ -44,9 +46,7 @@ PROMPT: Final[str] = "select_account consent"
 # Ожидание входа в браузере: без предела запуск висит, пока окно не закроют (planers, 17-09-2026).
 # 10 минут — с запасом: живой первый вход (выбор аккаунта, канала и экран «не проверено») занял 8,5 минуты.
 LOGIN_TIMEOUT_SEC: Final[int] = 600
-SECONDS_PER_MINUTE: Final[int] = 60
 LOGIN_TIMEOUT_MINUTES: Final[int] = LOGIN_TIMEOUT_SEC // SECONDS_PER_MINUTE
-TOKEN_ENCODING: Final[str] = "utf-8"
 DETAIL_TEMPLATE: Final[str] = "{file}: {problem}"
 
 
@@ -137,7 +137,7 @@ class GoogleLogin:
         """Записать токен атомарно; единственная запись файла токена. Оборванная запись оставляет прежний файл."""
         try:
             self.token_file.parent.mkdir(parents=True, exist_ok=True)
-            write_text_atomically(self.token_file, credentials.to_json(), TOKEN_ENCODING)
+            write_text_atomically(self.token_file, credentials.to_json(), TEXT_ENCODING)
         except OSError as error:
             raise AuthError(AuthErrorReason.TOKEN_UNWRITABLE, self._detail(error)) from error
 
@@ -222,7 +222,7 @@ class GoogleLogin:
     def _detail(self, error: Exception, file: Path | None = None) -> str:
         """Имя файла и причина без полного пути: у OSError путь лежит в filename, берётся только strerror."""
         if isinstance(error, OSError):
-            problem: str = error.strerror or type(error).__name__
+            problem: str = os_error_reason(error)
         else:
             problem = f"{type(error).__name__}: {error}"
         return DETAIL_TEMPLATE.format(file=(file or self.token_file).name, problem=problem)

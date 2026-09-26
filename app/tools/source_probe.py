@@ -13,41 +13,35 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from enum import IntEnum
 from typing import Final
 
+from app.config.loader import ShippedSettings
+from app.core.dates import MINUTES_PER_HOUR, SECONDS_PER_MINUTE
 from app.core.sheet_text import normalize_youtube_link
-from app.observability.logging_setup import close_logging, get_logger, setup_logging
+from app.observability.log_event import LogArea, get_logger
+from app.observability.logging_setup import close_logging, setup_logging
 from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
 from app.sources.fetcher import MetadataFetcher, SourceFailureReason, SourceFetch
 from app.sources.language import LanguageDecision, LanguageResolver
 from app.sources.metadata import SourceMetadata
 from app.sources.preview import Preview, PreviewDownloader, PreviewResult
+from app.setup.run_mode import ExitCode
 from app.sources.ytdlp import YtDlpFetcher
 from app.ui import messages_ru as msg
 
-LOGGER_NAME: Final[str] = "tools.source_probe"
-LOGGER = get_logger(LOGGER_NAME)
+LOGGER = get_logger(LogArea.SOURCE_PROBE)
+SHIPPED_SETTINGS: ShippedSettings = ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE)
 
 LANGUAGES_SHOWN: Final[int] = 10
-LANGUAGE_JOINER: Final[str] = ", "
 BYTES_PER_KILOBYTE: Final[int] = 1024
-SECONDS_PER_MINUTE: Final[int] = 60
-MINUTES_PER_HOUR: Final[int] = 60
 DURATION_TEMPLATE: Final[str] = "{hours}:{minutes:02d}:{seconds:02d}"
-
-
-class ProbeExit(IntEnum):
-    OK = 0          # все источники получены, язык каждого определился
-    ERRORS = 1      # есть отказы или неопределённый язык
-    NOT_READY = 2   # нет yt-dlp.exe или нет ссылок — работать не с чем
 
 
 def _languages(values: tuple[str, ...]) -> str:
     """Первые LANGUAGES_SHOWN кодов через запятую и сколько не показано; пусто — «нет»."""
     if not values:
-        return msg.SOURCE_PROBE_NONE
-    shown: str = LANGUAGE_JOINER.join(values[:LANGUAGES_SHOWN])
+        return msg.NONE_TEXT
+    shown: str = msg.LIST_JOINER.join(values[:LANGUAGES_SHOWN])
     more: int = len(values) - LANGUAGES_SHOWN
     return msg.SOURCE_PROBE_MORE.format(shown=shown, more=more) if more > 0 else shown
 
@@ -55,7 +49,7 @@ def _languages(values: tuple[str, ...]) -> str:
 def _duration(seconds: int | None) -> str:
     """Секунды → H:MM:SS; нет длительности — «нет»."""
     if seconds is None:
-        return msg.SOURCE_PROBE_NONE
+        return msg.NONE_TEXT
     minutes, rest = divmod(seconds, SECONDS_PER_MINUTE)
     hours, minutes = divmod(minutes, MINUTES_PER_HOUR)
     return DURATION_TEMPLATE.format(hours=hours, minutes=minutes, seconds=rest)
@@ -84,12 +78,12 @@ class SourceProbeReport:
     @staticmethod
     def _metadata_lines(metadata: SourceMetadata) -> tuple[str, ...]:
         return (
-            msg.SOURCE_PROBE_ID.format(value=metadata.video_id or msg.SOURCE_PROBE_NONE),
-            msg.SOURCE_PROBE_NAME.format(value=metadata.title or msg.SOURCE_PROBE_NONE),
+            msg.SOURCE_PROBE_ID.format(value=metadata.video_id or msg.NONE_TEXT),
+            msg.SOURCE_PROBE_NAME.format(value=metadata.title or msg.NONE_TEXT),
             msg.SOURCE_PROBE_DURATION.format(value=_duration(metadata.duration_seconds)),
             msg.SOURCE_PROBE_LANGUAGE.format(
-                video=metadata.youtube_language or msg.SOURCE_PROBE_NONE,
-                channel=metadata.channel_language or msg.SOURCE_PROBE_NONE,
+                video=metadata.youtube_language or msg.NONE_TEXT,
+                channel=metadata.channel_language or msg.NONE_TEXT,
             ),
             msg.SOURCE_PROBE_AUDIO.format(value=_languages(metadata.audio_languages)),
             msg.SOURCE_PROBE_SUBTITLES.format(value=_languages(metadata.subtitle_languages)),
@@ -133,7 +127,7 @@ class SourceProbeReport:
         """Размеры и вес готовой обложки либо причина, почему её нет."""
         image: Preview | None = result.preview
         if image is None:
-            reason: str = result.problem.human if result.problem is not None else msg.SOURCE_PROBE_NONE
+            reason: str = result.problem.human if result.problem is not None else msg.NONE_TEXT
             return msg.SOURCE_PROBE_PREVIEW_BAD.format(reason=reason)
         kilobytes: int = round(image.size_bytes / BYTES_PER_KILOBYTE)
         return msg.SOURCE_PROBE_PREVIEW_OK.format(width=image.width, height=image.height, kilobytes=kilobytes)
@@ -161,16 +155,16 @@ class SourceProbe:
         self.say(msg.SOURCE_PROBE_TITLE)
         if not raw_links:
             self.say(msg.SOURCE_PROBE_USAGE)
-            return int(ProbeExit.NOT_READY)
+            return int(ExitCode.CONFIG)
         failed: int = 0
         for raw in raw_links:
             report: SourceProbeReport | None = self._probe(raw)
             if report is not None and report.fetched.failure is SourceFailureReason.TOOL_MISSING:
-                return int(ProbeExit.NOT_READY)
+                return int(ExitCode.CONFIG)
             if report is None or not report.is_ok:
                 failed += 1
         self.say(msg.SOURCE_PROBE_SUMMARY.format(total=len(raw_links), ok=len(raw_links) - failed, failed=failed))
-        return int(ProbeExit.ERRORS if failed else ProbeExit.OK)
+        return int(ExitCode.ERRORS if failed else ExitCode.OK)
 
     def _probe(self, raw: str) -> SourceProbeReport | None:
         """Одна ссылка: нормализовать, спросить yt-dlp, решить язык, скачать обложку, напечатать; не YouTube — None.
@@ -205,7 +199,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     links: Sequence[str] = sys.argv[1:] if argv is None else argv
     paths: LivecraftPaths = build_paths(resolve_root())
     ensure_dirs(paths)
-    setup_logging(paths.logs_dir, debug=False)
+    setup_logging(paths.logs_dir, debug=False, started=SHIPPED_SETTINGS.clock.now())
     try:
         return SourceProbe.from_paths(paths, say=_say).run(links)
     finally:

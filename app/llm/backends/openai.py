@@ -13,7 +13,7 @@
     run                 ответ упёрся в max_output_tokens → один повтор с удвоенным пределом
     _with_flex          тариф flex ответил 429 → ожидания FLEX_RETRY_DELAYS_SEC, затем тариф по умолчанию
     _with_temperature   модель не принимает температуру → повтор без неё
-    _with_retries       таймаут, обрыв, 5xx, 429 вне flex → повторы по RetryPolicy (§11; у SDK max_retries=0)
+    _with_retries       таймаут, обрыв, 5xx, 429 вне flex → повторы RetryLoop (§11; у SDK max_retries=0)
     _call               одно обращение
 
 Каждый откат пишет свою строку лога (`llm_max_output_retry`, `llm_flex_fallback_to_default`,
@@ -23,29 +23,33 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
 from typing import Any, Final
 
 import openai
 
 from app.config.loader import LlmSettings, ReasoningEffort, ServiceTier
-from app.core.retry import RetryPolicy
+from app.core.clock import Clock
+from app.core.retry import AttemptFailure, RetryLoop, RetryPolicy, RetryRun, RetryStep
+from app.core.text_format import SPACE
 from app.llm.backend import LlmRequest, LlmResponse
 from app.llm.backends.openai_errors import OpenAiFailure
 from app.llm.backends.openai_model import OpenAiModel, ServiceTierRule
 from app.llm.backends.openai_rate_limits import RateLimitSnapshot
 from app.llm.backends.openai_response import OpenAiReply
 from app.llm.errors import LlmErrorKind, LlmRequestError
-from app.llm.usage import RequestUsage, RunUsage
-from app.observability.logging_setup import get_logger
+from app.llm.usage import COST_FORMAT, RequestUsage, RunUsage
+from app.observability.log_event import LogArea, LogEvent, LogField, LogValue, get_logger
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault
 
-LOGGER_NAME: Final[str] = "llm"
-LOGGER = get_logger(LOGGER_NAME)
+LOGGER = get_logger(LogArea.LLM)
 
 BACKEND_NAME: Final[str] = "openai"              # имя реализации в логе и в отказах; название — msg.LLM_BACKEND_TITLE
 # Ожидания перед повторами на тарифе flex после 429 resource_unavailable; после последнего запрос уходит на
@@ -56,8 +60,12 @@ MAX_OUTPUT_GROWTH: Final[int] = 2                # исчерпан max_output_t
 DEFAULT_SCHEMA_NAME: Final[str] = "response"     # имя формата json_schema, если схема своего не назвала
 SDK_MAX_RETRIES: Final[int] = 0                  # повторы делает RetryPolicy, а не SDK
 MILLISECONDS: Final[float] = 1000.0
-COST_FORMAT: Final[str] = "{:.6f}"
-UNKNOWN: Final[str] = "unknown"
+
+
+class OpenAiEvent(str, Enum):
+    """События обмена с OpenAI, которые пишутся через LogEvent."""
+
+    REQUEST_RETRY = "llm_request_retry"
 
 
 @dataclass(frozen=True)
@@ -126,24 +134,34 @@ class OpenAiRequest:
         return self.request.temperature is not None and self.model.supports_temperature
 
     @property
-    def log_line(self) -> str:
+    def log_fields(self) -> Mapping[str, object]:
         """Что за запрос — без его текста: ярлык, модель, тариф, пределы, длина промта."""
         request: LlmRequest = self.request
-        return (
-            f"label={request.label} model={self.model.name} family={self.model.family.value} "
-            f"service_tier={self.service_tier.value} reasoning_effort={self.reasoning_effort.value} "
-            f"max_output_tokens={request.max_output_tokens} structured={'yes' if request.is_structured else 'no'} "
-            f"temperature={'yes' if self.sends_temperature else 'no'} prompt_chars={len(request.prompt)} "
-            f"backend={BACKEND_NAME}"
+        return dict(
+            label=request.label,
+            model=self.model.name,
+            family=self.model.family,
+            service_tier=self.service_tier.value,
+            reasoning_effort=self.reasoning_effort,
+            max_output_tokens=request.max_output_tokens,
+            structured=request.is_structured,
+            temperature=self.sends_temperature,
+            prompt_chars=len(request.prompt),
+            backend=BACKEND_NAME,
         )
+
+    @property
+    def log_line(self) -> str:
+        return SPACE.join(LogField(name, value).text for name, value in self.log_fields.items())
 
 
 @dataclass(eq=False)
 class OpenAiClient:
     """Реализация разъёма `LlmBackend` для OpenAI на один запуск: ключ из сейфа, настройки `llm`, расход, SDK.
 
-    `sdk` — фабрика клиента openai (в тестах — подделка); `policy`, `rng`, `sleep`, `clock` и `flex_delays_sec`
-    — параметрами, в тестах свои. SDK-клиент создаётся при первом запросе и дальше переиспользуется.
+    `sdk` — фабрика клиента openai (в тестах — подделка); `policy`, `rng`, `sleep`, `clock` (часы программы:
+    длительность обращения и обнуление лимитов) и `flex_delays_sec` — параметрами, в тестах свои.
+    SDK-клиент создаётся при первом запросе и дальше переиспользуется.
     """
 
     key: SecretValue
@@ -153,7 +171,7 @@ class OpenAiClient:
     policy: RetryPolicy = field(default_factory=RetryPolicy)
     rng: random.Random = field(default_factory=random.Random, repr=False)
     sleep: Callable[[float], None] = field(default=time.sleep, repr=False)
-    clock: Callable[[], float] = field(default=time.monotonic, repr=False)
+    clock: Clock = field(default_factory=Clock.utc, repr=False)
     flex_delays_sec: tuple[float, ...] = FLEX_RETRY_DELAYS_SEC
     _sdk_client: Any = field(default=None, init=False, repr=False)
 
@@ -267,30 +285,30 @@ class LlmExchange:
             return self._with_retries()
 
     def _with_retries(self) -> OpenAiReply:
-        """Сбои связи и нагрузки — повторы по RetryPolicy; 429 на flex решает `_with_flex`, не здесь."""
-        retry_number: int = 0
-        while True:
-            try:
-                return self._call()
-            except LlmRequestError as error:
-                is_flex_busy: bool = error.kind is LlmErrorKind.RATE_LIMIT and self.request.service_tier.is_flex
-                retry_number += 1
-                if not error.retryable or is_flex_busy or not self.client.policy.has_retry_left(retry_number):
-                    raise
-                delay: float = self.client.policy.delay_sec(retry_number, self.client.rng)
-                LOGGER.warning(
-                    "llm_request_retry %s reason_code=%s retry=%d delay_sec=%.1f",
-                    self.request.log_line,
-                    error.kind.value,
-                    retry_number,
-                    delay,
-                )
-                self.client.sleep(delay)
+        """Сбои связи и нагрузки — повторы RetryLoop; 429 на flex решает `_with_flex`, не здесь."""
+        loop: RetryLoop = RetryLoop(self.client.policy, self.client.rng, self.client.sleep)
+        run: RetryRun[OpenAiReply] = loop.run(self._attempt, self._note_retry)
+        if run.failure is not None and run.failure.cause is not None:
+            raise run.failure.cause         # отказ последнего обращения как есть: его исходная ошибка — __cause__
+        return run.value
+
+    def _attempt(self) -> OpenAiReply | AttemptFailure:
+        """Одно обращение; отказ — неудача цикла: повторяется, если отказ повторяемый и это не занятый flex."""
+        try:
+            return self._call()
+        except LlmRequestError as error:
+            is_flex_busy: bool = error.kind is LlmErrorKind.RATE_LIMIT and self.request.service_tier.is_flex
+            return AttemptFailure(error.kind, error.retryable and not is_flex_busy, cause=error)
+
+    def _note_retry(self, step: RetryStep) -> None:
+        retry: LogEvent = LogEvent.of(OpenAiEvent.REQUEST_RETRY, **self.request.log_fields)
+        retry = retry.extended(reason_code=step.failure.reason, retry=step.retry, delay_sec=round(step.delay_sec, 1))
+        retry.emit(LOGGER, logging.WARNING)
 
     def _call(self) -> OpenAiReply:
         """Одно обращение: разобранный ответ либо LlmRequestError с вычищенной подробностью (исходная — `__cause__`)."""
         self.attempts += 1
-        started: float = self.client.clock()
+        started: datetime = self.client.clock.now()
         try:
             raw: Any = self.client.create_raw(self.request.to_kwargs())
         except openai.APIError as error:
@@ -303,7 +321,7 @@ class LlmExchange:
                 failure.log_line,
             )
             raise failure from error
-        self.rate_limits = RateLimitSnapshot.from_raw_response(raw)
+        self.rate_limits = RateLimitSnapshot.from_raw_response(raw, self.client.clock)
         if self.rate_limits is not None:
             LOGGER.info("%s", self.rate_limits.log_line(self.request.model.name, self.request.request.label))
         reply: OpenAiReply = OpenAiReply.of(raw.parse())
@@ -316,10 +334,10 @@ class LlmExchange:
             self.attempts,
             self._elapsed_ms(started),
             usage.log_fields if usage is not None else "usage=unknown",
-            COST_FORMAT.format(cost) if cost is not None else UNKNOWN,
+            COST_FORMAT.format(cost) if cost is not None else LogValue.UNKNOWN.value,
             reply.incomplete_reason or "completed",
         )
         return reply
 
-    def _elapsed_ms(self, started: float) -> int:
-        return int(round((self.client.clock() - started) * MILLISECONDS))
+    def _elapsed_ms(self, started: datetime) -> int:
+        return int(round((self.client.clock.now() - started).total_seconds() * MILLISECONDS))

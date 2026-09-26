@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -111,14 +112,39 @@ def ensure_dirs(paths: LivecraftPaths) -> None:
         directory.mkdir(parents=True, exist_ok=True)
 
 
+@dataclass(frozen=True)
+class AtomicFile:
+    """Файл, который пишется целиком или никак: временный файл рядом с целью, затем `os.replace`.
+
+    Читатель видит либо прежний файл, либо новый целиком — недописанного не бывает. `prefix` — начало имени
+    временного файла: по нему недописанное легко отличить от готового. Сбой записи — OSError, временный
+    файл при любом исходе убирается.
+    """
+
+    target: Path
+    prefix: str
+
+    @classmethod
+    def at(cls, target: Path) -> AtomicFile:
+        """Временный файл называется от имени цели."""
+        return cls(target=target, prefix=target.name)
+
+    def write(self, fill: Callable[[Path], None]) -> None:
+        """`fill` пишет содержимое во временный файл; готовый файл встаёт на место цели одним `os.replace`."""
+        handle, temp_name = tempfile.mkstemp(prefix=self.prefix, suffix=TEMP_FILE_SUFFIX, dir=self.target.parent)
+        os.close(handle)
+        temp_path: Path = Path(temp_name)
+        try:
+            fill(temp_path)
+            os.replace(temp_path, self.target)
+        finally:
+            temp_path.unlink(missing_ok=True)       # после os.replace файла уже нет — ничего не делает
+
+    def write_text(self, text: str, encoding: str) -> None:
+        """Текст как есть: переводы строк не переводятся."""
+        self.write(lambda path: path.write_text(text, encoding=encoding, newline=""))
+
+
 def write_text_atomically(path: Path, text: str, encoding: str) -> None:
-    """Временный файл рядом + os.replace: читатель видит либо прежний файл, либо новый целиком. Сбой — OSError."""
-    handle, temp_name = tempfile.mkstemp(prefix=path.name, suffix=TEMP_FILE_SUFFIX, dir=path.parent)
-    temp_path: Path = Path(temp_name)
-    try:
-        with os.fdopen(handle, "w", encoding=encoding, newline="") as stream:
-            stream.write(text)
-        os.replace(temp_path, path)
-    except OSError:
-        temp_path.unlink(missing_ok=True)
-        raise
+    """Текст файла целиком или никак (`AtomicFile`). Сбой — OSError."""
+    AtomicFile.at(path).write_text(text, encoding)

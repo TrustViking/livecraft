@@ -15,12 +15,14 @@ from httplib2 import ServerNotFoundError
 
 from app.core.retry import RetryPolicy
 from app.google.auth import AuthError, AuthErrorReason, GoogleLogin
+from app.observability.log_event import LogArea
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
 from app.sheets import client as client_module
 from app.sheets.client import SheetsReader, SheetsReadError, SheetsReadReason, SheetsTarget
 from app.sheets.plan import SheetColumns, SheetPlan
 from app.tests.conftest import SUPPLIED_VALUES
+from app.tests.fixtures.logs import LogCapture
 
 SHEET_ID: SecretValue = SecretValue(SecretField.SHEETS_ID, SUPPLIED_VALUES[SecretField.SHEETS_ID])
 SHEET_RANGE: SecretValue = SecretValue(SecretField.SHEETS_RANGE, "Plan!B2:H")
@@ -79,27 +81,10 @@ class _ZeroRandom(random.Random):
         return a
 
 
-class _Collector(logging.Handler):
-    """Свой обработчик на логгере livecraft.sheets: не зависит от propagate после других тестов."""
-
-    def __init__(self) -> None:
-        super().__init__(level=logging.DEBUG)
-        self.messages: list[str] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.messages.append(record.getMessage())
-
-
 @pytest.fixture
-def log() -> Iterator[_Collector]:
-    logger: logging.Logger = logging.getLogger("livecraft.sheets")
-    collector: _Collector = _Collector()
-    level: int = logger.level
-    logger.setLevel(logging.DEBUG)       # setLevel, а не присваивание: он сбрасывает кеш isEnabledFor
-    logger.addHandler(collector)
-    yield collector
-    logger.removeHandler(collector)
-    logger.setLevel(level)
+def log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.SHEETS, logging.DEBUG) as capture:
+        yield capture
 
 
 def reader_for(service: _FakeService, sleeps: list[float]) -> SheetsReader:
@@ -236,30 +221,30 @@ def test_token_revoked_during_the_request_is_auth_without_retry() -> None:
 
 
 @pytest.mark.parametrize("status", [400, 403, 404, 429, 503])
-def test_no_error_text_or_log_line_carries_the_sheet_id_range_or_url(status: int, log: _Collector) -> None:
+def test_no_error_text_or_log_line_carries_the_sheet_id_range_or_url(status: int, log: LogCapture) -> None:
     service: _FakeService = _FakeService(*[http_error(status)] * RetryPolicy().max_attempts)
     assert SHEET_ID.reveal() in str(http_error(status))            # подделка честная: URL с id в тексте
     with pytest.raises(SheetsReadError) as raised:
         reader_for(service, []).read_values(SHEET_ID, SHEET_RANGE)
     assert_no_secret(str(raised.value))
     assert_no_secret(repr(raised.value))
-    assert log.messages
-    for line in log.messages:
+    assert log.messages()
+    for line in log.messages():
         assert_no_secret(line)
-    assert any(line.startswith("sheets_read_failed") and f"status={status}" in line for line in log.messages)
+    assert any(line.startswith("sheets_read_failed") and f"status={status}" in line for line in log.messages())
 
 
-def test_successful_read_logs_labels_and_row_count_only(log: _Collector) -> None:
+def test_successful_read_logs_labels_and_row_count_only(log: LogCapture) -> None:
     reader_for(_FakeService({"values": VALUES}), []).read_values(SHEET_ID, SHEET_RANGE)
-    assert log.messages == [
+    assert log.messages() == [
         f"sheets_read_started sheet={SHEET_ID.log_label} range={SHEET_RANGE.log_label}",
         f"sheets_read_done sheet={SHEET_ID.log_label} range={SHEET_RANGE.log_label} rows=2 attempts=1",
     ]
 
 
-def test_retry_is_logged_without_values(log: _Collector) -> None:
+def test_retry_is_logged_without_values(log: LogCapture) -> None:
     reader_for(_FakeService(http_error(503), {"values": VALUES}), []).read_values(SHEET_ID, SHEET_RANGE)
-    retries: list[str] = [line for line in log.messages if line.startswith("sheets_read_retry")]
+    retries: list[str] = [line for line in log.messages() if line.startswith("sheets_read_retry")]
     assert retries == [
         f"sheets_read_retry sheet={SHEET_ID.log_label} range={SHEET_RANGE.log_label} "
         "status=503 error=HttpError retry=1 delay_sec=2.0"
@@ -326,3 +311,27 @@ def test_every_read_reason_has_a_russian_text() -> None:
     for reason in SheetsReadReason:
         assert reason.human
     assert set(client_module.msg.SHEETS_READ_REASON_TEXT) == {reason.value for reason in SheetsReadReason}
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (429, SheetsReadReason.UNAVAILABLE),
+        (503, SheetsReadReason.UNAVAILABLE),
+        (400, SheetsReadReason.BAD_RANGE),
+        (403, SheetsReadReason.NO_ACCESS),
+        (404, SheetsReadReason.NOT_FOUND),
+        (418, SheetsReadReason.REJECTED),
+    ],
+)
+def test_the_reason_of_a_status_is_one_rule(status: int, reason: SheetsReadReason) -> None:
+    """Код ответа → причина одним правилом; повторяется ровно то, что временно недоступно."""
+    assert SheetsReadReason.for_status(status) is reason
+
+
+def test_the_failed_line_names_reason_status_and_attempts_once(log: LogCapture) -> None:
+    service: _FakeService = _FakeService(*[http_error(503)] * 5)
+    with pytest.raises(SheetsReadError):
+        reader_for(service, []).read_values(SHEET_ID, SHEET_RANGE)
+    (failed,) = [line for line in log.messages() if line.startswith("sheets_read_failed")]
+    assert failed == f"sheets_read_failed reason=unavailable sheet={SHEET_ID.log_label} status=503 error=HttpError attempts=5"

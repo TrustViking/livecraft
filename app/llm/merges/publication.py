@@ -26,14 +26,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
 
+from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
 from app.core.url_text import dedupe_nonempty, is_youtube_url, sanitize_urls_in_text
 from app.llm.merges.description import MergedDescription
 from app.llm.merges.hook import BadHookLexicon
 from app.llm.merges.links import AuthoritativeLinks
 from app.llm.merges.quality import QualityRequest
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 from app.slots.texts import SlotTextOrigin, SlotTexts
-from app.texts.composer import DescriptionParts
+from app.texts.composer import LAYOUT_EMPTY, DescriptionParts
 from app.texts.description_marks import ALLOWED_BULLET_MARKERS, PLAIN_BULLET_PATTERN, CtaLexicon
 from app.texts.official_links import OfficialLinksBlocks
 from app.texts.paragraphs import has_duplicate_paragraphs, normalize_multiline_text
@@ -43,25 +44,20 @@ if TYPE_CHECKING:
     from app.llm.merges.attempt import MergeRules
     from app.sources.video import SourceVideo
 
-LOGGER: logging.Logger = get_logger("llm")
+LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
 # Метка успешного merge в строках санации (`merge_orchestrator.py::_PRIMARY_PUBLISH_SOURCE` донора).
 PRIMARY_SOURCE_LABEL: Final[str] = "primary_success"
 PARAGRAPH_SPLIT_PATTERN: Final[re.Pattern[str]] = re.compile(r"\n\s*\n")
 WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
-LINE_BREAK: Final[str] = "\n"
-PARAGRAPH_JOINER: Final[str] = "\n\n"
-LAYOUT_EMPTY: Final[str] = "empty"
 BLOCK_EMITTED: Final[str] = "emitted"
 BLOCK_SUPPRESSED: Final[str] = "suppressed"
 BLOCK_ABSENT: Final[str] = "absent"
 BLOCK_SKIPPED: Final[str] = "skipped"
-YES: Final[str] = "yes"
-NO: Final[str] = "no"
 
 
 def _flag(value: bool) -> str:
-    return YES if value else NO
+    return LogValue.YES.value if value else LogValue.NO.value
 
 
 @dataclass(frozen=True)
@@ -89,13 +85,13 @@ class SanitizedDescription:
             empty: SanitizedDescription = cls(body="")
             LOGGER.info("%s", empty.summary_line(language, source_label))
             return empty
-        lines: list[str] = normalized.split(LINE_BREAK)
+        lines: list[str] = normalized.split(NEWLINE)
         trailing: TrailingTail = TrailingTail.of(lines, cta)
-        embedded: EmbeddedTail = EmbeddedTail.of(LINE_BREAK.join(lines[: trailing.body_end_index]).strip(), cta)
+        embedded: EmbeddedTail = EmbeddedTail.of(NEWLINE.join(lines[: trailing.body_end_index]).strip(), cta)
         body, body_changes = sanitize_urls_in_text(embedded.body_text)
         body = cls._without_final_cta(clean_double_bullet_markers(body), cta, language, source_label)
         fragments: TailFragments = embedded.fragments.followed_by(trailing.fragments)
-        cta_text, cta_changes = sanitize_urls_in_text(LINE_BREAK.join(fragments.cta_lines).strip())
+        cta_text, cta_changes = sanitize_urls_in_text(NEWLINE.join(fragments.cta_lines).strip())
         sanitized: SanitizedDescription = cls._assembled(body, cta_text, fragments, body_changes + cta_changes)
         for line in sanitized.tail_lines(language, source_label):
             LOGGER.info("%s", line)
@@ -146,7 +142,7 @@ class SanitizedDescription:
             LOGGER.debug("removed_final_body_cta=no lang=%s source=%s reason=not_cta", language, source_label)
             return body
         LOGGER.info("removed_final_body_cta=yes lang=%s source=%s removed_chars=%d", language, source_label, len(last))
-        return PARAGRAPH_JOINER.join(paragraphs[:-1])
+        return PARAGRAPH_BREAK.join(paragraphs[:-1])
 
     @staticmethod
     def _is_bullet(line: str) -> bool:
@@ -204,7 +200,7 @@ class PublishGate:
         if not paragraphs:
             return False
         first_paragraph: str = paragraphs[0]
-        first_line: str = next((line.strip() for line in first_paragraph.split(LINE_BREAK) if line.strip()), "")
+        first_line: str = next((line.strip() for line in first_paragraph.split(NEWLINE) if line.strip()), "")
         if not first_line:
             return False
         if self.bad_hooks.matches(first_line) or self.bad_hooks.matches(first_paragraph):

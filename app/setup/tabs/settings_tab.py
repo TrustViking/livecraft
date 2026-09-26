@@ -14,10 +14,11 @@ from collections.abc import Callable
 from tkinter import messagebox, ttk
 from typing import Final
 
+from app.core.text_format import PARAGRAPH_BREAK
 from app.paths import LivecraftPaths
 from app.setup.fields.settings_draft import SettingsDraft
 from app.setup.panels.settings_panel import SettingsPanel, SettingsPanelEdit
-from app.setup.tabs import NOTICE_JOINER, PAD, TEXT_WRAP_PIXELS, ProblemLine
+from app.setup.tabs import PAD, READONLY, TEXT_WRAP_PIXELS, ProblemLine
 from app.ui import messages_ru as msg
 
 # Поле черновика → путь поля в livecraft.json: по пути модель называет проблему, по нему же ищется подпись.
@@ -41,7 +42,6 @@ FIELD_KEYS: Final[dict[str, str]] = {
 ENTRY_WIDTH_CHARS: Final[int] = 32
 URL_ENTRY_WIDTH_CHARS: Final[int] = 64       # ссылка на форму длинная: в узком поле её не проверить глазами
 WIDE_FIELDS: Final[frozenset[str]] = frozenset({"form_url"})
-READONLY: Final[str] = "readonly"
 HINT_FOREGROUND: Final[str] = "#6b6b6b"     # серая подсказка: читается, но не спорит с подписью поля
 HINT_WRAP_PIXELS: Final[int] = 420
 
@@ -101,7 +101,7 @@ class SettingsTab:
 
     def _show(self) -> None:
         """Перерисовать оговорки и поля по модели."""
-        self.notice.configure(text=NOTICE_JOINER.join(self.panel.notices))
+        self.notice.configure(text=PARAGRAPH_BREAK.join(self.panel.notices))
         draft: SettingsDraft = self.panel.draft
         for name, variable in self.variables.items():
             variable.set(getattr(draft, name))

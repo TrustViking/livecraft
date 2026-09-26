@@ -11,19 +11,14 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Final
 from zoneinfo import ZoneInfo
 
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 from app.slots.slot import SlotKey, StreamSlot
 from app.slots.texts import SlotTexts
 from app.sources.video import SourceVideo
 
-LOGGER_NAME: Final[str] = "slots"
-LOGGER = get_logger(LOGGER_NAME)
-
-NO_VALUE: Final[str] = "-"
-COUNT_JOINER: Final[str] = ","
+LOGGER = get_logger(LogArea.SLOTS)
 
 
 @dataclass(frozen=True)
@@ -86,9 +81,9 @@ class SlotBuild:
 
     @property
     def log_line(self) -> str:
-        by_language: str = COUNT_JOINER.join(
+        by_language: str = LogValue.LIST_SEPARATOR.join(
             f"{code}:{count}" for code, count in self.languages.items()
-        ) or NO_VALUE
+        ) or LogValue.EMPTY.value
         return f"slots={len(self.slots)} refused={len(self.refused)} languages={by_language}"
 
 

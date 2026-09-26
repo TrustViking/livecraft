@@ -18,7 +18,9 @@ from app.llm.merges.quality import (
     QualityRules,
 )
 from app.llm.merges.rules import COMPACT_BULLET_MAX
+from app.observability.log_event import LogArea
 from app.tests.conftest import REPO_ROOT
+from app.tests.fixtures.logs import LogCapture
 from app.tools.code_standard.source import ModuleSource, SourceTree
 
 RULES: QualityRules = QualityRules.load()
@@ -196,15 +198,15 @@ def compact_description(bullet_count: int, lead_in: bool = False) -> tuple[str, 
     return "\n".join(lines), texts
 
 
-def test_eight_bullets_two_sources_trimmed_to_seven(caplog: pytest.LogCaptureFixture) -> None:
+def test_eight_bullets_two_sources_trimmed_to_seven() -> None:
     description, texts = compact_description(8)
-    with caplog.at_level(logging.INFO, logger="livecraft.llm"):
+    with LogCapture.on(LogArea.LLM, logging.INFO) as capture:
         result: QualityNormalization = normalized(description, "en", source_count=2)
     assert len(bullet_lines(result.description.text)) == 7
     assert all(text in result.description.text for text in texts[:7])
     assert texts[7] not in result.description.text
     assert result.description.text != description
-    assert [record.getMessage() for record in caplog.records] == [
+    assert capture.messages() == [
         "merge_compact_bullet_trimmed source_count=2 bullets_before=8 bullets_after=7 cap=7"
     ]
 

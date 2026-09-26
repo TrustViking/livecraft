@@ -1,16 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from app.llm.backends.openai_rate_limits import RateLimitSnapshot, parse_reset_seconds
+from app.tests.fixtures.clock import StoppedClock
 
 NOW: float = 1_800_000_000.0
-
-
-def fixed_clock() -> float:
-    return NOW
+FIXED_CLOCK: StoppedClock = StoppedClock.at(datetime.fromtimestamp(NOW, timezone.utc))
 
 
 @pytest.mark.parametrize(
@@ -36,7 +35,7 @@ def test_the_tightest_limits_are_taken() -> None:
         "x-ratelimit-reset-tokens": "200ms",
         "content-type": "application/json",
     }
-    snapshot: RateLimitSnapshot = RateLimitSnapshot.from_headers(headers, fixed_clock)
+    snapshot: RateLimitSnapshot = RateLimitSnapshot.from_headers(headers, FIXED_CLOCK)
     assert snapshot == RateLimitSnapshot(
         remaining_requests=499, remaining_tokens=12000, reset_requests_sec=90.0, reset_tokens_sec=0.2
     )
@@ -46,18 +45,18 @@ def test_the_tightest_limits_are_taken() -> None:
 
 def test_headers_are_found_on_the_raw_response_or_inside_it() -> None:
     direct: RateLimitSnapshot | None = RateLimitSnapshot.from_raw_response(
-        SimpleNamespace(headers={"x-ratelimit-remaining-requests": "5"}), fixed_clock
+        SimpleNamespace(headers={"x-ratelimit-remaining-requests": "5"}), FIXED_CLOCK
     )
     assert direct is not None and direct.remaining_requests == 5
     nested: RateLimitSnapshot | None = RateLimitSnapshot.from_raw_response(
-        SimpleNamespace(response=SimpleNamespace(headers={"x-ratelimit-reset-tokens": "6s"})), fixed_clock
+        SimpleNamespace(response=SimpleNamespace(headers={"x-ratelimit-reset-tokens": "6s"})), FIXED_CLOCK
     )
     assert nested is not None and nested.reset_tokens_sec == 6.0 and nested.remaining_requests is None
-    assert RateLimitSnapshot.from_raw_response(SimpleNamespace(), fixed_clock) is None
+    assert RateLimitSnapshot.from_raw_response(SimpleNamespace(), FIXED_CLOCK) is None
 
 
 def test_no_ratelimit_headers_is_an_empty_snapshot() -> None:
-    snapshot: RateLimitSnapshot = RateLimitSnapshot.from_headers({"content-type": "json"}, fixed_clock)
+    snapshot: RateLimitSnapshot = RateLimitSnapshot.from_headers({"content-type": "json"}, FIXED_CLOCK)
     found: tuple[object, ...] = (
         snapshot.remaining_requests, snapshot.remaining_tokens, snapshot.reset_requests_sec, snapshot.reset_tokens_sec
     )

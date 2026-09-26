@@ -19,8 +19,9 @@ from app.llm.merges.description import MergedDescription
 from app.llm.merges.links import OfficialLinkSelection
 from app.llm.merges.quality import QualityGateStatus, QualityNormalization, QualityReasonCode, QualityRequest
 from app.llm.merges.reject import MergeReject, MergeRejectCode, MergeRejectStage
+from app.observability.log_event import LogArea
 from app.sources.video import SourceVideo
-from app.tests.conftest import LogCollector
+from app.tests.fixtures.logs import LogCapture
 from app.tests.test_llm_merges_source import merge_video
 
 RULES: MergeCheckRules = MergeCheckRules.load()
@@ -113,15 +114,9 @@ def reject_code(verdict: MergeCheckPassed | MergeReject) -> str:
 
 
 @pytest.fixture
-def llm_log() -> Iterator[LogCollector]:
-    collector: LogCollector = LogCollector()
-    logger: logging.Logger = logging.getLogger("livecraft.llm")
-    logger.addHandler(collector)
-    previous: int = logger.level
-    logger.setLevel(logging.INFO)
-    yield collector
-    logger.setLevel(previous)
-    logger.removeHandler(collector)
+def llm_log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.LLM, logging.INFO) as capture:
+        yield capture
 
 
 # --- донорские случаи (test_merge_contract_expanded.py, test_compact_bullet_overflow.py, test_audit_run_regressions.py)
@@ -165,7 +160,7 @@ def test_two_sources_with_eight_bullets_overflow_the_compact_contract() -> None:
     )
 
 
-def test_hook_echo_is_repaired_and_logged(llm_log: LogCollector) -> None:
+def test_hook_echo_is_repaired_and_logged(llm_log: LogCapture) -> None:
     hook: str = (
         "Февральский эфир показал, как один тезис многократно повторяется в разных формулировках, и это требует "
         "аккуратной проверки фактов перед выводами о последствиях."
@@ -358,7 +353,7 @@ def emoji_heavy_answer() -> str:
     )
 
 
-def test_three_source_emoji_overflow_is_salvaged(llm_log: LogCollector) -> None:
+def test_three_source_emoji_overflow_is_salvaged(llm_log: LogCapture) -> None:
     """Донор: test_expanded_three_source_merge_salvages_formatting_only_emoji_overflow."""
     check: MergeCheck = normalized_check(emoji_heavy_answer(), title="Brussels, Kharkiv, Geneva: the operational agenda")
     reject: MergeCheckPassed | MergeReject = check.run()
@@ -379,7 +374,7 @@ def test_three_source_emoji_overflow_is_salvaged(llm_log: LogCollector) -> None:
     assert check.run_with_recovery() == recovery.verdict
 
 
-def test_salvage_reveals_a_non_formatting_issue(llm_log: LogCollector) -> None:
+def test_salvage_reveals_a_non_formatting_issue(llm_log: LogCapture) -> None:
     points: list[str] = [LONG_ALPHA, LONG_BETA, *STRONG_BULLETS[:4]]
     answer: str = f"{HOOK} {' '.join(EMOJI)} {EMOJI[0]}\n\n{bullets(points)}"
     check: MergeCheck = raw_check(answer, EXPANDED_SOURCES)
@@ -395,7 +390,7 @@ def test_salvage_reveals_a_non_formatting_issue(llm_log: LogCollector) -> None:
     assert "replacement_reason_codes=overloaded_bullet" in line
 
 
-def test_salvage_is_not_tried_below_three_sources(llm_log: LogCollector) -> None:
+def test_salvage_is_not_tried_below_three_sources(llm_log: LogCapture) -> None:
     answer: str = f"{HOOK} {' '.join(EMOJI)} {EMOJI[0]}\n\n{bullets(STRONG_BULLETS[:5])}"
     check: MergeCheck = raw_check(answer, TWO_SOURCES)
     reject: MergeCheckPassed | MergeReject = check.run()
@@ -500,7 +495,7 @@ def test_gate_line_carries_the_gate_verdict() -> None:
     _, clean = normalized_check(f"{HOOK}\n\n{bullets(['budget amendments'])}", pairs=(("One", "Body."),)).diagnostics.log_lines(
         LABEL
     )
-    assert "script_mix_suspects=none " in clean and "semantic_gate_reason_codes=" in clean
+    assert "script_mix_suspects=- " in clean and "semantic_gate_reason_codes=" in clean
 
 
 # --- каждый код шага CHECK достижим проверкой на своём входе

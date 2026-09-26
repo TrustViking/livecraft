@@ -18,6 +18,8 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Final
 
+from app.core.errors import DETAIL_MAX_CHARS
+from app.observability.log_event import LogValue
 from app.ui import messages_ru as msg
 
 # Повторяемые причины донора (`merge_constants.py::RECOVERABLE_REJECT_CODES`) целиком: часть их даёт разбор ответа,
@@ -34,9 +36,6 @@ RECOVERABLE_REJECT_CODES: Final[frozenset[str]] = frozenset(
         "paragraph_overflow",
     }
 )
-LOG_NONE: Final[str] = "-"
-CODES_JOINER: Final[str] = ","
-DETAIL_MAX_CHARS: Final[int] = 200
 
 
 class MergeRejectStage(str, Enum):
@@ -193,7 +192,7 @@ class MergeReject:
     def log_line(self) -> str:
         detail: str = self.detail[:DETAIL_MAX_CHARS]
         return (
-            f"reason_code={self.reason_code} reason_codes={CODES_JOINER.join(self.reason_codes) or LOG_NONE} "
+            f"reason_code={self.reason_code} reason_codes={LogValue.LIST_SEPARATOR.join(self.reason_codes) or LogValue.EMPTY.value} "
             f"recoverable={'yes' if self.is_recoverable else 'no'} "
-            f"detail={json.dumps(detail, ensure_ascii=False) if detail else LOG_NONE}"
+            f"detail={json.dumps(detail, ensure_ascii=False) if detail else LogValue.EMPTY.value}"
         )

@@ -13,9 +13,8 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Final
 
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 from app.paths import LivecraftPaths
 from app.sheets.rows import PlanRow
 from app.sources.fetcher import MetadataFetcher, SourceFailureReason, SourceFetch
@@ -24,12 +23,7 @@ from app.sources.metadata import SourceMetadata
 from app.sources.preview import Preview, PreviewDownloader, PreviewProblem, PreviewResult
 from app.sources.ytdlp import YtDlpFetcher
 
-LOGGER_NAME: Final[str] = "sources"
-LOGGER = get_logger(LOGGER_NAME)
-
-READY_MARK: Final[str] = "ok"
-NO_VALUE: Final[str] = "-"
-COUNT_JOINER: Final[str] = ","
+LOGGER = get_logger(LogArea.SOURCES)
 
 
 @dataclass(frozen=True)
@@ -87,18 +81,18 @@ class SourceVideo:
     def log_line(self) -> str:
         """row, link и `ok` либо `reason=…`; обложка — `preview=ok` или её причина; язык и его правило."""
         refusal: SourceFailureReason | None = self.refusal
-        state: str = READY_MARK if refusal is None else f"reason={refusal.value}"
-        rule: str = self.language.source.value if self.language is not None else NO_VALUE
+        state: str = LogValue.OK.value if refusal is None else f"reason={refusal.value}"
+        rule: str = self.language.source.value if self.language is not None else LogValue.EMPTY.value
         return (
             f"row={self.row.row_number} link={self.link} {state} preview={self._preview_state} "
-            f"language={self.language_code or NO_VALUE} language_source={rule}"
+            f"language={self.language_code or LogValue.EMPTY.value} language_source={rule}"
         )
 
     @property
     def _preview_state(self) -> str:
         if self.preview is not None:
-            return READY_MARK
-        return self.preview_problem.value if self.preview_problem is not None else NO_VALUE
+            return LogValue.OK.value
+        return self.preview_problem.value if self.preview_problem is not None else LogValue.EMPTY.value
 
 
 @dataclass(frozen=True)
@@ -127,12 +121,12 @@ class SourceTally:
 
     @property
     def log_line(self) -> str:
-        by_reason: str = COUNT_JOINER.join(
+        by_reason: str = LogValue.LIST_SEPARATOR.join(
             f"{reason.value}:{count}" for reason, count in self.failures.items()
-        ) or NO_VALUE
-        by_language: str = COUNT_JOINER.join(
+        ) or LogValue.EMPTY.value
+        by_language: str = LogValue.LIST_SEPARATOR.join(
             f"{code}:{count}" for code, count in self.languages.items()
-        ) or NO_VALUE
+        ) or LogValue.EMPTY.value
         links: int = len({video.link for video in self.videos})
         return (
             f"sources={len(self.videos)} links={links} ready={self.ready} "

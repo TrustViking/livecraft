@@ -23,7 +23,8 @@ from enum import Enum
 from typing import Final
 
 from app.config.loader import FormSettings, LivecraftSettings, SettingProblem, save_settings_file
-from app.observability.logging_setup import get_logger
+from app.core.errors import os_error_reason
+from app.observability.log_event import LogArea, get_logger
 from app.paths import LivecraftPaths
 from app.secretsafe.dpapi import DpapiUnavailable
 from app.secretsafe.store import VaultLoad, VaultStore
@@ -32,7 +33,7 @@ from app.secretsafe.vault import VaultOrigin
 from app.setup.readiness import Readiness
 from app.ui import messages_ru as msg
 
-LOGGER = get_logger("setup")
+LOGGER = get_logger(LogArea.SETUP)
 
 LEGACY_FIELD: Final[SecretField] = SecretField.KEY_FORM_URL
 LOG_LINE_TEMPLATE: Final[str] = (
@@ -127,7 +128,7 @@ class FormUrlMigration:
         try:
             save_settings_file(self.paths.config_file, dataclasses.replace(self.settings, form=form))
         except OSError as error:
-            return self._result(MigrationOutcome.WRITE_FAILED, reason=error.strerror or type(error).__name__)
+            return self._result(MigrationOutcome.WRITE_FAILED, reason=os_error_reason(error))
         return self._result(MigrationOutcome.MOVED, reason=None, local_cleared=self._clear_local())
 
     def _clear_local(self) -> bool:

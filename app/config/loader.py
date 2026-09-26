@@ -31,9 +31,11 @@ from typing import Any, ClassVar, Final
 from urllib.parse import SplitResult
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-import pycountry
 
-from app.core.url_text import split_url
+from app.core.clock import Clock
+from app.core.language_code import LanguageCode
+from app.core.text_format import NEWLINE, SPACE, TEXT_ENCODING
+from app.core.url_text import HTTPS_SCHEME, split_url
 from app.paths import write_text_atomically
 from app.ui import messages_ru as msg
 
@@ -79,7 +81,6 @@ class ConfigProblem(str, Enum):
     INVALID = "invalid"
 
 
-CONFIG_ENCODING: Final[str] = "utf-8"
 MIN_LEAD_MINUTES_MINIMUM: Final[int] = 0
 KEEP_DAYS_MINIMUM: Final[int] = 1
 YOUTUBE_PAUSE_SECONDS_MINIMUM: Final[float] = 0.0   # число, можно дробное (0.5)
@@ -120,13 +121,11 @@ CHANNELS_FILE_HEAD: Final[str] = '{\n  "channels": [\n'
 CHANNELS_FILE_TAIL: Final[str] = "\n  ]\n}\n"
 CHANNEL_LINES: Final[str] = "    {{{first},\n     {second}}}"
 CHANNEL_FIELD: Final[str] = "{key}: {value}"
-CHANNEL_FIELD_JOINER: Final[str] = ", "
+CHANNEL_FIELD_JOINER: Final[str] = json.JSONEncoder.item_separator   # поля канала в строке — разделителем JSON
 CHANNEL_JOINER: Final[str] = ",\n"
 # Как render_settings_file раскладывает livecraft.json: так же, как поставочный файл.
 SETTINGS_FILE_INDENT: Final[int] = 2
-SETTINGS_FILE_END: Final[str] = "\n"
 SHIPPED_TEMPLATE_NAME: Final[str] = "CONFIG_SETTINGS_TEMPLATE"     # «путь» в ошибке разбора шаблона
-ALLOWED_JOINER: Final[str] = ", "
 # Ник канала (@handle) — ключ канала: уникален на YouTube и не зависит от регистра (§6 инвариант 5).
 HANDLE_PREFIX: Final[str] = "@"
 HANDLE_MIN_CHARS: Final[int] = 3
@@ -135,17 +134,14 @@ HANDLE_FORBIDDEN_CHARS: Final[str] = '<>:"/\\|?*'
 UNICODE_FORM: Final[str] = "NFC"
 CONTROL_CHAR_LIMIT: Final[int] = 32
 # account_name — название канала для людей и формы; одинаковые названия у разных каналов допустимы.
-ACCOUNT_NAME_EDGE_CHAR: Final[str] = " "   # YouTube не отдаёт названия с пробелом по краю: такое не совпадёт
 ACCOUNT_NAME_MAX_CHARS: Final[int] = 100   # предел названия канала на YouTube
 # google_account — подсказка аккаунта при входе, а не проверка почты: ровно один «@», части непустые, без пробелов.
 GOOGLE_ACCOUNT_SEPARATOR: Final[str] = "@"
 
-LANGUAGE_CODE_LENGTH: Final[int] = 2   # ISO 639-1
 # Плейсхолдеры шаблона папки превью: папка image\{date}\{language} (§5).
 IMAGE_TEMPLATE_PLACEHOLDERS: Final[tuple[str, ...]] = ("date", "language")
 IMAGE_TEMPLATE_PROBE: Final[str] = "probe"
 # Ссылка на форму ключей: https, длинная (docs.google.com/forms/…) или короткая (forms.gle/<код>).
-FORM_URL_SCHEME: Final[str] = "https"
 FORM_LONG_HOST: Final[str] = "docs.google.com"
 FORM_LONG_PATH_PREFIX: Final[str] = "/forms/"
 FORM_SHORT_HOST: Final[str] = "forms.gle"
@@ -296,7 +292,7 @@ class FormSettings:
         host: str = parts.netloc.lower()
         is_long: bool = host == FORM_LONG_HOST and parts.path.startswith(FORM_LONG_PATH_PREFIX)
         is_short: bool = host == FORM_SHORT_HOST and bool(parts.path.strip(URL_PATH_SEPARATOR))
-        if parts.scheme.lower() != FORM_URL_SCHEME or not (is_long or is_short):
+        if parts.scheme.lower() != HTTPS_SCHEME or not (is_long or is_short):
             return SettingProblem(key=FORM_URL_KEY, text=msg.CONFIG_PROBLEM_FORM_URL)
         return None
 
@@ -317,7 +313,7 @@ class FormSettings:
             return SettingProblem(
                 key="date_format",
                 text=msg.CONFIG_PROBLEM_FORM_DATE_FORMAT.format(
-                    required=ALLOWED_JOINER.join(self.DATE_DIRECTIVES), absent=ALLOWED_JOINER.join(absent)
+                    required=msg.LIST_JOINER.join(self.DATE_DIRECTIVES), absent=msg.LIST_JOINER.join(absent)
                 ),
             )
         return None
@@ -395,7 +391,7 @@ class LivecraftSettings:
         if absent:
             return SettingProblem(
                 key="image_dir_template",
-                text=msg.CONFIG_PROBLEM_IMAGE_TEMPLATE_PLACEHOLDERS.format(absent=ALLOWED_JOINER.join(absent)),
+                text=msg.CONFIG_PROBLEM_IMAGE_TEMPLATE_PLACEHOLDERS.format(absent=msg.LIST_JOINER.join(absent)),
             )
         if PureWindowsPath(template).is_absolute() or PurePosixPath(template).is_absolute():
             return SettingProblem(key="image_dir_template", text=msg.CONFIG_PROBLEM_IMAGE_TEMPLATE_ABSOLUTE)
@@ -446,6 +442,11 @@ class ShippedSettings:
     template: str
 
     @property
+    def clock(self) -> Clock:
+        """Часы в поясе шаблона: ими программа ставит отметки времени, пока настройки ещё не прочитаны."""
+        return Clock(self.settings.zone)
+
+    @property
     def settings(self) -> LivecraftSettings:
         """Настройки шаблона. Шаблон не разобрался — ValueError с путём ключа: это ошибка программиста."""
         try:
@@ -463,7 +464,7 @@ class ShippedSettings:
         """
         if config_file.exists():
             return False
-        write_text_atomically(config_file, render_settings_file(self.settings), CONFIG_ENCODING)
+        write_text_atomically(config_file, render_settings_file(self.settings), TEXT_ENCODING)
         return True
 
 
@@ -478,7 +479,7 @@ def save_channels_file(channels_file: Path, previous_file: Path, channels: Itera
     text: str = render_channels_file(channels)
     if channels_file.is_file():
         shutil.copyfile(channels_file, previous_file)
-    write_text_atomically(channels_file, text, CONFIG_ENCODING)
+    write_text_atomically(channels_file, text, TEXT_ENCODING)
 
 
 def render_settings_file(settings: LivecraftSettings) -> str:
@@ -488,17 +489,17 @@ def render_settings_file(settings: LivecraftSettings) -> str:
     с NaN или бесконечностью, даёт ValueError, а не файл, который другие программы не прочитают.
     """
     text: str = json.dumps(settings.to_data(), indent=SETTINGS_FILE_INDENT, ensure_ascii=False, allow_nan=False)
-    return text + SETTINGS_FILE_END
+    return text + NEWLINE
 
 
 def save_settings_file(config_file: Path, settings: LivecraftSettings) -> None:
     """Новый livecraft.json — атомарно; копии прежнего нет (§5 такого файла не называет). Сбой — OSError."""
-    write_text_atomically(config_file, render_settings_file(settings), CONFIG_ENCODING)
+    write_text_atomically(config_file, render_settings_file(settings), TEXT_ENCODING)
 
 
 def allowed_values(enum_type: type[Enum]) -> str:
     """Допустимые значения поля — и для ошибки, и для подсказки к шаблону channels.json."""
-    return ALLOWED_JOINER.join(str(member.value) for member in enum_type)
+    return msg.LIST_JOINER.join(str(member.value) for member in enum_type)
 
 
 def normalize_account_name(value: str) -> str:
@@ -530,7 +531,7 @@ def account_name_problem(value: str) -> str | None:
         return msg.CONFIG_PROBLEM_ACCOUNT_NAME_TOO_LONG.format(maximum=ACCOUNT_NAME_MAX_CHARS, length=len(value))
     if any(ord(char) < CONTROL_CHAR_LIMIT for char in value):
         return msg.CONFIG_PROBLEM_ACCOUNT_NAME_CONTROL
-    if value.startswith(ACCOUNT_NAME_EDGE_CHAR) or value.endswith(ACCOUNT_NAME_EDGE_CHAR):
+    if value.startswith(SPACE) or value.endswith(SPACE):
         return msg.CONFIG_PROBLEM_ACCOUNT_NAME_SPACE_EDGE.format(value=value)
     return None
 
@@ -544,18 +545,8 @@ def _is_google_account(value: str) -> bool:
 
 
 def _is_language_code(value: Any) -> bool:
-    """Код языка ISO 639-1: ровно две строчные латинские буквы, и справочник pycountry его знает.
-
-    Строчность проверяется отдельно: поиск pycountry регистр не различает и нашёл бы «UK».
-    """
-    is_shaped: bool = (
-        isinstance(value, str)
-        and len(value) == LANGUAGE_CODE_LENGTH
-        and value.isascii()
-        and value.isalpha()
-        and value.islower()
-    )
-    return is_shaped and pycountry.languages.get(alpha_2=value) is not None
+    """Код языка ISO 639-1, который знает справочник pycountry (`LanguageCode.is_known`)."""
+    return isinstance(value, str) and LanguageCode(value).is_known
 
 
 def _channel_lines(channel: ChannelConfig) -> str:
@@ -581,7 +572,7 @@ def _read_json(path: Path) -> Any:
             kind=ConfigProblem.FILE_MISSING,
         )
     try:
-        return json.loads(path.read_text(encoding=CONFIG_ENCODING), object_pairs_hook=_UniquePairs)
+        return json.loads(path.read_text(encoding=TEXT_ENCODING), object_pairs_hook=_UniquePairs)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ConfigError(
             config_path=path,

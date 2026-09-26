@@ -27,15 +27,17 @@ from app.config.loader import (
     load_settings,
     save_settings_file,
 )
+from app.core.text_format import TEXT_ENCODING
+from app.observability.log_event import LogArea
 from app.paths import LivecraftPaths, build_paths, ensure_dirs
 from app.secretsafe.crypto import FORMAT_VERSION, VAULT_KEY_BYTES, EncryptedField, VaultCrypto, VaultFile
-from app.secretsafe.store import VAULT_FILE_ENCODING
 from app.secretsafe.value import SecretField
 from app.sheets.rows import PlanRow
 from app.sources.language import LanguageProfile
 from app.sources.metadata import SourceMetadata
 from app.sources.preview import Preview
 from app.sources.video import SourceVideo
+from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
 
 KYIV_WINTER: timezone = timezone(timedelta(hours=2))   # даты и время — по Киеву (CLAUDE.md §6, инвариант 4)
@@ -86,7 +88,7 @@ def write_supplied_vault(paths: LivecraftPaths, values: dict[SecretField, str]) 
         field.value: crypto.encrypt(field, value) for field, value in values.items()
     }
     paths.vault_file.write_text(
-        VaultFile(version=FORMAT_VERSION, salt=salt, fields=fields).render(), encoding=VAULT_FILE_ENCODING
+        VaultFile(version=FORMAT_VERSION, salt=salt, fields=fields).render(), encoding=TEXT_ENCODING
     )
 
 
@@ -118,33 +120,11 @@ def ready_source(
     )
 
 
-class LogCollector(logging.Handler):
-    """Свой обработчик прямо на логгере: не зависит от propagate после других тестов."""
-
-    def __init__(self) -> None:
-        super().__init__(level=logging.DEBUG)
-        self.records: list[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-    def messages(self, level: int | None = None) -> list[str]:
-        return [record.getMessage() for record in self.records if level is None or record.levelno == level]
-
-
 @pytest.fixture
-def slot_log() -> Iterator[LogCollector]:
+def slot_log() -> Iterator[LogCapture]:
     """Записи логгера livecraft.slots за время теста."""
-    logger: logging.Logger = logging.getLogger("livecraft.slots")
-    collector: LogCollector = LogCollector()
-    level: int = logger.level
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(collector)
-    try:
-        yield collector
-    finally:
-        logger.removeHandler(collector)
-        logger.setLevel(level)
+    with LogCapture.on(LogArea.SLOTS, logging.DEBUG) as capture:
+        yield capture
 
 
 @pytest.fixture

@@ -35,7 +35,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Final
 
-from app.observability.logging_setup import get_logger
+from app.core.errors import os_error_reason
+from app.core.text_format import TEXT_ENCODING
+from app.observability.log_event import LogArea, get_logger
 from app.paths import LivecraftPaths, write_text_atomically
 from app.secretsafe.crypto import (
     FORMAT_VERSION,
@@ -52,9 +54,8 @@ from app.secretsafe.dpapi import Dpapi, DpapiUnavailable
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
 
-LOGGER = get_logger("vault")
+LOGGER = get_logger(LogArea.VAULT)
 
-VAULT_FILE_ENCODING: Final[str] = "utf-8"
 # Сгенерированный сборкой модуль (build_release.bat, этап 6): несколько частей ключа, а не одна строка.
 # Собираются они здесь, в момент использования. Это не криптография, а повышение цены разбора (§7.3).
 GENERATED_KEY_MODULE: Final[str] = "app.secretsafe.program_key"
@@ -181,7 +182,7 @@ class ProgramKey:
         except OSError as error:
             raise VaultFormatError(
                 VaultFormatReason.FILE_UNREADABLE,
-                error.strerror or type(error).__name__,
+                os_error_reason(error),
                 file_name=path.name,
                 source=VaultSource.SUPPLIED,
             ) from error
@@ -276,7 +277,7 @@ class VaultStore:
         text: str = VaultFile(
             version=FORMAT_VERSION, salt=salt, fields=fields, wrapped_key=wrapped_key
         ).render()
-        write_text_atomically(self.local_path, text, VAULT_FILE_ENCODING)
+        write_text_atomically(self.local_path, text, TEXT_ENCODING)
         LOGGER.info("vault_local_saved fields=%d", len(fields))
 
     def _own_secret(self, vault: Vault, field: SecretField) -> SecretValue | None:
@@ -347,11 +348,11 @@ class VaultStore:
         имя файла без полного пути, причина и подробность для лога; исходная ошибка сохраняется через from.
         """
         try:
-            text: str = path.read_text(encoding=VAULT_FILE_ENCODING)
+            text: str = path.read_text(encoding=TEXT_ENCODING)
         except FileNotFoundError:
             return None
         except OSError as error:
-            detail: str = error.strerror or type(error).__name__
+            detail: str = os_error_reason(error)
             raise VaultFormatError(
                 VaultFormatReason.FILE_UNREADABLE, detail, file_name=path.name, source=source
             ) from error

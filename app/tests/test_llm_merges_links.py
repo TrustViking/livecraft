@@ -9,9 +9,10 @@ from collections.abc import Iterator
 import pytest
 
 from app.llm.merges.links import OFFICIAL_LINK_HINTS_RESOURCE, AuthoritativeLinks, OfficialLinkHints, OfficialLinkSelection
+from app.observability.log_event import LogArea
 from app.resources.loader import TextResource
 from app.sources.video import SourceVideo
-from app.tests.conftest import LogCollector
+from app.tests.fixtures.logs import LogCapture
 from app.tests.test_llm_merges_source import merge_video
 
 HINTS: OfficialLinkHints = OfficialLinkHints.load()
@@ -120,15 +121,9 @@ def source_with(description: str, row: int = 2, metadata_url: str | None = None,
 
 
 @pytest.fixture
-def llm_log() -> Iterator[LogCollector]:
-    collector: LogCollector = LogCollector()
-    logger: logging.Logger = logging.getLogger("livecraft.llm")
-    logger.addHandler(collector)
-    previous: int = logger.level
-    logger.setLevel(logging.INFO)
-    yield collector
-    logger.setLevel(previous)
-    logger.removeHandler(collector)
+def llm_log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.LLM, logging.INFO) as capture:
+        yield capture
 
 
 def authoritative(*descriptions: str, tail: tuple[str, ...] = (), malformed: int = 0) -> AuthoritativeLinks:
@@ -183,7 +178,7 @@ def test_youtube_links_of_descriptions_are_counted_for_recommended_materials() -
     assert links.urls == ()
 
 
-def test_the_log_lines_have_donor_keys(llm_log: LogCollector) -> None:
+def test_the_log_lines_have_donor_keys(llm_log: LogCapture) -> None:
     links: AuthoritativeLinks = authoritative("https://example.org", tail=("https://[bad",), malformed=1)
     assert llm_log.messages() == list(links.log_lines)
     assert links.log_lines == (

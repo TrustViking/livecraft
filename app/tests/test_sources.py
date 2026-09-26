@@ -16,6 +16,7 @@ import requests
 from PIL import Image
 
 from app.core.retry import RetryPolicy
+from app.observability.log_event import LogArea
 from app.paths import LivecraftPaths
 from app.sheets.plan import SheetRow
 from app.sheets.rows import PlanRow, RowSkipReason
@@ -25,6 +26,7 @@ from app.sources.metadata import SourceMetadata
 from app.sources.preview import Preview, PreviewDownloader, PreviewProblem, PreviewResult
 from app.sources.video import SourceCatalog, SourceTally, SourceVideo
 from app.sources.ytdlp import DETAIL_MAX_CHARS, YTDLP_TIMEOUT_SEC, YtDlpFetcher, YtDlpResult
+from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
 
 DATA_DIR: Path = Path(__file__).resolve().parent / "data" / "ytdlp"
@@ -58,30 +60,10 @@ def noise_image(side: int) -> bytes:
     return output.getvalue()
 
 
-class _Collector(logging.Handler):
-    """Свой обработчик прямо на логгере livecraft.sources: не зависит от propagate после других тестов."""
-
-    def __init__(self) -> None:
-        super().__init__(level=logging.DEBUG)
-        self.records: list[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-    def messages(self, level: int | None = None) -> list[str]:
-        return [record.getMessage() for record in self.records if level is None or record.levelno == level]
-
-
 @pytest.fixture
-def log() -> Iterator[_Collector]:
-    logger: logging.Logger = logging.getLogger("livecraft.sources")
-    collector: _Collector = _Collector()
-    level: int = logger.level
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(collector)
-    yield collector
-    logger.removeHandler(collector)
-    logger.setLevel(level)
+def log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.SOURCES, logging.DEBUG) as capture:
+        yield capture
 
 
 # --- SourceMetadata.from_ytdlp
@@ -103,7 +85,7 @@ def test_full_answer_gives_every_field() -> None:
     assert metadata.problem is None
 
 
-def test_empty_thumbnail_falls_back_to_hqdefault_by_id(log: _Collector) -> None:
+def test_empty_thumbnail_falls_back_to_hqdefault_by_id(log: LogCapture) -> None:
     metadata: SourceMetadata = SourceMetadata.from_ytdlp(OTHER_LINK, load_info("video_no_thumbnail.json"))
     assert metadata.thumbnail_url == "https://i.ytimg.com/vi/aB3_-xYz012/hqdefault.jpg"
     assert metadata.youtube_language is None
@@ -126,7 +108,7 @@ def test_no_id_anywhere_leaves_the_thumbnail_empty() -> None:
     assert metadata.problem is None
 
 
-def test_empty_description_is_not_a_problem_but_a_log_line(log: _Collector) -> None:
+def test_empty_description_is_not_a_problem_but_a_log_line(log: LogCapture) -> None:
     metadata: SourceMetadata = SourceMetadata.from_ytdlp(THIRD_LINK, load_info("video_no_description.json"))
     assert metadata.description == ""
     assert metadata.problem is None
@@ -323,7 +305,7 @@ def test_refusal_is_named_by_stderr(ytdlp_paths: LivecraftPaths, stderr: str, re
 
 
 def test_detail_is_the_first_line_cut_and_full_stderr_goes_only_to_debug(
-    ytdlp_paths: LivecraftPaths, log: _Collector
+    ytdlp_paths: LivecraftPaths, log: LogCapture
 ) -> None:
     long_line: str = "ERROR: " + "x" * 500
     tail: str = "SECOND-LINE-ONLY-IN-DEBUG"
@@ -543,7 +525,7 @@ def catalog_for(fetcher: MetadataFetcher, get: _FakeGet, resolver: LanguageResol
     return SourceCatalog(fetcher=fetcher, downloader=downloader_for(get, []), resolver=resolver)
 
 
-def language_decisions(log: _Collector) -> list[str]:
+def language_decisions(log: LogCapture) -> list[str]:
     """Строки решений языка: LanguageResolver пишет одну на каждое решение."""
     return [line for line in log.messages() if line.startswith("language_decision ")]
 
@@ -561,7 +543,7 @@ def test_fake_fetcher_is_a_metadata_fetcher() -> None:
     assert callable(fetcher.fetch)
 
 
-def test_two_rows_with_one_link_are_one_fetch_one_language_and_one_download(log: _Collector) -> None:
+def test_two_rows_with_one_link_are_one_fetch_one_language_and_one_download(log: LogCapture) -> None:
     fetcher: _FakeFetcher = _FakeFetcher({LINK: ok_fetch(LINK)})
     get: _FakeGet = _FakeGet(_Response(200, png_bytes()))
     rows: tuple[PlanRow, ...] = (admitted_row(2, LINK), admitted_row(5, LINK))
@@ -592,7 +574,7 @@ def test_skipped_row_is_not_processed() -> None:
     assert fetcher.calls == [LINK]
 
 
-def test_one_failed_source_does_not_stop_the_next(log: _Collector) -> None:
+def test_one_failed_source_does_not_stop_the_next(log: LogCapture) -> None:
     failed: SourceFetch = SourceFetch.failed(OTHER_LINK, SourceFailureReason.PRIVATE, "ERROR: Private video")
     fetcher: _FakeFetcher = _FakeFetcher({OTHER_LINK: failed, LINK: ok_fetch(LINK)})
     get: _FakeGet = _FakeGet(_Response(200, png_bytes()))
@@ -612,7 +594,7 @@ def test_one_failed_source_does_not_stop_the_next(log: _Collector) -> None:
     assert any("failed=1 failures=private:1" in line for line in log.messages(logging.INFO))
 
 
-def test_source_without_preview_is_still_ready(log: _Collector) -> None:
+def test_source_without_preview_is_still_ready(log: LogCapture) -> None:
     fetcher: _FakeFetcher = _FakeFetcher({LINK: ok_fetch(LINK)})
     get: _FakeGet = _FakeGet(_Response(404))
     videos: tuple[SourceVideo, ...] = catalog_for(fetcher, get).prepare((admitted_row(2, LINK),))
@@ -623,7 +605,7 @@ def test_source_without_preview_is_still_ready(log: _Collector) -> None:
     assert f"source row=2 link={LINK} ok preview=not_found {FULL_LANGUAGE}" in log.messages(logging.INFO)
 
 
-def test_source_without_title_is_not_ready_and_gets_no_language_and_no_preview(log: _Collector) -> None:
+def test_source_without_title_is_not_ready_and_gets_no_language_and_no_preview(log: LogCapture) -> None:
     info: dict[str, Any] = load_info("video_full.json") | {"title": ""}
     no_title: SourceFetch = SourceFetch.from_metadata(LINK, SourceMetadata.from_ytdlp(LINK, info))
     get: _FakeGet = _FakeGet()
@@ -638,7 +620,7 @@ def test_source_without_title_is_not_ready_and_gets_no_language_and_no_preview(l
     assert get.calls == []
 
 
-def test_source_whose_language_is_undetected_is_not_ready(log: _Collector) -> None:
+def test_source_whose_language_is_undetected_is_not_ready(log: LogCapture) -> None:
     get: _FakeGet = _FakeGet()
     videos: tuple[SourceVideo, ...] = catalog_for(_FakeFetcher({LINK: no_language_fetch(LINK)}), get).prepare(
         (admitted_row(2, LINK),)
@@ -704,3 +686,17 @@ def test_catalog_from_paths_uses_ytdlp_and_the_resource_resolver(livecraft_paths
     videos: tuple[SourceVideo, ...] = catalog.prepare((admitted_row(2, LINK),))
     assert videos[0].failure is SourceFailureReason.TOOL_MISSING
     assert videos[0].language is None
+
+
+@pytest.mark.parametrize(
+    ("status", "problem"),
+    [
+        (429, PreviewProblem.UNAVAILABLE),
+        (503, PreviewProblem.UNAVAILABLE),
+        (404, PreviewProblem.NOT_FOUND),
+        (403, PreviewProblem.REJECTED),
+    ],
+)
+def test_the_problem_of_a_preview_status_is_one_rule(status: int, problem: PreviewProblem) -> None:
+    """429 и 5xx — временно недоступно (повторяется), 404 — картинки нет, прочие 4xx — отказ."""
+    assert PreviewProblem.for_status(status) is problem

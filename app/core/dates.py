@@ -7,11 +7,15 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Final
+from typing import ClassVar, Final
 
 DATE_FORMAT: Final[str] = "%d-%m-%Y"
 TIME_FORMAT: Final[str] = "%H:%M"
 DATETIME_FORMAT: Final[str] = f"{DATE_FORMAT} {TIME_FORMAT}"
+TIMESTAMP_FORMAT: Final[str] = f"{DATETIME_FORMAT}:%S"   # отметка журнала: дата и время с секундами
+ISO_TIMESPEC: Final[str] = "seconds"                     # ISO-8601 моментов — до секунд
+SECONDS_PER_MINUTE: Final[int] = 60
+MINUTES_PER_HOUR: Final[int] = 60
 FILE_STAMP_FORMAT: Final[str] = "%d-%m-%Y_%H%M%S"   # имя файла: дата_время_наименование
 SLOT_TIME_FORMAT: Final[str] = "%H%M"
 SLOT_ID_TEMPLATE: Final[str] = "{date}_{time}_{language}"
@@ -37,12 +41,30 @@ def format_datetime_text(value: datetime) -> str:
     return value.strftime(DATETIME_FORMAT)
 
 
-def parse_iso_start(text: str) -> datetime:
-    """`start` слота: ISO-8601 со смещением; без смещения — ValueError (CLAUDE.md §4)."""
-    value: datetime = datetime.fromisoformat(text)
+def format_timestamp(value: datetime) -> str:
+    """Отметка журнала `DD-MM-YYYY HH:MM:SS`: два события одной минуты различимы."""
+    return value.strftime(TIMESTAMP_FORMAT)
+
+
+class NaiveMomentError(ValueError):
+    """Момент без пояса: его нельзя сравнить ни с минутой старта на YouTube, ни с «сейчас». Ошибка программы."""
+
+    TEXT: ClassVar[str] = "moment without UTC offset: {value!r}"
+
+    def __init__(self, value: object) -> None:
+        super().__init__(self.TEXT.format(value=value))
+
+
+def require_aware(value: datetime) -> datetime:
+    """Момент с поясом как есть; без пояса — NaiveMomentError. Единственная проверка «время с поясом»."""
     if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError(f"start without UTC offset: {text!r}")
+        raise NaiveMomentError(value)
     return value
+
+
+def parse_iso_start(text: str) -> datetime:
+    """`start` слота: ISO-8601 со смещением; без смещения — NaiveMomentError (CLAUDE.md §4)."""
+    return require_aware(datetime.fromisoformat(text))
 
 
 def build_slot_id(date_text: str, time_text: str, language: str) -> str:

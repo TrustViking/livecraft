@@ -4,6 +4,7 @@ import dataclasses
 import random
 
 from app.config.loader import LlmSettings
+from app.core.clock import Clock
 from app.llm.backends.openai import OpenAiClient
 from app.llm.errors import LlmErrorKind
 from app.llm.selection import ChoiceReason, ModelChoice
@@ -17,7 +18,7 @@ DENIED: str = "Project does not have access to model"
 
 def choose(sdk: FakeLlmSdk, settings: LlmSettings = LLM_SETTINGS) -> ModelChoice:
     client: OpenAiClient = OpenAiClient(
-        key=KEY, settings=settings, sdk=sdk, rng=random.Random(1), sleep=lambda _: None, clock=lambda: 0.0
+        key=KEY, settings=settings, sdk=sdk, rng=random.Random(1), sleep=lambda _: None, clock=Clock.utc()
     )
     return ModelChoice.select(client, settings.model, settings.fallback_model)
 

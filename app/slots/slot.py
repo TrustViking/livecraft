@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar, Final
 from zoneinfo import ZoneInfo
 
-from app.core.dates import build_slot_id, format_date, format_time
+from app.core.dates import ISO_TIMESPEC, build_slot_id, format_date, format_time
 from app.core.sheet_text import extract_youtube_video_id
 from app.slots.texts import TEXT_ENCODING, SlotTextOrigin, SlotTexts
 from app.ui import messages_ru as msg
@@ -22,7 +22,6 @@ if TYPE_CHECKING:      # только для аннотаций: слот бер
     from app.sources.preview import Preview
     from app.sources.video import SourceVideo
 
-ISO_TIMESPEC: Final[str] = "seconds"
 YOUTUBE_WATCH_URL_TEMPLATE: Final[str] = "https://www.youtube.com/watch?v={video_id}"
 
 

@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
+from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
 from app.core.url_text import URL_PATTERN
 
 HASHTAG_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?<!\w)#[^\s#]+", flags=re.UNICODE)
@@ -25,8 +26,6 @@ ANY_SPACE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 EDGE_PUNCTUATION: Final[str] = " ,;:-"
 SERVICE_TAIL_MAX_CHARS: Final[int] = 220
 SERVICE_TAIL_MAX_TOKENS: Final[int] = 12
-LINE_BREAK: Final[str] = "\n"
-PARAGRAPH_JOINER: Final[str] = "\n\n"
 
 
 def _tidy(text: str) -> str:
@@ -69,7 +68,7 @@ class _CleanedParagraph:
         lines: list[str] = []
         urls_removed: int = 0
         hashtags_removed: int = 0
-        for raw_line in paragraph.split(LINE_BREAK):
+        for raw_line in paragraph.split(NEWLINE):
             line, urls = URL_PATTERN.subn("", raw_line.strip())
             line, hashtags = HASHTAG_PATTERN.subn("", _tidy(line))
             urls_removed += urls
@@ -77,7 +76,7 @@ class _CleanedParagraph:
             line = _tidy(_tidy(line))
             if line and not _is_heading_line(line):
                 lines.append(line)
-        return cls(text=LINE_BREAK.join(lines).strip(), urls_removed=urls_removed, hashtags_removed=hashtags_removed)
+        return cls(text=NEWLINE.join(lines).strip(), urls_removed=urls_removed, hashtags_removed=hashtags_removed)
 
 
 @dataclass(frozen=True)
@@ -91,7 +90,7 @@ class AnalysisTextReport:
 
     @classmethod
     def of(cls, text: str, service_hints: tuple[str, ...]) -> AnalysisTextReport:
-        normalized: str = str(text or "").replace("\r\n", LINE_BREAK).replace("\r", LINE_BREAK).strip()
+        normalized: str = str(text or "").replace("\r\n", NEWLINE).replace("\r", NEWLINE).strip()
         cleaned: list[_CleanedParagraph] = [
             _CleanedParagraph.of(part.strip()) for part in PARAGRAPH_BREAK_PATTERN.split(normalized) if part.strip()
         ]
@@ -101,7 +100,7 @@ class AnalysisTextReport:
             paragraphs.pop()
             dropped += 1
         return cls(
-            text=PARAGRAPH_JOINER.join(paragraphs).strip(),
+            text=PARAGRAPH_BREAK.join(paragraphs).strip(),
             urls_removed=sum(paragraph.urls_removed for paragraph in cleaned),
             hashtags_removed=sum(paragraph.hashtags_removed for paragraph in cleaned),
             service_paragraphs_dropped=dropped,

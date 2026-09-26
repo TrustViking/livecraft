@@ -109,7 +109,7 @@ def test_targeted_profile_without_lines_is_disabled() -> None:
     profile: RetryProfile = RetryProfile(mode=RetryMode.TARGETED, reject_signals=(), focus_tags=(), reinforcement_lines=())
     assert not profile.enabled
     assert profile.instruction_block == ""
-    assert (profile.focus_label, profile.reject_signal_label) == ("none", "none")
+    assert (profile.focus_label, profile.reject_signal_label) == ("-", "-")
 
 
 # --- выбор профиля после отказа (донор: `MergeOrchestrator._select_retry_profile`)

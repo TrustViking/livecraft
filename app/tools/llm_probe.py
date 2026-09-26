@@ -17,40 +17,34 @@ import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import IntEnum
 from typing import Any, Final
 
 import openai
 
-from app.config.loader import LivecraftSettings, LlmSettings
+from app.config.loader import LivecraftSettings, LlmSettings, ShippedSettings
+from app.core.clock import Clock
+from app.core.dates import ISO_TIMESPEC
 from app.llm.backend import LlmBackend, LlmRequest, LlmResponse
 from app.llm.backends.openai import OpenAiClient
 from app.llm.errors import LlmRequestError
 from app.llm.selection import ModelChoice
-from app.llm.usage import RunUsage
-from app.observability.logging_setup import close_logging, get_logger, install_secret_filter, setup_logging
+from app.llm.usage import COST_FORMAT, RunUsage
+from app.observability.log_event import LogArea, get_logger
+from app.observability.logging_setup import close_logging, install_secret_filter, setup_logging
 from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
-from app.resources.loader import RESOURCE_ENCODING, TextResource
+from app.resources.loader import TextResource
 from app.secretsafe.vault import Vault
 from app.setup.readiness import Readiness
+from app.setup.run_mode import ExitCode
 from app.ui import messages_ru as msg
 
-LOGGER_NAME: Final[str] = "tools.llm_probe"
-LOGGER = get_logger(LOGGER_NAME)
+LOGGER = get_logger(LogArea.LLM_PROBE)
+SHIPPED_SETTINGS: ShippedSettings = ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE)
 
 PROG: Final[str] = "python -m app.tools.llm_probe"
 PING_RESOURCE: Final[str] = "prompt_startup_ping.txt"
 PING_LABEL: Final[str] = "startup_ping"
-UTC_TIMESPEC: Final[str] = "seconds"
 ANSWER_MAX_CHARS: Final[int] = 200
-COST_FORMAT: Final[str] = "{:.6f}"
-LIST_JOINER: Final[str] = ", "
-
-
-class ProbeExit(IntEnum):
-    OK = 0          # модель выбрана и ответила
-    ERRORS = 1      # запрос не удался или подходящей модели нет
-    CONFIG = 2      # нет ключа, сейф или настройки не готовы — к OpenAI не обращались
 
 
 @dataclass(frozen=True)
@@ -60,9 +54,8 @@ class StartupPing:
     resource: TextResource = TextResource(PING_RESOURCE)
 
     def render(self, model_name: str, now: datetime) -> str:
-        template: str = self.resource.path.read_text(encoding=RESOURCE_ENCODING)
-        moment: str = now.astimezone(timezone.utc).isoformat(timespec=UTC_TIMESPEC)
-        return template.format(model_name=model_name, utc_now=moment)
+        moment: str = now.astimezone(timezone.utc).isoformat(timespec=ISO_TIMESPEC)
+        return self.resource.body.format(model_name=model_name, utc_now=moment)
 
 
 @dataclass(frozen=True)
@@ -100,18 +93,18 @@ class LlmProbeReport:
     @property
     def _requests_line(self) -> str:
         """Тариф у каждого запроса отдельно: «проверка — default, проба — flex», а не общий список тарифов."""
-        tiers: str = LIST_JOINER.join(
+        tiers: str = msg.LIST_JOINER.join(
             msg.LLM_PROBE_TIER_ENTRY.format(label=msg.LLM_REQUEST_LABEL_TEXT.get(label, label), tier=tier)
             for label, tier in self.usage.tier_by_request
         )
-        return msg.LLM_PROBE_REQUESTS.format(requests=self.usage.requests, tiers=tiers or msg.LLM_PROBE_NONE)
+        return msg.LLM_PROBE_REQUESTS.format(requests=self.usage.requests, tiers=tiers or msg.NONE_TEXT)
 
     @property
     def _cost_line(self) -> str:
         cost: str = COST_FORMAT.format(self.usage.cost_usd)
         if self.usage.cost_known:
             return msg.LLM_PROBE_COST.format(cost=cost)
-        models: str = LIST_JOINER.join(sorted(self.usage.models)) or msg.LLM_PROBE_NONE
+        models: str = msg.LIST_JOINER.join(sorted(self.usage.models)) or msg.NONE_TEXT
         return msg.LLM_PROBE_COST_UNKNOWN.format(cost=cost, models=models)
 
 
@@ -122,7 +115,7 @@ class LlmProbe:
     paths: LivecraftPaths
     say: Callable[[str], None]
     sdk: Callable[..., Any] = openai.OpenAI
-    now: Callable[[], datetime] = field(default=lambda: datetime.now(timezone.utc))
+    clock: Clock = field(default_factory=Clock.utc)
     ping: StartupPing = StartupPing()
 
     def run(self) -> int:
@@ -148,19 +141,19 @@ class LlmProbe:
         choice: ModelChoice = ModelChoice.select(backend, llm.model, llm.fallback_model)
         self.say(choice.human)
         if choice.chosen is None:
-            return self._finish(backend.run_usage, None, ProbeExit.ERRORS)
+            return self._finish(backend.run_usage, None, ExitCode.ERRORS)
         request: LlmRequest = LlmRequest.from_settings(
-            llm, choice.chosen, self.ping.render(choice.chosen, self.now()), PING_LABEL
+            llm, choice.chosen, self.ping.render(choice.chosen, self.clock.now()), PING_LABEL
         )
         try:
             response: LlmResponse = backend.complete(request)
         except LlmRequestError as error:
             LOGGER.error("llm_probe_failed %s", error.log_line)
             self.say(error.human)
-            return self._finish(backend.run_usage, None, ProbeExit.ERRORS)
-        return self._finish(backend.run_usage, response, ProbeExit.OK)
+            return self._finish(backend.run_usage, None, ExitCode.ERRORS)
+        return self._finish(backend.run_usage, response, ExitCode.OK)
 
-    def _finish(self, usage: RunUsage, response: LlmResponse | None, code: ProbeExit) -> int:
+    def _finish(self, usage: RunUsage, response: LlmResponse | None, code: ExitCode) -> int:
         for line in LlmProbeReport(usage=usage, response=response).lines:
             self.say(line)
         LOGGER.info("%s exit=%d", usage.log_line, int(code))
@@ -170,7 +163,7 @@ class LlmProbe:
     def _settings_line(llm: LlmSettings) -> str:
         return msg.LLM_PROBE_SETTINGS.format(
             primary=llm.model,
-            fallback=llm.fallback_model or msg.LLM_PROBE_NO_FALLBACK,
+            fallback=llm.fallback_model or msg.NONE_TEXT,
             tier=llm.service_tier.value,
             effort=llm.reasoning_effort.value,
         )
@@ -178,7 +171,7 @@ class LlmProbe:
     def _refuse(self, text: str) -> int:
         self.say(text)
         self.say(msg.SETUP_REQUIRED)
-        return int(ProbeExit.CONFIG)
+        return int(ExitCode.CONFIG)
 
 
 def _say(text: str) -> None:
@@ -190,7 +183,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     argparse.ArgumentParser(prog=PROG).parse_args(argv)
     paths: LivecraftPaths = build_paths(resolve_root())
     ensure_dirs(paths)
-    setup_logging(paths.logs_dir, debug=False)
+    setup_logging(paths.logs_dir, debug=False, started=SHIPPED_SETTINGS.clock.now())
     try:
         return LlmProbe(paths=paths, say=_say).run()
     finally:

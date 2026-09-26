@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from typing import Final
 
+# --- общий словарь текстов для людей: перечисление, части строки, «ничего нет»
+LIST_JOINER: Final[str] = ", "      # элементы одного перечня: языки, поля, модели
+ITEM_JOINER: Final[str] = "; "      # самостоятельные части одной строки
+NONE_TEXT: Final[str] = "нет"       # значения нет: не задано, не пришло, пусто
+
 # --- командная строка (CLAUDE.md §10)
 CLI_DESCRIPTION: Final[str] = (
     "Livecraft: план стримов из Google Sheets → эфиры на YouTube → ключи потоков стримеру."
@@ -94,7 +99,6 @@ SETTINGS_FILE_CREATED: Final[str] = "Настройки программы со�
 # --- готовность к запуску (app\setup\readiness.py): сводка без значений — только откуда что взялось (§7.4)
 READINESS_SUMMARY_TITLE: Final[str] = "Настройки livecraft:"
 READINESS_FIELD_LINE: Final[str] = "  {label}: {origin}"
-READINESS_FIELD_ABSENT: Final[str] = "нет"
 # Форма ключей — открытая настройка livecraft.json (§14 решение 15): сводка говорит, задана ли ссылка, но не её саму.
 FORM_URL_LABEL: Final[str] = "Google форма для ключей стрима (эфира)"
 READINESS_FORM_CONFIGURED: Final[str] = "настроена"
@@ -554,8 +558,6 @@ PACKAGE_NOT_WRITTEN: Final[str] = "Пакет не записан: {reason}."
 INTAKE_TABLE_LINE: Final[str] = "Таблица плана: рядов {rows}, допущено {admitted}, отсеяно {skipped}{reasons}."
 INTAKE_TABLE_REASONS: Final[str] = " — {items}"
 INTAKE_COUNT_ITEM: Final[str] = "{name}: {count}"
-INTAKE_ITEM_JOINER: Final[str] = "; "
-INTAKE_LANGUAGE_JOINER: Final[str] = ", "
 INTAKE_NO_FUTURE_ROWS: Final[str] = "Будущих эфиров в таблице нет — слоты и пакет в этом запуске не собираются."
 INTAKE_SOURCES_LINE: Final[str] = "Видео: годных {ready} из {total}, без обложки {no_preview}{failures}."
 INTAKE_SOURCES_FAILURES: Final[str] = "; не годны — {items}"
@@ -579,7 +581,6 @@ SOURCE_PROBE_AUTO_CAPTIONS: Final[str] = "  автосубтитры: {value}"
 SOURCE_PROBE_SOURCE_LANGUAGE: Final[str] = "  язык источника: {code} ({source})"
 SOURCE_PROBE_SOURCE_LANGUAGE_NONE: Final[str] = "  язык источника: не определился"
 SOURCE_PROBE_MORE: Final[str] = "{shown} … и ещё {more}"
-SOURCE_PROBE_NONE: Final[str] = "нет"
 SOURCE_PROBE_PREVIEW_OK: Final[str] = "  обложка: {width}×{height}, {kilobytes} КБ — годится для YouTube"
 SOURCE_PROBE_PREVIEW_BAD: Final[str] = "  обложка: не годится — {reason}"
 SOURCE_PROBE_PREVIEW_SKIPPED: Final[str] = (
@@ -654,7 +655,6 @@ MERGE_REJECT_TEXT: Final[dict[str, str]] = {
 # --- пробник нейросети (app\tools\llm_probe.py): модель, токены, стоимость; ни ключа, ни промта
 LLM_PROBE_TITLE: Final[str] = "Проверка нейросети OpenAI"
 LLM_PROBE_SETTINGS: Final[str] = "Основная модель: {primary}; запасная: {fallback}; тариф: {tier}; рассуждение: {effort}."
-LLM_PROBE_NO_FALLBACK: Final[str] = "нет"
 LLM_PROBE_ANSWER: Final[str] = "Ответ модели: {text}"
 LLM_PROBE_ANSWER_CUT: Final[str] = "{text}…"
 LLM_PROBE_TOKENS: Final[str] = (
@@ -665,7 +665,6 @@ LLM_PROBE_REQUESTS: Final[str] = "Запросов: {requests}; тарифы: {t
 LLM_PROBE_TIER_ENTRY: Final[str] = "{label} — {tier}"
 LLM_PROBE_COST: Final[str] = "Стоимость: ${cost}."
 LLM_PROBE_COST_UNKNOWN: Final[str] = "Стоимость: не меньше ${cost} — цены части моделей ({models}) в программе нет."
-LLM_PROBE_NONE: Final[str] = "нет"
 
 # --- обрыв и падение запуска (app\main.py::run_cli)
 RUN_INTERRUPTED: Final[str] = (
@@ -676,7 +675,7 @@ RUN_CRASHED: Final[str] = (
     "Что уже сделано на YouTube, найдёт и учтёт следующий запуск; перешлите лог оператору."
 )
 
-# --- замок эталона кода (app\tools\code_standard, REFACTORING_STANDARD.md §5, §6): инструмент разработки,
+# --- замок эталона кода (app\tools\code_standard, CLAUDE.md §11): инструмент разработки,
 # в поставку не идёт. Ключи словарей — коды правил (Rule), признаков (Sign) и видов изменений (ChangeKind).
 CODE_STANDARD_DESCRIPTION: Final[str] = (
     "Замок эталона кода livecraft: отчёт по правилам E1–E21 и реестр долгов, который может только сокращаться."
@@ -762,8 +761,6 @@ CODE_STANDARD_REPORT_COLUMNS: Final[dict[str, str]] = {
 CODE_STANDARD_REPORT_NO_VALUE: Final[str] = "—"
 CODE_STANDARD_REPORT_SIGNS: Final[str] = "     {signs}"
 CODE_STANDARD_REPORT_SIGN: Final[str] = "{label}: {count}"
-CODE_STANDARD_REPORT_SIGN_JOINER: Final[str] = "; "
-CODE_STANDARD_REPORT_RULE_JOINER: Final[str] = ", "
 CODE_STANDARD_REPORT_STATE: Final[str] = (
     "Код против реестра: новых {new}, выросших {grown}, уменьшившихся {shrunk}, снятых {gone}."
 )

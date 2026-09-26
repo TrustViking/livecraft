@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Final
 from urllib.parse import SplitResult, urlsplit
 
 from app.core.sheet_text import normalize_youtube_link
+from app.core.text_format import NEWLINE
 from app.core.url_text import (
     SourceUrl,
     canonical_link_key,
@@ -36,6 +37,7 @@ from app.core.url_text import (
     sanitize_url,
     split_url,
 )
+from app.core.url_text import HTTPS_SCHEME
 from app.llm.merges.rules import (
     OFFICIAL_LINK_CONTEXT_SCORE,
     OFFICIAL_LINK_DOMAIN_SCORE_CAP,
@@ -46,7 +48,7 @@ from app.llm.merges.rules import (
     OFFICIAL_LINK_QUERY_PENALTY,
     OFFICIAL_LINKS_KEPT_MAX,
 )
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, get_logger
 from app.resources.loader import TextResource
 from app.texts.description_marks import URL_PATTERN, is_official_links_heading
 from app.texts.paragraphs import normalize_newlines
@@ -54,11 +56,9 @@ from app.texts.paragraphs import normalize_newlines
 if TYPE_CHECKING:
     from app.sources.video import SourceVideo
 
-LOGGER = get_logger("llm")
+LOGGER = get_logger(LogArea.LLM)
 
 OFFICIAL_LINK_HINTS_RESOURCE: Final[str] = "lexicon_official_link_hints.txt"
-HTTPS_SCHEME: Final[str] = "https"
-LINE_BREAK: Final[str] = "\n"
 
 
 @dataclass(frozen=True)
@@ -141,7 +141,7 @@ class OfficialLinkSelection:
     def _candidates(descriptions: Sequence[str]) -> list[OfficialLinkCandidate]:
         candidates: list[OfficialLinkCandidate] = []
         for description in descriptions:
-            for line in normalize_newlines(description).split(LINE_BREAK):
+            for line in normalize_newlines(description).split(NEWLINE):
                 for match in URL_PATTERN.finditer(line):
                     url: str | None = normalize_link_candidate(match.group(0))
                     if url is None or is_youtube_host(urlsplit(url).netloc):
@@ -188,7 +188,7 @@ class SourceDescriptionLinks:
         links: list[DescriptionLink] = []
         for index, source in enumerate(sources):
             description: str = source.metadata.description if source.metadata is not None else ""
-            for raw_line in normalize_newlines(description).split(LINE_BREAK):
+            for raw_line in normalize_newlines(description).split(NEWLINE):
                 line: str = raw_line.strip()
                 for match in URL_PATTERN.finditer(line):
                     cleaned: SourceUrl = SourceUrl.of(match.group(0).strip())

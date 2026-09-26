@@ -8,11 +8,29 @@ from pathlib import Path
 import pytest
 
 from app import version as version_module
-from app.version import APP_VERSION, BUMP_FLAG, VERSION_FORMAT, bump_version_file, next_patch_version
+from app.version import (
+    APP_NAME,
+    APP_VERSION,
+    BUMP_FLAG,
+    VERSION_FORMAT,
+    VersionError,
+    bump_version_file,
+    next_patch_version,
+)
 
 
 def test_app_version_is_major_minor_patch() -> None:
     assert VERSION_FORMAT.fullmatch(APP_VERSION)
+
+
+def test_the_program_name_is_the_root_of_its_loggers_and_the_generator_of_packages() -> None:
+    assert APP_NAME == "livecraft"
+
+
+def test_a_wrong_version_names_itself_to_the_developer() -> None:
+    with pytest.raises(VersionError) as raised:
+        next_patch_version("v0.1.0")
+    assert str(raised.value) == VersionError.NOT_SEMVER.format(version="v0.1.0")
 
 
 @pytest.mark.parametrize(

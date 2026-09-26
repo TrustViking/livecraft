@@ -280,7 +280,7 @@ def test_token_with_equal_latin_and_cyrillic_is_left() -> None:
 
 
 def test_no_repair_log_line() -> None:
-    assert MergedDescription("x").with_homoglyphs_repaired("uk").log_line == "tokens_repaired=0 before_tokens=none after_tokens=none"
+    assert MergedDescription("x").with_homoglyphs_repaired("uk").log_line == "tokens_repaired=0 before_tokens=- after_tokens=-"
 
 
 # --- 3.11b: перегруженные пункты, повестка, выгрузка по источникам (донор: quality_diagnostics.py, merge_text_utils.py)

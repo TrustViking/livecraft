@@ -33,7 +33,8 @@ URL_LINE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^https?://\S+$", re.IGNO
 YOUTUBE_HOSTS: Final[frozenset[str]] = frozenset(
     {"youtu.be", "www.youtu.be", "youtube.com", "www.youtube.com", "m.youtube.com"}
 )
-WEB_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https"})
+HTTPS_SCHEME: Final[str] = "https"     # защищённая схема: ссылки формы и отбор ссылок её требуют
+WEB_SCHEMES: Final[frozenset[str]] = frozenset({"http", HTTPS_SCHEME})
 # Метки слежения в query: всё, что начинается с `utm_`, и ключи списка.
 TRACKING_QUERY_PREFIX: Final[str] = "utm_"
 TRACKING_QUERY_KEYS: Final[tuple[str, ...]] = (

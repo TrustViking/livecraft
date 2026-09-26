@@ -8,13 +8,15 @@ from collections.abc import Iterator
 import pytest
 
 from app.config.loader import FormSettings, LivecraftSettings, load_settings, save_settings_file
+from app.observability.log_event import LogArea
 from app.paths import LivecraftPaths
 from app.secretsafe.store import VaultLoad, VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
 from app.setup.migration import FormUrlMigration, FormUrlMigrationResult, MigrationOutcome
 from app.setup.readiness import Readiness
-from app.tests.conftest import LEGACY_FORM_URL, REPO_SETTINGS_FILE, SUPPLIED_VALUES, LogCollector, write_supplied_vault
+from app.tests.conftest import LEGACY_FORM_URL, REPO_SETTINGS_FILE, SUPPLIED_VALUES, write_supplied_vault
+from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
 
 OWN_FORM_URL: str = "https://forms.gle/OwnFormCode12345"
@@ -25,18 +27,10 @@ UNPARSABLE_FORM_URL: str = "https://[bad"
 
 
 @pytest.fixture
-def setup_log() -> Iterator[LogCollector]:
+def setup_log() -> Iterator[LogCapture]:
     """Записи логгера livecraft.setup за время теста."""
-    logger: logging.Logger = logging.getLogger("livecraft.setup")
-    collector: LogCollector = LogCollector()
-    level: int = logger.level
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(collector)
-    try:
-        yield collector
-    finally:
-        logger.removeHandler(collector)
-        logger.setLevel(level)
+    with LogCapture.on(LogArea.SETUP, logging.DEBUG) as capture:
+        yield capture
 
 
 def _save_own(paths: LivecraftPaths, values: dict[SecretField, str]) -> None:
@@ -57,7 +51,7 @@ def _planned(paths: LivecraftPaths) -> FormUrlMigration:
     return migration
 
 
-def _texts(result: FormUrlMigrationResult, log: LogCollector) -> str:
+def _texts(result: FormUrlMigrationResult, log: LogCapture) -> str:
     return "\n".join((result.console_line, result.log_line, repr(result), *log.messages()))
 
 
@@ -103,7 +97,7 @@ def test_the_plan_masks_the_link_in_repr(ready_paths: LivecraftPaths) -> None:
 
 
 def test_the_own_link_moves_to_the_settings_and_leaves_the_own_vault(
-    ready_paths: LivecraftPaths, setup_log: LogCollector
+    ready_paths: LivecraftPaths, setup_log: LogCapture
 ) -> None:
     _save_own(ready_paths, {SecretField.KEY_FORM_URL: OWN_FORM_URL, SecretField.SHEETS_ID: OWN_SHEETS_ID})
     before: LivecraftSettings = load_settings(ready_paths.config_file)
@@ -188,7 +182,7 @@ def test_a_settings_write_failure_keeps_the_vault(ready_paths: LivecraftPaths, m
 
 
 @pytest.mark.parametrize("value", [OWN_FORM_URL, BAD_FORM_URL])
-def test_no_line_carries_the_link(ready_paths: LivecraftPaths, setup_log: LogCollector, value: str) -> None:
+def test_no_line_carries_the_link(ready_paths: LivecraftPaths, setup_log: LogCapture, value: str) -> None:
     _save_own(ready_paths, {SecretField.KEY_FORM_URL: value})
     result: FormUrlMigrationResult = _planned(ready_paths).run()
     text: str = _texts(result, setup_log)

@@ -9,9 +9,10 @@ from typing import Any
 import pytest
 
 from app.config.loader import ConfigProblem
+from app.core.text_format import TEXT_ENCODING
 from app.paths import LivecraftPaths
 from app.secretsafe.crypto import KEY_FIELDS, KEY_SALT, KEY_VERSION, KEY_WRAPPED, SALT_BYTES
-from app.secretsafe.store import VAULT_FILE_ENCODING, LocalVaultState, VaultStore
+from app.secretsafe.store import LocalVaultState, VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
 from app.setup.readiness import ModeReadiness, PartReadiness, Readiness
@@ -174,7 +175,7 @@ def test_the_summary_names_every_field_and_its_origin(ready_paths: LivecraftPath
 def test_the_summary_of_an_empty_vault_says_no_for_every_field(livecraft_paths: LivecraftPaths) -> None:
     lines: tuple[str, ...] = Readiness.check(livecraft_paths).summary_lines
     for field in SecretField.current():
-        assert msg.READINESS_FIELD_LINE.format(label=field.human_label, origin=msg.READINESS_FIELD_ABSENT) in lines
+        assert msg.READINESS_FIELD_LINE.format(label=field.human_label, origin=msg.NONE_TEXT) in lines
     assert lines[-1] == msg.READINESS_CHANNELS_ABSENT
 
 
@@ -198,10 +199,10 @@ def test_an_own_value_shows_as_own_in_the_summary(ready_paths: LivecraftPaths) -
 def test_an_unreadable_own_vault_warns_and_runs_on_supplied_values(ready_paths: LivecraftPaths) -> None:
     """§16: молчаливый откат недопустим — получатель незаметно работал бы на чужом ключе и таблице."""
     _save_own_sheets_id(ready_paths)
-    data: dict[str, Any] = json.loads(ready_paths.vault_local_file.read_text(encoding=VAULT_FILE_ENCODING))
+    data: dict[str, Any] = json.loads(ready_paths.vault_local_file.read_text(encoding=TEXT_ENCODING))
     wrapped: bytes = base64.b64decode(data[KEY_WRAPPED], validate=True)
     data[KEY_WRAPPED] = base64.b64encode(wrapped[:-1] + bytes([wrapped[-1] ^ 0xFF])).decode("ascii")
-    ready_paths.vault_local_file.write_text(json.dumps(data), encoding=VAULT_FILE_ENCODING)
+    ready_paths.vault_local_file.write_text(json.dumps(data), encoding=TEXT_ENCODING)
     readiness: Readiness = Readiness.check(ready_paths)
     assert readiness.warnings == (msg.VAULT_LOCAL_UNREADABLE,)
     assert readiness.is_ready                                  # запуск идёт — на поставочных значениях
@@ -221,7 +222,7 @@ def test_a_vault_file_of_an_unknown_format_is_named(ready_paths: LivecraftPaths)
     """§7.3: неизвестная версия формата — ошибка с именем файла и код 2, а не тихое игнорирование."""
     ready_paths.vault_local_file.write_text(
         json.dumps({KEY_VERSION: 7, KEY_SALT: base64.b64encode(bytes(SALT_BYTES)).decode("ascii"), KEY_FIELDS: {}}),
-        encoding=VAULT_FILE_ENCODING,
+        encoding=TEXT_ENCODING,
     )
     readiness: Readiness = Readiness.check(ready_paths)
     assert readiness.vault_error is not None

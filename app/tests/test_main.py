@@ -17,18 +17,14 @@ import pytest
 
 from app import main as main_module
 from app.config.loader import load_settings
+from app.core.text_format import TEXT_ENCODING
 from app.main import ExitCode, RunRequest, build_parser, run_cli
 from app.observability.logging_setup import close_logging
 from app.paths import ROOT_ENV_VAR, LivecraftPaths, build_paths, ensure_dirs
-from app.runtime.single_instance import (
-    EVENT_ACQUIRED,
-    EVENT_REJECTED,
-    EVENT_RELEASED,
-    InstanceLock,
-    LockOwner,
-)
+from app.core.clock import Clock
+from app.runtime.single_instance import InstanceLock, LockEvent, LockOwner
 from app.secretsafe.crypto import KEY_WRAPPED
-from app.secretsafe.store import VAULT_FILE_ENCODING, VaultStore
+from app.secretsafe.store import VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
 from app.packages.package import PackageResult
@@ -355,7 +351,7 @@ def test_the_run_writes_acquire_and_release_into_the_startup_log(livecraft_root:
     """Замок берётся до настройки логов, поэтому его след — logs\\startup.log (инвариант 12)."""
     assert run_cli([]) == int(ExitCode.CONFIG)
     text: str = build_paths(livecraft_root).startup_log_file.read_text(encoding="utf-8")
-    assert EVENT_ACQUIRED in text and EVENT_RELEASED in text
+    assert LockEvent.ACQUIRED.value in text and LockEvent.RELEASED.value in text
 
 
 def test_a_live_lock_stops_the_run(
@@ -367,7 +363,7 @@ def test_a_live_lock_stops_the_run(
     paths: LivecraftPaths = build_paths(livecraft_root)
     ensure_dirs(paths)
     InstanceLock(
-        path=paths.lock_file, startup_log=paths.startup_log_file, pid=live_foreign_process.pid
+        path=paths.lock_file, startup_log=paths.startup_log_file, clock=Clock.utc(), pid=live_foreign_process.pid
     ).acquire()
     held: bytes = paths.lock_file.read_bytes()
     owner: LockOwner | None = LockOwner.parse(held.decode("utf-8"))
@@ -377,7 +373,7 @@ def test_a_live_lock_stops_the_run(
     assert msg.LOCK_REJECTED.format(pid=owner.pid, started_at=owner.started_at) in captured.err
     assert captured.out == ""                                    # отказ идёт в stderr, не в stdout
     assert list(paths.logs_dir.glob(LOG_GLOB)) == []              # логи этого запуска не настраивались
-    assert EVENT_REJECTED in paths.startup_log_file.read_text(encoding="utf-8")
+    assert LockEvent.REJECTED.value in paths.startup_log_file.read_text(encoding="utf-8")
     assert paths.lock_file.read_bytes() == held                   # чужой замок не тронут
 
 
@@ -385,7 +381,7 @@ def test_a_stale_lock_does_not_stop_the_run(livecraft_root: Path, dead_pid: int)
     """Замок мёртвого процесса — застарелый: запуск идёт своим ходом и снимает его за собой."""
     paths: LivecraftPaths = build_paths(livecraft_root)
     ensure_dirs(paths)
-    InstanceLock(path=paths.lock_file, startup_log=paths.startup_log_file, pid=dead_pid).acquire()
+    InstanceLock(path=paths.lock_file, startup_log=paths.startup_log_file, clock=Clock.utc(), pid=dead_pid).acquire()
     assert run_cli([]) == int(ExitCode.CONFIG)
     assert not paths.lock_file.exists()
 
@@ -540,10 +536,10 @@ def test_an_unreadable_own_vault_is_announced_and_the_run_goes_on(
         SecretField.SHEETS_ID, SecretValue(field=SecretField.SHEETS_ID, value="1own-table-0123456789"), VaultOrigin.OWN
     )
     VaultStore.open(ready_root).save_local(own)
-    data: dict[str, object] = json.loads(ready_root.vault_local_file.read_text(encoding=VAULT_FILE_ENCODING))
+    data: dict[str, object] = json.loads(ready_root.vault_local_file.read_text(encoding=TEXT_ENCODING))
     wrapped: bytes = base64.b64decode(str(data[KEY_WRAPPED]), validate=True)
     data[KEY_WRAPPED] = base64.b64encode(wrapped[:-1] + bytes([wrapped[-1] ^ 0xFF])).decode("ascii")
-    ready_root.vault_local_file.write_text(json.dumps(data), encoding=VAULT_FILE_ENCODING)
+    ready_root.vault_local_file.write_text(json.dumps(data), encoding=TEXT_ENCODING)
     assert run_cli([]) == int(ExitCode.OK)
     out: str = capsys.readouterr().out
     assert msg.VAULT_LOCAL_UNREADABLE in out
@@ -590,7 +586,7 @@ def test_a_broken_vault_file_goes_to_the_log_with_reason_and_detail(
     window_calls: list[LivecraftPaths],
 ) -> None:
     """Английская подробность — только в лог, строкой vault_error с причиной (D4); в консоли её нет."""
-    ready_root.vault_file.write_text("{", encoding=VAULT_FILE_ENCODING)
+    ready_root.vault_file.write_text("{", encoding=TEXT_ENCODING)
     run_cli([])
     out: str = capsys.readouterr().out
     [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))

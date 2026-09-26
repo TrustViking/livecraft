@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 from langdetect import DetectorFactory
 
+from app.observability.log_event import LogArea
 from app.sources.language import (
     LanguageDecision,
     LanguageProfile,
@@ -18,6 +19,7 @@ from app.sources.language import (
     normalize_language,
 )
 from app.sources.metadata import SourceMetadata
+from app.tests.fixtures.logs import LogCapture
 
 LINK: str = "https://youtu.be/aaaaaaaaaaa"
 UKRAINIAN: str = "Сьогодні ввечері говоримо про новини економіки та політики України"
@@ -61,28 +63,10 @@ def metadata(
     )
 
 
-class _Collector(logging.Handler):
-    def __init__(self) -> None:
-        super().__init__(level=logging.DEBUG)
-        self.records: list[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-    def messages(self, level: int) -> list[str]:
-        return [record.getMessage() for record in self.records if record.levelno == level]
-
-
 @pytest.fixture
-def log() -> Iterator[_Collector]:
-    logger: logging.Logger = logging.getLogger("livecraft.sources")
-    collector: _Collector = _Collector()
-    level: int = logger.level
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(collector)
-    yield collector
-    logger.removeHandler(collector)
-    logger.setLevel(level)
+def log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.SOURCES, logging.DEBUG) as capture:
+        yield capture
 
 
 # --- normalize_language: набор сверен с донором (restreamer app\core\language.py::normalize_language)
@@ -375,25 +359,25 @@ def test_log_line_follows_the_donor_keys() -> None:
     ).decide()
     assert decision.log_line == (
         "final_language=uk source=metadata_arbitration conflict=yes metadata_candidates=uk,ru "
-        "langdetect=ru description_lang=none title_lang=uk audio_lang=uk auto_caption_orig=none"
+        "langdetect=ru description_lang=- title_lang=uk audio_lang=uk auto_caption_orig=-"
     )
 
 
-def test_undetected_log_line_says_unknown_and_none() -> None:
+def test_undetected_log_line_says_unknown_and_writes_empty_as_dash() -> None:
     assert profile().decide().log_line == (
-        "final_language=unknown source=undetected conflict=no metadata_candidates=none "
-        "langdetect=none description_lang=none title_lang=none audio_lang=none auto_caption_orig=none"
+        "final_language=unknown source=undetected conflict=no metadata_candidates=- "
+        "langdetect=- description_lang=- title_lang=- audio_lang=- auto_caption_orig=-"
     )
 
 
-def test_resolver_logs_info_for_a_decision(resolver: LanguageResolver, log: _Collector) -> None:
+def test_resolver_logs_info_for_a_decision(resolver: LanguageResolver, log: LogCapture) -> None:
     decision: LanguageDecision = resolver.resolve(metadata(title=UKRAINIAN, youtube_language="uk"))
     assert decision.language == "uk"
     assert f"language_decision url={LINK} {decision.log_line}" in log.messages(logging.INFO)
     assert not log.messages(logging.WARNING)
 
 
-def test_resolver_warns_when_undetected(resolver: LanguageResolver, log: _Collector) -> None:
+def test_resolver_warns_when_undetected(resolver: LanguageResolver, log: LogCapture) -> None:
     decision: LanguageDecision = resolver.resolve(metadata(title="Коротко"))
     assert not decision.is_resolved
     assert f"language_decision url={LINK} {decision.log_line}" in log.messages(logging.WARNING)

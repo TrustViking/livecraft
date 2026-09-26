@@ -7,10 +7,11 @@ from typing import Any
 
 import pytest
 
+from app.core.text_format import TEXT_ENCODING
 from app.paths import LivecraftPaths
 from app.secretsafe.crypto import KEY_WRAPPED, VaultFormatError
 from app.secretsafe.dpapi import Dpapi, DpapiUnavailable
-from app.secretsafe.store import VAULT_FILE_ENCODING, LocalVaultState, ProgramKey, VaultStore
+from app.secretsafe.store import LocalVaultState, ProgramKey, VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
 from app.setup.panels.keys_panel import KeyRow, KeysPanel, KeysPanelEdit, RowAction
@@ -124,8 +125,8 @@ def test_an_empty_field_offers_only_enter_and_says_none(bare_store: VaultStore) 
     panel: KeysPanel = KeysPanel.from_store(bare_store)
     for row in panel.rows:
         assert row.actions == ENTER_ONLY
-        assert row.origin_label == msg.READINESS_FIELD_ABSENT
-        assert row.display == msg.READINESS_FIELD_ABSENT
+        assert row.origin_label == msg.NONE_TEXT
+        assert row.display == msg.NONE_TEXT
 
 
 # --- замена своим
@@ -223,8 +224,8 @@ def test_reset_without_a_supplied_value_leaves_no_field(bare_store: VaultStore) 
     reset: KeysPanel = edited.reset(SecretField.OPENAI_API_KEY)
     row: KeyRow = _row(reset, SecretField.OPENAI_API_KEY)
     assert reset.vault.get(SecretField.OPENAI_API_KEY) is None
-    assert row.origin_label == msg.READINESS_FIELD_ABSENT
-    assert row.display == msg.READINESS_FIELD_ABSENT
+    assert row.origin_label == msg.NONE_TEXT
+    assert row.display == msg.NONE_TEXT
     assert row.actions == ENTER_ONLY
 
 
@@ -235,7 +236,6 @@ def test_reset_of_a_saved_own_field_shows_the_supplied_one_under_it(store: Vault
     supplied: SecretValue | None = saved.supplied.get(SecretField.SHEETS_ID)
     assert supplied is not None and supplied.reveal() == SUPPLIED_VALUES[SecretField.SHEETS_ID]
     assert _row(reset, SecretField.SHEETS_ID).display == supplied.masked
-
 
 
 # --- подпись кнопки сброса
@@ -379,9 +379,9 @@ def test_with_dpapi_the_no_own_notice_is_absent(store: VaultStore) -> None:
 
 def _break_local_key(store: VaultStore) -> None:
     """Личный файл есть, но без записи «key»: он целый, но не наш — UNREADABLE (§14, решение 9)."""
-    data: dict[str, Any] = json.loads(store.local_path.read_text(encoding=VAULT_FILE_ENCODING))
+    data: dict[str, Any] = json.loads(store.local_path.read_text(encoding=TEXT_ENCODING))
     del data[KEY_WRAPPED]
-    store.local_path.write_text(json.dumps(data), encoding=VAULT_FILE_ENCODING)
+    store.local_path.write_text(json.dumps(data), encoding=TEXT_ENCODING)
 
 
 def test_an_unreadable_local_file_is_announced_with_the_replacement_notice(store: VaultStore) -> None:
@@ -408,14 +408,13 @@ def test_the_first_save_replaces_the_unreadable_local_file(store: VaultStore) ->
     assert saved.own.get(SecretField.SHEETS_ID) is None
 
 
-
 # --- повреждённый личный файл — вкладка открывается и первое сохранение его заменяет (D9)
 
 BROKEN_LOCAL_TEXT: str = "{ не json"
 
 
 def test_a_broken_local_file_opens_the_panel_with_the_broken_notice(store: VaultStore) -> None:
-    store.local_path.write_text(BROKEN_LOCAL_TEXT, encoding=VAULT_FILE_ENCODING)
+    store.local_path.write_text(BROKEN_LOCAL_TEXT, encoding=TEXT_ENCODING)
     panel: KeysPanel = KeysPanel.from_store(store)
     assert panel.local_state is LocalVaultState.BROKEN
     assert msg.SETUP_KEYS_NOTICE_LOCAL_BROKEN in panel.notices
@@ -425,7 +424,7 @@ def test_a_broken_local_file_opens_the_panel_with_the_broken_notice(store: Vault
 
 
 def test_a_broken_local_file_is_replaced_by_the_first_save(store: VaultStore) -> None:
-    store.local_path.write_text(BROKEN_LOCAL_TEXT, encoding=VAULT_FILE_ENCODING)
+    store.local_path.write_text(BROKEN_LOCAL_TEXT, encoding=TEXT_ENCODING)
     panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID))
     saved: KeysPanel = panel.save(store)
     assert saved.local_state is LocalVaultState.READ
@@ -436,7 +435,7 @@ def test_a_broken_local_file_is_replaced_by_the_first_save(store: VaultStore) ->
 
 def test_a_broken_local_file_without_dpapi_keeps_the_no_own_notice(ready_paths: LivecraftPaths) -> None:
     """«Сохранение заменит» честно только там, где сохранить можно."""
-    ready_paths.vault_local_file.write_text(BROKEN_LOCAL_TEXT, encoding=VAULT_FILE_ENCODING)
+    ready_paths.vault_local_file.write_text(BROKEN_LOCAL_TEXT, encoding=TEXT_ENCODING)
     panel: KeysPanel = KeysPanel.from_store(_no_dpapi_store(ready_paths))
     assert panel.local_state is LocalVaultState.BROKEN
     assert msg.SETUP_KEYS_NOTICE_NO_OWN in panel.notices
@@ -444,7 +443,7 @@ def test_a_broken_local_file_without_dpapi_keeps_the_no_own_notice(ready_paths: 
 
 
 def test_a_broken_supplied_file_still_stops_the_panel(ready_paths: LivecraftPaths) -> None:
-    ready_paths.vault_file.write_text(BROKEN_LOCAL_TEXT, encoding=VAULT_FILE_ENCODING)
+    ready_paths.vault_file.write_text(BROKEN_LOCAL_TEXT, encoding=TEXT_ENCODING)
     with pytest.raises(VaultFormatError) as raised:
         KeysPanel.from_store(VaultStore.open(ready_paths))
     assert raised.value.advice == msg.VAULT_FILE_ADVICE_SUPPLIED

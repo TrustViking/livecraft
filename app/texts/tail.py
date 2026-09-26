@@ -16,12 +16,13 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Final
 
-from app.core.url_text import SourceUrl, dedupe_nonempty
-from app.observability.logging_setup import get_logger
+from app.core.text_format import PARAGRAPH_BREAK, SPACE
+from app.core.url_text import LINK_EDGE_CHARS, LINK_TRAILING_PUNCTUATION, SourceUrl, dedupe_nonempty
+from app.observability.log_event import LogArea, get_logger
 from app.texts.description_marks import ALLOWED_BULLET_MARKERS, URL_LINE_PATTERN, CtaLexicon
 from app.texts.paragraphs import split_paragraphs
 
-LOGGER = get_logger("texts")
+LOGGER = get_logger(LogArea.TEXTS)
 
 HASHTAG_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"^#[^\s#]+$")
 _MARKER_ALTERNATIVES: Final[str] = "|".join(re.escape(marker) for marker in ALLOWED_BULLET_MARKERS)
@@ -34,19 +35,15 @@ URL_TAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?is)(?:^|[\s\(\[])(http
 HASHTAG_TAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?is)(#[^\s#]+(?:\s+#[^\s#]+)*)\s*$")
 SENTENCE_BREAK_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?<=[.!?…])\s+")
 WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
-URL_EDGE_CHARS: Final[str] = "<>()[]{}"
-URL_TRAILING_PUNCTUATION: Final[str] = ".,;"
 HASHTAG_PREFIX_TRIM: Final[str] = " ,;"
 CTA_LINE_LEAD_CHARS: Final[str] = "-*•> "
 # Строка-призыв без подсказки в начале — не длиннее 200 знаков (длинный абзац со словом «комментарий» — не призыв).
 STANDALONE_CTA_MAX_CHARS: Final[int] = 200
-PARAGRAPH_JOINER: Final[str] = "\n\n"
-TOKEN_JOINER: Final[str] = " "
 
 
 def is_source_url_line(line: str) -> bool:
     """Строка — одна ссылка http(s) (обрамление скобками и знаки препинания в конце не мешают)."""
-    candidate: str = str(line or "").strip().strip(URL_EDGE_CHARS).rstrip(URL_TRAILING_PUNCTUATION)
+    candidate: str = str(line or "").strip().strip(LINK_EDGE_CHARS).rstrip(LINK_TRAILING_PUNCTUATION)
     return bool(candidate and URL_LINE_PATTERN.fullmatch(candidate))
 
 
@@ -67,7 +64,7 @@ def merge_hashtag_lines(lines: Iterable[str]) -> str:
                 continue
             seen.add(cleaned.lower())
             tokens.append(cleaned)
-    return TOKEN_JOINER.join(tokens)
+    return SPACE.join(tokens)
 
 
 def dedupe_cta_lines(lines: Iterable[str]) -> tuple[str, ...]:
@@ -335,4 +332,4 @@ class EmbeddedTail:
             url_change_count=changes,
             malformed_urls_dropped=malformed,
         )
-        return cls(body_text=PARAGRAPH_JOINER.join(kept).strip(), fragments=fragments)
+        return cls(body_text=PARAGRAPH_BREAK.join(kept).strip(), fragments=fragments)

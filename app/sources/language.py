@@ -22,13 +22,12 @@ from typing import Final
 from langdetect import DetectorFactory, detect
 from langdetect.lang_detect_exception import LangDetectException
 
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 from app.resources.loader import TextResource
 from app.sources.metadata import SourceMetadata
 from app.texts.analysis_text import clean_text_for_analysis
 
-LOGGER_NAME: Final[str] = "sources"
-LOGGER = get_logger(LOGGER_NAME)
+LOGGER = get_logger(LogArea.SOURCES)
 
 SERVICE_HINTS_RESOURCE: Final[str] = "merge_service_hints.txt"
 DETECTOR_SEED: Final[int] = 0              # langdetect без сида отвечает по-разному на один текст
@@ -46,9 +45,6 @@ LANGUAGE_ALIASES: Final[dict[str, str]] = {
 }
 LANGUAGE_CODE_PATTERN: Final[re.Pattern[str]] = re.compile(r"([a-z]{2,3})(?:-[a-z]{2,3})?")
 LANGUAGE_PREFIXES: Final[tuple[tuple[str, str], ...]] = (("uk", "uk"), ("ua", "uk"), ("en", "en"), ("ru", "ru"))
-NO_VALUE: Final[str] = "none"
-UNDETECTED_LANGUAGE: Final[str] = "unknown"     # так строку лога писал донор — для сверки логов
-LIST_JOINER: Final[str] = ","
 
 
 def normalize_language(raw: str | None) -> str | None:
@@ -248,17 +244,17 @@ class LanguageProfile:
 
     @staticmethod
     def _votes_line(votes: dict[LanguageSignal, str]) -> str:
-        return LIST_JOINER.join(f"{signal.value}:{code}" for signal, code in votes.items()) or NO_VALUE
+        return LogValue.LIST_SEPARATOR.join(f"{signal.value}:{code}" for signal, code in votes.items()) or LogValue.EMPTY.value
 
     @property
     def log_line(self) -> str:
         return (
-            f"video={self.video_language or NO_VALUE} channel={self.channel_language or NO_VALUE} "
-            f"audio={LIST_JOINER.join(self.audio_languages) or NO_VALUE} "
-            f"subtitles={LIST_JOINER.join(self.subtitle_languages) or NO_VALUE} "
-            f"auto_caption_orig={self.auto_caption_orig_language or NO_VALUE} "
-            f"title={self.title_language or NO_VALUE} description={self.description_language or NO_VALUE} "
-            f"text={self.text_language or NO_VALUE}"
+            f"video={self.video_language or LogValue.EMPTY.value} channel={self.channel_language or LogValue.EMPTY.value} "
+            f"audio={LogValue.LIST_SEPARATOR.join(self.audio_languages) or LogValue.EMPTY.value} "
+            f"subtitles={LogValue.LIST_SEPARATOR.join(self.subtitle_languages) or LogValue.EMPTY.value} "
+            f"auto_caption_orig={self.auto_caption_orig_language or LogValue.EMPTY.value} "
+            f"title={self.title_language or LogValue.EMPTY.value} description={self.description_language or LogValue.EMPTY.value} "
+            f"text={self.text_language or LogValue.EMPTY.value}"
         )
 
 
@@ -280,14 +276,14 @@ class LanguageDecision:
         """key=value по образцу `log_language_decision` донора; нет значения — `none`."""
         profile: LanguageProfile = self.profile
         return (
-            f"final_language={self.language or UNDETECTED_LANGUAGE} source={self.source.value} "
+            f"final_language={self.language or LogValue.UNKNOWN.value} source={self.source.value} "
             f"conflict={'yes' if self.is_conflict else 'no'} "
-            f"metadata_candidates={LIST_JOINER.join(profile.metadata_candidates) or NO_VALUE} "
-            f"langdetect={profile.text_language or NO_VALUE} "
-            f"description_lang={profile.description_language or NO_VALUE} "
-            f"title_lang={profile.title_language or NO_VALUE} "
-            f"audio_lang={profile.audio_first or NO_VALUE} "
-            f"auto_caption_orig={profile.auto_caption_orig_language or NO_VALUE}"
+            f"metadata_candidates={LogValue.LIST_SEPARATOR.join(profile.metadata_candidates) or LogValue.EMPTY.value} "
+            f"langdetect={profile.text_language or LogValue.EMPTY.value} "
+            f"description_lang={profile.description_language or LogValue.EMPTY.value} "
+            f"title_lang={profile.title_language or LogValue.EMPTY.value} "
+            f"audio_lang={profile.audio_first or LogValue.EMPTY.value} "
+            f"auto_caption_orig={profile.auto_caption_orig_language or LogValue.EMPTY.value}"
         )
 
 

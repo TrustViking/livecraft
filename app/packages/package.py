@@ -10,8 +10,6 @@ ZIP: `manifest.json` первым, затем обложки `previews/`. Фор
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import zipfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -21,26 +19,23 @@ from pathlib import Path
 from typing import Any, Final
 
 from app.config.loader import FormSettings, LivecraftSettings
-from app.core.dates import DATE_FORMAT, DATETIME_FORMAT, SLOT_TIME_FORMAT
-from app.observability.logging_setup import get_logger
-from app.paths import TEMP_FILE_SUFFIX
+from app.core.dates import DATE_FORMAT, DATETIME_FORMAT, SLOT_TIME_FORMAT, require_aware
+from app.core.text_format import TEXT_ENCODING
+from app.observability.log_event import LogArea, get_logger
+from app.paths import AtomicFile
 from app.slots.slot import StreamSlot
 from app.ui import messages_ru as msg
-from app.version import APP_VERSION
+from app.version import APP_NAME, APP_VERSION
 
-LOGGER_NAME: Final[str] = "packages"
-LOGGER = get_logger(LOGGER_NAME)
+LOGGER = get_logger(LogArea.PACKAGES)
 
 # Формат пакета — единственный источник (донор PlanerPackageFormat); читатель — planers _ManifestParser.
 SCHEMA_VERSION: Final[int] = 1
 MANIFEST_NAME: Final[str] = "manifest.json"
-MANIFEST_ENCODING: Final[str] = "utf-8"
 JSON_INDENT: Final[int] = 2
 PREVIEWS_DIR: Final[str] = "previews"
 PREVIEW_NAME_TEMPLATE: Final[str] = PREVIEWS_DIR + "/{slot_id}_{index}.jpg"   # обложки всегда JPEG (Preview)
 FILE_NAME_TEMPLATE: Final[str] = "plan_{period_from}_{period_to}_gen{generated_date}-{generated_time}.bcast"
-GENERATOR_PROJECT: Final[str] = "livecraft"
-TEMP_SUFFIX: Final[str] = TEMP_FILE_SUFFIX
 TEMP_PREFIX_TEMPLATE: Final[str] = ".{stem}_"    # точка впереди: недописанный пакет не похож на plan_*.bcast
 PREVIEW_INDEX_START: Final[int] = 1
 
@@ -110,8 +105,7 @@ class SlotPackage:
         """Пакет запуска: момент сборки — в зоне программы; слот с проблемой в пакет не идёт (planers его
         не прочтёт), повтор slot_id — побеждает более поздний (донор). Оба случая — WARNING в лог.
         """
-        if generated_at.tzinfo is None or generated_at.utcoffset() is None:
-            raise ValueError("generated_at must be timezone-aware")
+        require_aware(generated_at)
         by_id: dict[str, StreamSlot] = {}
         for slot in slots:
             if slot.problem is not None:
@@ -173,7 +167,7 @@ class SlotPackage:
             "schema_version": SCHEMA_VERSION,
             "package_id": self.package_id,
             "generated_at": self.generated_at.strftime(DATETIME_FORMAT),
-            "generator": {"project": GENERATOR_PROJECT, "version": APP_VERSION, "run_id": self.package_id},
+            "generator": {"project": APP_NAME, "version": APP_VERSION, "run_id": self.package_id},
             "timezone": self.timezone,
             "period": {"from": self.period_from, "to": self.period_to},
             "form": self.form.to_data(),
@@ -217,22 +211,13 @@ class SlotPackage:
 
     def _write_atomically(self, target: Path) -> None:
         """Читатель видит либо прежний пакет с тем же именем, либо новый целиком — недописанного не бывает."""
-        handle, temp_name = tempfile.mkstemp(
-            prefix=TEMP_PREFIX_TEMPLATE.format(stem=target.stem), suffix=TEMP_SUFFIX, dir=target.parent
-        )
-        os.close(handle)
-        temp_path: Path = Path(temp_name)
-        try:
-            self._write_archive(temp_path)
-            os.replace(temp_path, target)
-        finally:
-            temp_path.unlink(missing_ok=True)       # после os.replace файла уже нет — ничего не делает
+        AtomicFile(target=target, prefix=TEMP_PREFIX_TEMPLATE.format(stem=target.stem)).write(self._write_archive)
 
     def _write_archive(self, archive_path: Path) -> None:
         """manifest.json первым, затем обложки слотов в порядке слотов и обложек."""
         manifest_bytes: bytes = json.dumps(
             self.manifest, ensure_ascii=False, indent=JSON_INDENT
-        ).encode(MANIFEST_ENCODING)
+        ).encode(TEXT_ENCODING)
         with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr(MANIFEST_NAME, manifest_bytes)
             for slot in self.slots:

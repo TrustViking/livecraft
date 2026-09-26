@@ -853,3 +853,9 @@ def test_rendering_settings_built_around_the_loader_with_nan_fails() -> None:
     )
     with pytest.raises(ValueError):
         render_settings_file(settings)
+
+
+def test_before_the_settings_are_read_the_clock_runs_in_the_zone_of_the_shipped_template() -> None:
+    """Замок, startup.log, имя лога и шапка ставят время до чтения настроек — по поясу поставочного шаблона."""
+    assert SHIPPED_SETTINGS.clock.zone == SHIPPED_SETTINGS.settings.zone
+    assert SHIPPED_SETTINGS.clock.now().tzinfo == SHIPPED_SETTINGS.settings.zone

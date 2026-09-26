@@ -1,4 +1,4 @@
-"""Где лежат файлы замка: стандарт в пакете, реестр и исключения в данных тестов (REFACTORING_STANDARD.md §6)."""
+"""Где лежат файлы замка: стандарт в пакете, реестр и исключения в данных тестов (CLAUDE.md §11)."""
 from __future__ import annotations
 
 from dataclasses import dataclass

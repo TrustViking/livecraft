@@ -27,6 +27,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 from urllib.parse import SplitResult, urlsplit
 
+from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
 from app.llm.merges.agenda import AgendaLexicon
 from app.llm.merges.blocks import DescriptionBlocks
 from app.llm.merges.quality import (
@@ -54,7 +55,7 @@ from app.llm.merges.rules import (
     PARAGRAPH_PREFIX_MIN_CHARS,
     PARAGRAPH_PREFIX_RATIO,
 )
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 from app.texts.analysis_text import is_service_tail_paragraph
 from app.texts.description_marks import (
     ALLOWED_BULLET_MARKERS,
@@ -69,8 +70,6 @@ from app.texts.paragraphs import has_duplicate_paragraphs, normalize_newlines, s
 if TYPE_CHECKING:
     from app.llm.merges.hook import BadHookLexicon
 
-PARAGRAPH_JOINER: Final[str] = "\n\n"
-LINE_JOINER: Final[str] = "\n"
 WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 META_LINE_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?i)^\s*(?:title|description|sources?)\s*:")
 
@@ -108,10 +107,8 @@ CYRILLIC_CHAR_PATTERN: Final[re.Pattern[str]] = re.compile(r"[А-Яа-яЁёІі
 LATIN_CHAR_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Za-z]")
 # Слово — буквы латиницы и кириллицы с апострофами (ʼ и '); цифры, знаки и пробелы — границы слова.
 WORD_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile("[A-Za-zА-Яа-яЁёІіЇїЄєҐґ\u02bc']+")
-TOKENS_JOINER: Final[str] = ","
-LOG_NONE: Final[str] = "none"
 
-LOGGER: logging.Logger = get_logger("llm")
+LOGGER: logging.Logger = get_logger(LogArea.LLM)
 # Имя собственное для перегруженного пункта: от двух до четырёх слов подряд с заглавной буквы.
 PROPER_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"\b[A-ZА-ЯЁІЇЄҐ][a-zа-яёіїєґ'`-]{1,25}(?:\s+[A-ZА-ЯЁІЇЄҐ][a-zа-яёіїєґ'`-]{1,25}){1,3}\b", re.UNICODE
@@ -183,7 +180,7 @@ class HookParagraph:
         Несколько строк: пункт — первая строка после первой, начинающаяся маркером. Одна строка: самый ранний
         маркер после начала строки, перед ним — только пробелы после последнего конца фразы дальше 40-го знака.
         """
-        hook_lines: list[str] = self.text.split(LINE_JOINER)
+        hook_lines: list[str] = self.text.split(NEWLINE)
         if len(hook_lines) > 1:
             return self._split_multiline(hook_lines)
         return self._split_single_line(self.text.strip())
@@ -191,7 +188,7 @@ class HookParagraph:
     def _split_multiline(self, hook_lines: list[str]) -> tuple[str, str | None]:
         for line_index in range(1, len(hook_lines)):
             if _line_starts_with_bullet(hook_lines[line_index]):
-                return LINE_JOINER.join(hook_lines[:line_index]).strip(), hook_lines[line_index].strip()
+                return NEWLINE.join(hook_lines[:line_index]).strip(), hook_lines[line_index].strip()
         return self.text, None
 
     def _split_single_line(self, single_line: str) -> tuple[str, str | None]:
@@ -273,8 +270,8 @@ class HomoglyphRepair:
     def log_line(self) -> str:
         return (
             f"tokens_repaired={self.tokens_repaired} "
-            f"before_tokens={TOKENS_JOINER.join(self.tokens_before) or LOG_NONE} "
-            f"after_tokens={TOKENS_JOINER.join(self.tokens_after) or LOG_NONE}"
+            f"before_tokens={LogValue.LIST_SEPARATOR.join(self.tokens_before) or LogValue.EMPTY.value} "
+            f"after_tokens={LogValue.LIST_SEPARATOR.join(self.tokens_after) or LogValue.EMPTY.value}"
         )
 
 
@@ -299,7 +296,7 @@ class MergedDescription:
         if len(paragraphs) < 2:
             return False
         hook_text: str = paragraphs[0].strip()
-        body_opener_line: str = paragraphs[1].split(LINE_JOINER)[0].strip()
+        body_opener_line: str = paragraphs[1].split(NEWLINE)[0].strip()
         if len(hook_text) < ECHO_MIN_CHARS or len(body_opener_line) < ECHO_MIN_CHARS:
             return False
         if _common_prefix_ratio(hook_text, body_opener_line) > ECHO_PREFIX_RATIO:
@@ -343,16 +340,16 @@ class MergedDescription:
 
     @staticmethod
     def _without_echo_prefix(hook: str, echo: str, remaining: list[str]) -> MergedDescription | None:
-        echo_lines: list[str] = echo.split(LINE_JOINER)
+        echo_lines: list[str] = echo.split(NEWLINE)
         first_bullet_index: int | None = next(
             (index for index, line in enumerate(echo_lines) if _line_starts_with_bullet(line)), None
         )
         if first_bullet_index is not None:
-            trimmed_echo: str = LINE_JOINER.join(echo_lines[first_bullet_index:])
-            return MergedDescription(PARAGRAPH_JOINER.join([hook, trimmed_echo, *remaining]))
+            trimmed_echo: str = NEWLINE.join(echo_lines[first_bullet_index:])
+            return MergedDescription(PARAGRAPH_BREAK.join([hook, trimmed_echo, *remaining]))
         if not remaining or not _line_starts_with_bullet(remaining[0]):
             return None
-        return MergedDescription(PARAGRAPH_JOINER.join([hook, *remaining]))
+        return MergedDescription(PARAGRAPH_BREAK.join([hook, *remaining]))
 
     def _with_fused_bullet_moved(self) -> MergedDescription | None:
         paragraphs: list[str] = self.paragraphs
@@ -362,13 +359,13 @@ class MergedDescription:
         clean_hook, extracted_bullet = HookParagraph(paragraphs[0]).split_trailing_bullet()
         if extracted_bullet is None:
             return None
-        body_bullets: list[str] = [line.strip() for line in body_block.split(LINE_JOINER) if _line_starts_with_bullet(line)]
+        body_bullets: list[str] = [line.strip() for line in body_block.split(NEWLINE) if _line_starts_with_bullet(line)]
         is_same_bullet: bool = bool(body_bullets) and (
             WHITESPACE_RUN_PATTERN.sub(" ", body_bullets[0])
             == WHITESPACE_RUN_PATTERN.sub(" ", extracted_bullet.strip())
         )
-        new_body: str = body_block if is_same_bullet else extracted_bullet + LINE_JOINER + body_block
-        repaired: MergedDescription = MergedDescription(PARAGRAPH_JOINER.join([clean_hook, new_body, *paragraphs[2:]]))
+        new_body: str = body_block if is_same_bullet else extracted_bullet + NEWLINE + body_block
+        repaired: MergedDescription = MergedDescription(PARAGRAPH_BREAK.join([clean_hook, new_body, *paragraphs[2:]]))
         return None if repaired.has_hook_echo_in_body else repaired
 
     def opens_with_cta(self, lexicon: CtaLexicon) -> bool:
@@ -376,7 +373,7 @@ class MergedDescription:
         paragraphs: list[str] = self.paragraphs
         if not paragraphs:
             return False
-        for raw_line in paragraphs[0].split(LINE_JOINER):
+        for raw_line in paragraphs[0].split(NEWLINE):
             line: str = str(raw_line or "").strip()
             if line:
                 return lexicon.starts_with_prefix(line)
@@ -385,9 +382,9 @@ class MergedDescription:
     def without_meta_lines(self) -> MergedDescription:
         """Без строк-заголовков «title:», «description:», «source(s):»; концы строк и края текста без пробелов."""
         kept_lines: list[str] = [
-            line.rstrip() for line in normalize_newlines(self.text).split(LINE_JOINER) if not META_LINE_PATTERN.match(line.strip())
+            line.rstrip() for line in normalize_newlines(self.text).split(NEWLINE) if not META_LINE_PATTERN.match(line.strip())
         ]
-        return MergedDescription(LINE_JOINER.join(kept_lines).strip())
+        return MergedDescription(NEWLINE.join(kept_lines).strip())
 
     def with_homoglyphs_repaired(self, language: str) -> HomoglyphRepair:
         """Слова кириллицей с латинскими двойниками букв исправлены (только uk и ru; прочие языки — как есть)."""
@@ -414,7 +411,7 @@ class MergedDescription:
     @property
     def _trimmed_lines_text(self) -> str:
         """Переводы строки — `\\n`, концы строк и края текста без пробелов."""
-        return LINE_JOINER.join(line.rstrip() for line in normalize_newlines(self.text).split(LINE_JOINER)).strip()
+        return NEWLINE.join(line.rstrip() for line in normalize_newlines(self.text).split(NEWLINE)).strip()
 
     def quality_normalized(self, request: QualityRequest, rules: QualityRules) -> QualityNormalization:
         """Описание в виде донора и диагностика итогового текста.
@@ -443,7 +440,7 @@ class MergedDescription:
     def overloaded_bullet_count(self) -> int:
         """Пункты с маркером-эмодзи длиннее 500 знаков или длиннее 280 знаков с тремя и больше именами."""
         count: int = 0
-        for line in normalize_newlines(self.text).split(LINE_JOINER):
+        for line in normalize_newlines(self.text).split(NEWLINE):
             stripped: str = line.strip()
             if not stripped.startswith(BULLET_PREFIXES):
                 continue
@@ -460,7 +457,7 @@ class MergedDescription:
     @property
     def looks_like_per_source_dump(self) -> bool:
         """Описание пересказывает источники по очереди («Source 1: …», «Video 2: …»), а не сводит их."""
-        lines: list[str] = [line.strip() for line in normalize_newlines(self.text).split(LINE_JOINER) if line.strip()]
+        lines: list[str] = [line.strip() for line in normalize_newlines(self.text).split(NEWLINE) if line.strip()]
         if sum(1 for line in lines if SOURCE_LINE_PATTERN.match(line)) >= SOURCE_LINE_MIN_HITS:
             return True
         lowered_text: str = str(self.text or "").lower()
@@ -502,19 +499,19 @@ class MergedDescription:
         """Описание без эмодзи вне маркеров пунктов (пустые строки — пустыми) и изменилось ли оно."""
         lines: list[str] = []
         changed: bool = False
-        for raw_line in normalize_newlines(self.text).split(LINE_JOINER):
+        for raw_line in normalize_newlines(self.text).split(NEWLINE):
             if not raw_line.strip():
                 lines.append("")
                 continue
             line, line_changed = _without_emoji_in_line(raw_line)
             lines.append(line)
             changed = changed or line_changed
-        return MergedDescription(LINE_JOINER.join(lines).strip()), changed
+        return MergedDescription(NEWLINE.join(lines).strip()), changed
 
     @property
     def has_adjacent_duplicate_lines(self) -> bool:
         """Две соседние строки почти одинаковы: длинное общее начало или почти те же смысловые слова."""
-        lines: list[str] = [line.strip() for line in normalize_newlines(self.text).split(LINE_JOINER)]
+        lines: list[str] = [line.strip() for line in normalize_newlines(self.text).split(NEWLINE)]
         return any(_lines_repeat(current, following) for current, following in zip(lines, lines[1:]))
 
     @property
@@ -560,7 +557,7 @@ class MergedDescription:
         lines: list[str] = [
             line.strip()
             for paragraph in self.paragraphs[:OPENING_PARAGRAPHS]
-            for line in paragraph.split(LINE_JOINER)
+            for line in paragraph.split(NEWLINE)
             if line.strip()
         ]
         return lines[:OPENING_LINES]

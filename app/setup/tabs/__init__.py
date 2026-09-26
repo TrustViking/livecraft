@@ -19,8 +19,8 @@ from app.ui import messages_ru as msg
 PAD: Final[int] = 6
 TEXT_WRAP_PIXELS: Final[int] = 760
 PROBLEM_FOREGROUND: Final[str] = "#b00020"
-NOTICE_JOINER: Final[str] = "\n\n"
 TEXT_KEY: Final[str] = "text"
+READONLY: Final[str] = "readonly"          # состояние ttk.Combobox: только выбор из списка
 BREAK: Final[str] = "break"                 # ответ обработчика Tk: дальше событие не идёт
 CONTROL_KEY_PRESS: Final[str] = "<Control-KeyPress>"
 PASTE_EVENT: Final[str] = "<<Paste>>"

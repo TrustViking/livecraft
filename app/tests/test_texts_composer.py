@@ -6,8 +6,9 @@ from collections.abc import Iterator
 
 import pytest
 
+from app.observability.log_event import LogArea
 from app.resources.loader import TextResource
-from app.tests.conftest import LogCollector
+from app.tests.fixtures.logs import LogCapture
 from app.texts.composer import HEADINGS_RESOURCE, DescriptionParts, HeadingKind, PublishHeadings
 
 HEADINGS: PublishHeadings = PublishHeadings.load()
@@ -23,15 +24,9 @@ DONOR_SEED: dict[str, dict[str, str]] = {
 
 
 @pytest.fixture
-def texts_log() -> Iterator[LogCollector]:
-    collector: LogCollector = LogCollector()
-    logger: logging.Logger = logging.getLogger("livecraft.texts")
-    logger.addHandler(collector)
-    previous: int = logger.level
-    logger.setLevel(logging.DEBUG)
-    yield collector
-    logger.setLevel(previous)
-    logger.removeHandler(collector)
+def texts_log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.TEXTS, logging.DEBUG) as capture:
+        yield capture
 
 
 # --- заголовки
@@ -48,21 +43,21 @@ def test_seeded_languages_have_their_headings(language: str, expected: str) -> N
 
 
 @pytest.mark.parametrize("language", ["unknown", "other", "", "xx", "und", "none"])
-def test_service_language_codes_give_english_silently(language: str, texts_log: LogCollector) -> None:
+def test_service_language_codes_give_english_silently(language: str, texts_log: LogCapture) -> None:
     assert HEADINGS.official_links(language) == "🌐 Official links:"
     assert HEADINGS.recommended_materials(language) == "Recommended materials:"
     assert texts_log.messages() == []
 
 
 @pytest.mark.parametrize("language", ["ru-RU", "english", "12"])
-def test_malformed_language_codes_give_english_with_a_warning(language: str, texts_log: LogCollector) -> None:
+def test_malformed_language_codes_give_english_with_a_warning(language: str, texts_log: LogCapture) -> None:
     assert HEADINGS.official_links(language) == "🌐 Official links:"
     assert texts_log.messages(logging.WARNING) == [
         f"heading_cache_invalid_language_format kind=official_links language={language!r}"
     ]
 
 
-def test_a_language_outside_the_file_gives_english_and_a_log_line(texts_log: LogCollector) -> None:
+def test_a_language_outside_the_file_gives_english_and_a_log_line(texts_log: LogCapture) -> None:
     assert HEADINGS.resolve(HeadingKind.RECOMMENDED_MATERIALS, "de") == "Recommended materials:"
     assert texts_log.messages() == ["heading_fallback_en kind=recommended_materials language=de"]
 
@@ -92,7 +87,7 @@ def test_compose_joins_the_blocks_with_blank_lines() -> None:
     assert parts.compose("uk", HEADINGS).count("🌐 Офіційні ресурси:") == 1
 
 
-def test_recommended_videos_are_drawn_as_links_until_titles_arrive(texts_log: LogCollector) -> None:
+def test_recommended_videos_are_drawn_as_links_until_titles_arrive(texts_log: LogCapture) -> None:
     parts: DescriptionParts = DescriptionParts(body="Body.", recommended_urls=("https://youtu.be/aaaaaaaaaaa", " "))
     assert parts.compose("ru", HEADINGS) == "Body.\n\nРекомендуемые материалы:\n\n👉 https://youtu.be/aaaaaaaaaaa"
     assert texts_log.messages() == [

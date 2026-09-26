@@ -78,8 +78,8 @@ class KeyRow:
         return cls(
             field=field,
             label=field.human_label,
-            origin_label=msg.READINESS_FIELD_ABSENT if origin is None else origin.human_label,
-            display=msg.READINESS_FIELD_ABSENT if entry is None else entry.masked,
+            origin_label=msg.NONE_TEXT if origin is None else origin.human_label,
+            display=msg.NONE_TEXT if entry is None else entry.masked,
             actions=actions,
             reset_label=cls._reset_label(actions, has_supplied),
         )

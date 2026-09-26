@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
+from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
 from app.texts.analysis_text import AnalysisTextReport
 
 if TYPE_CHECKING:
@@ -19,8 +20,6 @@ if TYPE_CHECKING:
     from app.sources.video import SourceVideo
 
 EXTRA_BREAKS_PATTERN: Final[re.Pattern[str]] = re.compile(r"\n{3,}")
-PARAGRAPH_BREAK: Final[str] = "\n\n"
-LINE_BREAK: Final[str] = "\n"
 SOURCE_HEADER: Final[str] = "SOURCE {index}"
 TITLE_PREFIX: Final[str] = "TITLE: "
 DESCRIPTION_PREFIX: Final[str] = "DESCRIPTION: "
@@ -38,7 +37,7 @@ class PreparedSourceDescription:
 
     @classmethod
     def of(cls, text: str, service_hints: tuple[str, ...]) -> PreparedSourceDescription:
-        normalized: str = str(text or "").replace("\r\n", LINE_BREAK).replace("\r", LINE_BREAK).strip()
+        normalized: str = str(text or "").replace("\r\n", NEWLINE).replace("\r", NEWLINE).strip()
         normalized = EXTRA_BREAKS_PATTERN.sub(PARAGRAPH_BREAK, normalized)
         if not normalized:
             return cls(text="", raw_chars=0, urls_removed=0, hashtags_removed=0, service_paragraphs_dropped=0)
@@ -83,7 +82,7 @@ class MergeSource:
         return self.description.text or self.no_description
 
     def prompt_block(self, index: int) -> str:
-        return LINE_BREAK.join(
+        return NEWLINE.join(
             (
                 SOURCE_HEADER.format(index=index),
                 f"{TITLE_PREFIX}{self.title}",

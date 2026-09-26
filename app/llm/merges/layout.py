@@ -13,14 +13,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
 
+from app.core.text_format import NEWLINE, PARAGRAPH_BREAK, SPACE
 from app.llm.merges.description import MergedDescription
 from app.llm.merges.reject import MergeRejectCode
+from app.observability.log_event import LogValue
 from app.texts.description_marks import URL_LINE_PATTERN, is_official_links_heading
 from app.texts.paragraphs import normalize_multiline_text, split_paragraphs
 
-PARAGRAPH_JOINER: Final[str] = "\n\n"
-LINE_JOINER: Final[str] = "\n"
-SENTENCE_JOINER: Final[str] = " "
 HASHTAG_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"^#[^\s#]+$")
 SENTENCE_BREAK_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?<=[.!?\u2026])\s+")
 YOUTUBE_MARK: Final[str] = "youtu"
@@ -29,8 +28,6 @@ SPLIT_MIN_SENTENCES: Final[int] = 4
 SPLIT_MIN_LEFT_SENTENCES: Final[int] = 2
 # Лишние абзацы тела сливаются, только если их не больше чем на четыре сверх предела.
 COLLAPSE_MAX_EXCESS: Final[int] = 4
-LOG_NONE: Final[str] = "none"
-BLOCKS_JOINER: Final[str] = ","
 
 
 class TailBlock(str, Enum):
@@ -53,7 +50,7 @@ class TailBlock(str, Enum):
 
     @staticmethod
     def _lines(paragraph: str) -> list[str]:
-        return [line.strip() for line in str(paragraph or "").split(LINE_JOINER) if line.strip()]
+        return [line.strip() for line in str(paragraph or "").split(NEWLINE) if line.strip()]
 
     @staticmethod
     def _is_hashtags(paragraph: str) -> bool:
@@ -137,7 +134,7 @@ class DescriptionLayout:
     @classmethod
     def _recover(cls, body: list[str], max_body_paragraphs: int) -> tuple[list[str], LayoutRecovery]:
         is_candidate: bool = len(body) == 1 or len(body) > max_body_paragraphs
-        raw_body: MergedDescription = MergedDescription(PARAGRAPH_JOINER.join(body).strip())
+        raw_body: MergedDescription = MergedDescription(PARAGRAPH_BREAK.join(body).strip())
         if is_candidate and raw_body.text and (raw_body.has_duplicate_paragraphs or raw_body.has_hook_echo_in_body):
             return body, LayoutRecovery.BLOCKED
         if len(body) == 1:
@@ -159,8 +156,8 @@ class DescriptionLayout:
         if len(sentences) < SPLIT_MIN_SENTENCES:
             return None
         split_index: int = max(SPLIT_MIN_LEFT_SENTENCES, len(sentences) // 2)
-        left: str = SENTENCE_JOINER.join(sentences[:split_index]).strip()
-        right: str = SENTENCE_JOINER.join(sentences[split_index:]).strip()
+        left: str = SPACE.join(sentences[:split_index]).strip()
+        right: str = SPACE.join(sentences[split_index:]).strip()
         if not left or not right:
             return None
         return [left, right]
@@ -183,7 +180,7 @@ class DescriptionLayout:
             group: list[str] = cleaned[start_index : start_index + max(1, group_size)]
             if not group:
                 break
-            collapsed.append(LINE_JOINER.join(group).strip())
+            collapsed.append(NEWLINE.join(group).strip())
             start_index += max(1, group_size)
         return collapsed if len(collapsed) <= max_paragraphs else None
 
@@ -193,11 +190,11 @@ class DescriptionLayout:
 
     @property
     def body_text(self) -> str:
-        return PARAGRAPH_JOINER.join(self.body_paragraphs).strip()
+        return PARAGRAPH_BREAK.join(self.body_paragraphs).strip()
 
     @property
     def full_text(self) -> str:
-        return PARAGRAPH_JOINER.join(p for p in (self.body_text, *self.tail_paragraphs) if p.strip()).strip()
+        return PARAGRAPH_BREAK.join(p for p in (self.body_text, *self.tail_paragraphs) if p.strip()).strip()
 
     @property
     def tail_detected(self) -> bool:
@@ -213,7 +210,7 @@ class DescriptionLayout:
         return (
             f"raw_paragraph_count={self.raw_paragraph_count} "
             f"tail_separated={'yes' if self.tail_detected else 'no'} "
-            f"tail_blocks={BLOCKS_JOINER.join(block.value for block in self.tail_blocks) or LOG_NONE} "
+            f"tail_blocks={LogValue.LIST_SEPARATOR.join(block.value for block in self.tail_blocks) or LogValue.EMPTY.value} "
             f"body_paragraph_count={self.body_paragraph_count} "
             f"recovery_applied={'yes' if self.recovery_applied else 'no'} "
             f"body_paragraph_count_after_recovery={self.body_paragraph_count_after_recovery}"

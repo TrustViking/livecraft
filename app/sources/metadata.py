@@ -12,19 +12,24 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Final
 
 from app.core.sheet_text import YOUTUBE_ID_CHARS, YOUTUBE_ID_LENGTH, extract_youtube_video_id
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, get_logger
 from app.texts.source_title import sanitize_source_video_title
 from app.ui import messages_ru as msg
 
-LOGGER_NAME: Final[str] = "sources"
-LOGGER = get_logger(LOGGER_NAME)
+LOGGER = get_logger(LogArea.SOURCES)
 
 FALLBACK_THUMBNAIL_TEMPLATE: Final[str] = "https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
-NO_AUDIO_CODEC: Final[str] = "none"      # yt-dlp пишет так acodec у формата без звука
 VIDEO_ID_PATTERN: Final[re.Pattern[str]] = re.compile(f"{YOUTUBE_ID_CHARS}{{{YOUTUBE_ID_LENGTH}}}")
+
+
+class AudioCodec(str, Enum):
+    """Значения поля `acodec` формата yt-dlp, которые что-то значат для языка звука."""
+
+    NONE = "none"      # так yt-dlp пишет acodec у формата без звука
 
 
 def _text(value: Any) -> str:
@@ -102,7 +107,7 @@ class SourceMetadata:
                 continue
             codec: str = _text(item.get("acodec"))
             language: str = _text(item.get("language"))
-            if codec and codec != NO_AUDIO_CODEC and language and language not in languages:
+            if codec and codec != AudioCodec.NONE and language and language not in languages:
                 languages.append(language)
         return tuple(languages)
 

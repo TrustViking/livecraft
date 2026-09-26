@@ -1,4 +1,4 @@
-"""Замок эталона кода (app\\tools\\code_standard, REFACTORING_STANDARD.md §5, §6).
+"""Замок эталона кода (app\\tools\\code_standard, CLAUDE.md §11).
 
 Реестр долгов `app\\tests\\data\\code_standard\\debt.json` может только сокращаться: новое или выросшее
 нарушение роняет тест, снятое в коде, но оставшееся в реестре, — тоже (обновить реестр — `--write-debt`).
@@ -33,7 +33,7 @@ ACTIVE_RULES: frozenset[Rule] = frozenset(Rule)
 # Правила, у которых ключ реестра — не путь: значение (E8, E9) или пакеты и кольцо (E16).
 VALUE_KEYED_RULES: frozenset[Rule] = frozenset({Rule.ONE_DECLARATION, Rule.PATTERNS, Rule.LAYERS})
 ALLOWED_APP_IMPORTS: tuple[str, ...] = ("app.tools.code_standard", "app.ui.messages_ru")
-# Возможности Python 3.11+ — замок работает на 3.10 без пакетов проекта (REFACTORING_STANDARD.md §6).
+# Возможности Python 3.11+ — замок работает на 3.10 без пакетов проекта (CLAUDE.md §11).
 PYTHON_FLOOR: tuple[int, int] = (3, 10)
 NEW_PYTHON_NAMES: frozenset[str] = frozenset({"StrEnum", "tomllib", "Self", "UTC", "ExceptionGroup", "BaseExceptionGroup"})
 NEW_PYTHON_NODES: frozenset[str] = frozenset({"TryStar", "TypeAlias", "TypeVar", "ParamSpec", "TypeVarTuple"})
@@ -660,7 +660,7 @@ def test_every_path_key_of_the_repository_uses_a_backslash(measured: Measurement
     """Ключи-пути реестра, исключений и замеров; у ключей-значений E8, E9, E16 пути — в местах нарушений."""
     ledger: Ledger = Ledger.load(LOCK.ledger)
     keys: list[str] = [key for rule in ledger.rules if rule not in VALUE_KEYED_RULES for key in ledger.section(rule)]
-    keys.extend(item.key for item in Exceptions.load(LOCK.exceptions).items)
+    keys.extend(item.key for item in Exceptions.load(LOCK.exceptions).items if item.rule not in VALUE_KEYED_RULES)
     keys.extend(key for item in measured.items if item.rule not in VALUE_KEYED_RULES for key in item.values)
     keys.extend(site for item in measured.items for key in item.values for site in item.sites_of(key))
     assert keys

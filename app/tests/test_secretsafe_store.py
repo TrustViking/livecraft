@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from app.core.text_format import TEXT_ENCODING
 from app.paths import LivecraftPaths
 from app.secretsafe.crypto import (
     FORMAT_VERSION,
@@ -26,7 +27,7 @@ from app.secretsafe.crypto import (
 )
 from app.secretsafe.dpapi import Dpapi, DpapiUnavailable
 from app.secretsafe.store import (
-    VAULT_FILE_ENCODING,
+    TEXT_ENCODING,
     LocalVaultState,
     ProgramKey,
     VaultLoad,
@@ -84,7 +85,7 @@ def _write_supplied(store: VaultStore, values: dict[SecretField, str]) -> bytes:
         field.value: crypto.encrypt(field, value) for field, value in values.items()
     }
     store.supplied_path.write_text(
-        VaultFile(version=FORMAT_VERSION, salt=salt, fields=fields).render(), encoding=VAULT_FILE_ENCODING
+        VaultFile(version=FORMAT_VERSION, salt=salt, fields=fields).render(), encoding=TEXT_ENCODING
     )
     return store.supplied_path.read_bytes()
 
@@ -97,11 +98,11 @@ def _own_vault(values: dict[SecretField, str]) -> Vault:
 
 
 def _local_json(store: VaultStore) -> dict[str, Any]:
-    return json.loads(store.local_path.read_text(encoding=VAULT_FILE_ENCODING))
+    return json.loads(store.local_path.read_text(encoding=TEXT_ENCODING))
 
 
 def _rewrite_local(store: VaultStore, data: dict[str, Any]) -> None:
-    store.local_path.write_text(json.dumps(data), encoding=VAULT_FILE_ENCODING)
+    store.local_path.write_text(json.dumps(data), encoding=TEXT_ENCODING)
 
 
 # --- приоритет: локальное поверх поставочного (§7.3, таблица приоритета)
@@ -177,7 +178,7 @@ def test_saving_writes_only_the_local_file(store: VaultStore) -> None:
 def test_the_supplied_file_never_gets_a_wrapped_key_record(store: VaultStore) -> None:
     """Записи «key» в поставочном файле быть не должно (§14, решение 9)."""
     _write_supplied(store, SUPPLIED_VALUES)
-    assert KEY_WRAPPED not in json.loads(store.supplied_path.read_text(encoding=VAULT_FILE_ENCODING))
+    assert KEY_WRAPPED not in json.loads(store.supplied_path.read_text(encoding=TEXT_ENCODING))
 
 
 # --- локальный файл: ключ в самом файле, завёрнутый DPAPI
@@ -194,7 +195,7 @@ def test_the_local_file_carries_its_wrapped_key(store: VaultStore) -> None:
 
 def test_the_local_file_carries_no_plaintext(store: VaultStore) -> None:
     store.save_local(_own_vault(OWN_VALUES))
-    text: str = store.local_path.read_text(encoding=VAULT_FILE_ENCODING)
+    text: str = store.local_path.read_text(encoding=TEXT_ENCODING)
     for value in OWN_VALUES.values():
         assert value not in text
 
@@ -364,7 +365,7 @@ def test_an_unknown_format_version_goes_out_as_an_error(store: VaultStore, versi
 def test_an_unknown_format_version_of_the_supplied_file_goes_out_too(store: VaultStore) -> None:
     store.supplied_path.write_text(
         json.dumps({KEY_VERSION: 99, KEY_SALT: base64.b64encode(bytes(SALT_BYTES)).decode("ascii"), KEY_FIELDS: {}}),
-        encoding=VAULT_FILE_ENCODING,
+        encoding=TEXT_ENCODING,
     )
     with pytest.raises(VaultFormatError):
         store.load().vault
@@ -435,7 +436,7 @@ def test_a_local_file_written_the_old_way_still_reads(store: VaultStore) -> None
         VaultFile(
             version=FORMAT_VERSION, salt=salt, fields=fields, wrapped_key=store.dpapi.protect(key)
         ).render(),
-        encoding=VAULT_FILE_ENCODING,
+        encoding=TEXT_ENCODING,
     )
     vault: Vault = store.load().vault
     for field, value in OWN_VALUES.items():
@@ -546,7 +547,7 @@ def test_a_format_error_of_the_local_file_names_the_file(store: VaultStore) -> N
 
 
 def test_a_format_error_of_the_supplied_file_names_the_file(store: VaultStore) -> None:
-    store.supplied_path.write_text("не json", encoding=VAULT_FILE_ENCODING)
+    store.supplied_path.write_text("не json", encoding=TEXT_ENCODING)
     with pytest.raises(VaultFormatError) as raised:
         store.load()
     assert store.supplied_path.name in str(raised.value)
@@ -556,7 +557,7 @@ def test_a_format_error_of_the_supplied_file_names_the_file(store: VaultStore) -
 
 def test_the_format_error_names_only_the_file_not_the_folder(store: VaultStore) -> None:
     """Имя файла — да; путь к папке сейфа в тексте не нужен и не печатается."""
-    store.supplied_path.write_text("не json", encoding=VAULT_FILE_ENCODING)
+    store.supplied_path.write_text("не json", encoding=TEXT_ENCODING)
     with pytest.raises(VaultFormatError) as raised:
         store.load()
     assert str(store.supplied_path.parent) not in str(raised.value)
@@ -667,7 +668,7 @@ def test_load_for_setup_reads_a_whole_local_file_as_load_does(store: VaultStore)
 
 
 def test_load_for_setup_refuses_a_broken_supplied_file(store: VaultStore) -> None:
-    store.supplied_path.write_text("не json", encoding=VAULT_FILE_ENCODING)
+    store.supplied_path.write_text("не json", encoding=TEXT_ENCODING)
     with pytest.raises(VaultFormatError) as raised:
         store.load_for_setup()
     assert raised.value.source is VaultSource.SUPPLIED and not raised.value.is_replaceable
@@ -688,7 +689,7 @@ def _break_local(store: VaultStore, how: str) -> None:
     if how == "not_utf8":
         store.local_path.write_bytes(NOT_UTF8_BYTES)
     elif how == "not_json":
-        store.local_path.write_text("{", encoding=VAULT_FILE_ENCODING)
+        store.local_path.write_text("{", encoding=TEXT_ENCODING)
     else:
         store.local_path.mkdir()
 
@@ -750,7 +751,7 @@ def test_own_over_supplied_keeps_the_supplied_layer_whole(store: VaultStore) -> 
 def test_the_supplied_layer_is_empty_without_a_program_key(livecraft_paths: LivecraftPaths) -> None:
     opened: VaultStore = VaultStore.open(livecraft_paths)
     livecraft_paths.vault_file.write_text(
-        VaultFile.empty().render(), encoding=VAULT_FILE_ENCODING
+        VaultFile.empty().render(), encoding=TEXT_ENCODING
     )
     assert opened.load().supplied == Vault.empty()
 

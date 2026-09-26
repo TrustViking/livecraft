@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.observability.log_event import LogArea
 from app.sheets.plan import SheetColumns, SheetPlan, SheetRow
 from app.sheets.rows import PlanRow, RowSkipReason
 from app.tests.conftest import SUPPLIED_VALUES
+from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
 
 KYIV: ZoneInfo = ZoneInfo("Europe/Kyiv")
@@ -223,32 +224,14 @@ def test_plan_keeps_the_sheet_order() -> None:
 # --- лог
 
 
-class _Collector(logging.Handler):
-    """Свой обработчик прямо на логгере livecraft.sheets: не зависит от того, что прежние тесты сделали
-    с propagate и обработчиками логгера livecraft."""
-
-    def __init__(self) -> None:
-        super().__init__(level=logging.DEBUG)
-        self.messages: list[str] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.messages.append(record.getMessage())
-
-
-def test_skipped_rows_and_summary_go_to_the_log(monkeypatch: pytest.MonkeyPatch) -> None:
-    logger: logging.Logger = logging.getLogger("livecraft.sheets")
-    collector: _Collector = _Collector()
-    monkeypatch.setattr(logger, "level", logging.DEBUG)
-    logger.addHandler(collector)
-    try:
+def test_skipped_rows_and_summary_go_to_the_log() -> None:
+    with LogCapture.on(LogArea.SHEETS) as capture:
         plan_of(
             ["", "16.10.2026", "19:00"],
             [SHORT_LINK, "16.10.2026", "19:00"],
             [WATCH_LINK, "16.10.2026", "19:00"],
         )
-    finally:
-        logger.removeHandler(collector)
-    messages: list[str] = collector.messages
+    messages: list[str] = capture.messages()
     skipped: list[str] = [line for line in messages if line.startswith("sheet_row_skipped")]
     assert len(skipped) == 2
     assert "row=2 reason=empty_link" in skipped[0]

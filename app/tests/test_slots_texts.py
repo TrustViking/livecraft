@@ -10,7 +10,8 @@ from app.sheets.plan import SheetRow
 from app.sheets.rows import PlanRow
 from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.sources.video import SourceVideo
-from app.tests.conftest import LogCollector, ready_source
+from app.tests.conftest import ready_source
+from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
 
 KYIV: ZoneInfo = ZoneInfo("Europe/Kyiv")
@@ -72,7 +73,7 @@ def test_no_sources_is_a_programming_error() -> None:
 # --- правила YouTube
 
 
-def test_angle_brackets_are_replaced_in_title_and_description(slot_log: LogCollector) -> None:
+def test_angle_brackets_are_replaced_in_title_and_description(slot_log: LogCapture) -> None:
     fitted: SlotTexts = texts("A <b> title", "x > y < z").for_youtube("16-10-2026_1900_uk")
     assert fitted == texts("A ‹b› title", "x › y ‹ z")
     (line,) = slot_log.messages(logging.INFO)
@@ -80,13 +81,13 @@ def test_angle_brackets_are_replaced_in_title_and_description(slot_log: LogColle
     assert "title_reason=not_trimmed description_reason=not_trimmed" in line
 
 
-def test_texts_within_the_rules_stay_the_same_and_are_not_logged(slot_log: LogCollector) -> None:
+def test_texts_within_the_rules_stay_the_same_and_are_not_logged(slot_log: LogCapture) -> None:
     original: SlotTexts = texts("Название", "Описание")
     assert original.for_youtube() == original
     assert slot_log.messages() == []
 
 
-def test_long_title_is_cut_on_a_word_boundary(slot_log: LogCollector) -> None:
+def test_long_title_is_cut_on_a_word_boundary(slot_log: LogCapture) -> None:
     title: str = " ".join(["слово"] * 26)[:130]
     assert len(title) == 130
     fitted: SlotTexts = texts(title).for_youtube()
@@ -106,7 +107,7 @@ def test_long_latin_description_is_cut_to_5000_characters() -> None:
     assert_cut_on_boundary(description, fitted.description)
 
 
-def test_long_cyrillic_description_is_cut_to_5000_utf8_bytes(slot_log: LogCollector) -> None:
+def test_long_cyrillic_description_is_cut_to_5000_utf8_bytes(slot_log: LogCapture) -> None:
     description: str = ("слово " * 700)[:4000]
     assert len(description) == 4000
     assert utf8_size(description) > 7000
@@ -120,7 +121,7 @@ def test_long_cyrillic_description_is_cut_to_5000_utf8_bytes(slot_log: LogCollec
     assert f"description_bytes={utf8_size(description)}->{utf8_size(fitted.description)}" in line
 
 
-def test_description_of_exactly_5000_bytes_is_untouched(slot_log: LogCollector) -> None:
+def test_description_of_exactly_5000_bytes_is_untouched(slot_log: LogCapture) -> None:
     description: str = "я" * (MAX_BYTES // 2)
     assert utf8_size(description) == MAX_BYTES
     assert texts("t", description).for_youtube().description == description

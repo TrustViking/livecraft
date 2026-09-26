@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from app.config.loader import HANDLE_PREFIX, ChannelConfig, Platform
+from app.ui import messages_ru as msg
 
 # Коды языков в строке ввода разделяются запятыми и пробельными символами: «uk, ru  en».
 LANGUAGES_SEPARATOR: Final[re.Pattern[str]] = re.compile(r"[,\s]+")
-LANGUAGES_DISPLAY_JOINER: Final[str] = ", "
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class ChannelDraft:
             account_name=channel.account_name,
             handle=channel.handle,
             google_account=channel.google_account,
-            languages=LANGUAGES_DISPLAY_JOINER.join(channel.languages),
+            languages=msg.LIST_JOINER.join(channel.languages),
             privacy=channel.privacy.value,
         )
 

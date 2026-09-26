@@ -29,6 +29,7 @@ from app.config.loader import (
     load_channels,
     load_settings,
 )
+from app.observability.log_event import LogValue
 from app.paths import LivecraftPaths
 from app.secretsafe.crypto import VaultFormatError
 from app.secretsafe.store import VaultLoad, VaultStore
@@ -37,13 +38,8 @@ from app.secretsafe.vault import Vault, VaultOrigin
 from app.setup.run_mode import RunMode, RunPart
 from app.ui import messages_ru as msg
 
-LANGUAGE_JOINER: Final[str] = ", "
-GAP_JOINER: Final[str] = "; "
-LOG_ABSENT: Final[str] = "-"
 LOG_VAULT_BROKEN: Final[str] = "broken"
-LOG_CONFIG_OK: Final[str] = "ok"
 LOG_CONFIG_ERROR: Final[str] = "error"
-LOG_PART_JOINER: Final[str] = ","
 LOG_LINE_TEMPLATE: Final[str] = "settings={settings} channels={channels} local={local} vault={vault}"
 MODE_LOG_LINE_TEMPLATE: Final[str] = "mode={mode} ready={ready} blocked={blocked} not_built={not_built}"
 # Что нужно каждой реализованной части из сейфа (§7.5): таблица — id и диапазон, merge — ключ OpenAI.
@@ -130,7 +126,7 @@ class ModeReadiness:
 
     def _log_ids(self, parts: tuple[PartReadiness, ...]) -> str:
         """Идентификаторы частей через запятую; пусто — прочерк."""
-        return LOG_PART_JOINER.join(part.part.value for part in parts) or LOG_ABSENT
+        return LogValue.LIST_SEPARATOR.join(part.part.value for part in parts) or LogValue.EMPTY.value
 
 
 @dataclass(frozen=True)
@@ -211,7 +207,7 @@ class Readiness:
         gaps: tuple[str, ...] = self._gaps(part)
         if not gaps:
             return PartReadiness(part=part, is_ready=True, is_built=True, action=None)
-        action: str = msg.RUN_PART_BLOCKED.format(part=part.human_label, gaps=GAP_JOINER.join(gaps))
+        action: str = msg.RUN_PART_BLOCKED.format(part=part.human_label, gaps=msg.ITEM_JOINER.join(gaps))
         return PartReadiness(part=part, is_ready=False, is_built=True, action=action)
 
     def for_mode(self, mode: RunMode, no_llm: bool) -> ModeReadiness:
@@ -262,9 +258,9 @@ class Readiness:
     def log_line(self) -> str:
         """То же для лога: состояние файлов, ярлыки с отпечатками, число каналов; ни одного значения."""
         return LOG_LINE_TEMPLATE.format(
-            settings=LOG_CONFIG_OK if self.settings is not None else LOG_CONFIG_ERROR,
-            channels=len(self.channels) if self.channels is not None else LOG_ABSENT,
-            local=self.vault_load.local_state.value if self.vault_load is not None else LOG_ABSENT,
+            settings=LogValue.OK.value if self.settings is not None else LOG_CONFIG_ERROR,
+            channels=len(self.channels) if self.channels is not None else LogValue.EMPTY.value,
+            local=self.vault_load.local_state.value if self.vault_load is not None else LogValue.EMPTY.value,
             vault=self.vault.log_line if self.vault is not None else LOG_VAULT_BROKEN,
         )
 
@@ -358,7 +354,7 @@ class Readiness:
 
     def _origin_label(self, field: SecretField) -> str:
         origin: VaultOrigin | None = None if self.vault is None else self.vault.origin_of(field)
-        return msg.READINESS_FIELD_ABSENT if origin is None else origin.human_label
+        return msg.NONE_TEXT if origin is None else origin.human_label
 
     @property
     def _channels_line(self) -> str:
@@ -368,7 +364,7 @@ class Readiness:
             language for channel in self.channels for language in channel.languages
         )
         return msg.READINESS_CHANNELS_LINE.format(
-            count=len(self.channels), languages=LANGUAGE_JOINER.join(sorted(languages))
+            count=len(self.channels), languages=msg.LIST_JOINER.join(sorted(languages))
         )
 
     @property

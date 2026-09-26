@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Final
 
-from app.llm.merges.attempt import AcceptedMerge, MergeAttempt, MergeAttemptResult, MergeRules
+from app.llm.merges.attempt import STAGE_PRIMARY, AcceptedMerge, MergeAttempt, MergeAttemptResult, MergeRules
 from app.llm.merges.check import MergeAttemptLabel
 from app.llm.merges.description import MergedDescription
 from app.llm.merges.layout import DescriptionLayout
@@ -41,7 +41,7 @@ from app.llm.merges.rules import (
     PRIMARY_ATTEMPTS_EXTENDED,
 )
 from app.llm.merges.run import MergeRun, MergeStopReason
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.texts.paragraphs import normalize_multiline_text
 
@@ -49,23 +49,18 @@ if TYPE_CHECKING:
     from app.slots.builder import SlotGroup
     from app.sources.video import SourceVideo
 
-LOGGER: logging.Logger = get_logger("llm")
+LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
-STAGE_PRIMARY: Final[str] = "primary"
 NOT_APPLICABLE: Final[str] = "not_applicable"
 EMPTY_DESCRIPTION_NOTE: Final[str] = "empty_description"
 # С четырёх источников направленный повтор у донора называется «четыре и больше, со структурой».
 STRUCTURED_RETRY_MIN_SOURCES: Final[int] = 4
 RETRY_STRUCTURE_FOUR_PLUS: Final[str] = "four_plus_structured"
 RETRY_STRUCTURE_STANDARD: Final[str] = "standard"
-LOG_NONE: Final[str] = "none"
-CODES_JOINER: Final[str] = ","
-YES: Final[str] = "yes"
-NO: Final[str] = "no"
 
 
 def _flag(value: bool) -> str:
-    return YES if value else NO
+    return LogValue.YES.value if value else LogValue.NO.value
 
 
 class MergeSkipReason(str, Enum):
@@ -228,8 +223,8 @@ class MergeOutcome:
             f"validation_rejected={self.rejected_attempts} retry_used={self.retries} "
             f"final_failure={int(self.is_final_failure)} publish_blocked={_flag(self.publish_blocked)} "
             f"texts={self.texts.origin.value} "
-            f"reject_codes={CODES_JOINER.join(self.reject_codes) or LOG_NONE} "
-            f"skipped={self.skipped_reason.value if self.skipped_reason is not None else LOG_NONE}"
+            f"reject_codes={LogValue.LIST_SEPARATOR.join(self.reject_codes) or LogValue.EMPTY.value} "
+            f"skipped={self.skipped_reason.value if self.skipped_reason is not None else LogValue.EMPTY.value}"
         )
 
 
@@ -387,8 +382,8 @@ class MergeJob:
         LOGGER.warning(
             "merge_llm_final_failure %s provider=%s stage=%s code=%s fallback_used=no raw_response_received=%s "
             "reason=%s raw_chars=%d",
-            self.context, run.backend.name, STAGE_PRIMARY, last.code if last is not None else LOG_NONE,
-            _flag(answered is not None and answered.raw_received), last.reason if last is not None else LOG_NONE,
+            self.context, run.backend.name, STAGE_PRIMARY, last.code if last is not None else LogValue.EMPTY.value,
+            _flag(answered is not None and answered.raw_received), last.reason if last is not None else LogValue.EMPTY.value,
             answered.raw_chars if answered is not None else 0,
         )
         LOGGER.info(

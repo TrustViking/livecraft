@@ -19,31 +19,26 @@ import sys
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from enum import IntEnum
+from datetime import datetime
 from typing import Final
 
-from app.config.loader import ConfigError, LivecraftSettings, load_settings
+from app.config.loader import ConfigError, LivecraftSettings, ShippedSettings, load_settings
 from app.google.auth import AuthError, GoogleLogin
-from app.observability.logging_setup import close_logging, get_logger, install_secret_filter, setup_logging
+from app.observability.log_event import LogArea, get_logger
+from app.observability.logging_setup import close_logging, install_secret_filter, setup_logging
 from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
 from app.secretsafe.crypto import VaultFormatError
 from app.secretsafe.store import VaultLoad, VaultStore
 from app.secretsafe.value import SecretField
 from app.sheets.client import SheetsReader, SheetsReadError, SheetsReadReason, SheetsTarget
 from app.sheets.plan import SheetColumns, SheetPlan
+from app.setup.run_mode import ExitCode
 from app.sheets.rows import PlanRow, RowSkipReason
 from app.ui import messages_ru as msg
 
-LOGGER_NAME: Final[str] = "tools.sheets_probe"
-LOGGER = get_logger(LOGGER_NAME)
+LOGGER = get_logger(LogArea.SHEETS_PROBE)
+SHIPPED_SETTINGS: ShippedSettings = ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE)
 RELOGIN_FLAG: Final[str] = "--relogin"
-
-
-class ProbeExit(IntEnum):
-    OK = 0          # таблица прочитана и разобрана
-    ERRORS = 1      # вход или Google не дали прочитать
-    CONFIG = 2      # сейф или настройки не готовы — к Google не обращались
 
 
 @dataclass(frozen=True)
@@ -117,7 +112,7 @@ class SheetsProbe:
         rows: tuple[PlanRow, ...] = plan.plan_rows(settings.zone, self.now.astimezone(settings.zone))
         for line in SheetsProbeReport(plan=plan, rows=rows).lines:
             self.say(line)
-        return int(ProbeExit.OK)
+        return int(ExitCode.OK)
 
     def _read(self, loaded: VaultLoad) -> SheetPlan:
         login: GoogleLogin = GoogleLogin.operator(self.paths)
@@ -150,12 +145,12 @@ class SheetsProbe:
         self.say(error.human)
         if error.reason is SheetsReadReason.NO_ACCESS:
             self.say(msg.SHEETS_PROBE_RELOGIN_HINT)
-        return int(ProbeExit.ERRORS)
+        return int(ExitCode.ERRORS)
 
     def _refuse(self, text: str) -> int:
         self.say(text)
         self.say(msg.SETUP_REQUIRED)
-        return int(ProbeExit.CONFIG)
+        return int(ExitCode.CONFIG)
 
 
 def _say(text: str) -> None:
@@ -173,9 +168,10 @@ def main(argv: list[str] | None = None) -> int:
     relogin: bool = bool(_parse_args(argv).relogin)
     paths: LivecraftPaths = build_paths(resolve_root())
     ensure_dirs(paths)
-    setup_logging(paths.logs_dir, debug=False)
+    started: datetime = SHIPPED_SETTINGS.clock.now()
+    setup_logging(paths.logs_dir, debug=False, started=started)
     try:
-        return SheetsProbe(paths=paths, now=datetime.now(timezone.utc), say=_say, relogin=relogin).run()
+        return SheetsProbe(paths=paths, now=started, say=_say, relogin=relogin).run()
     finally:
         close_logging()
 

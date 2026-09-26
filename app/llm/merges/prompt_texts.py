@@ -19,7 +19,8 @@ from functools import cache
 from types import MappingProxyType
 from typing import Any, Final
 
-from app.resources.loader import RESOURCE_ENCODING, TextResource
+from app.resources.loader import TextResource
+from app.sources.language import SERVICE_HINTS_RESOURCE
 
 TITLE_DESCRIPTION_RESOURCE: Final[str] = "merge_prompt_title_description.txt"
 STRUCTURAL_RULES_RESOURCE: Final[str] = "merge_prompt_structural_rules.txt"
@@ -30,10 +31,7 @@ LINK_POLICY_RESOURCE: Final[str] = "merge_policy_link.txt"
 CROSS_DOMAIN_POLICY_RESOURCE: Final[str] = "merge_policy_cross_domain.txt"
 RETRY_REINFORCEMENTS_RESOURCE: Final[str] = "merge_retry_reinforcements.json"
 RETRY_FALLBACKS_RESOURCE: Final[str] = "merge_retry_fallback_lines.json"
-SERVICE_HINTS_RESOURCE: Final[str] = "merge_service_hints.txt"
-SOURCE_LINE_PREFIX: Final[str] = "#"
 JSON_VALUE_KEY: Final[str] = "value"
-LINE_BREAK: Final[str] = "\n"
 
 
 class MergeContractMode(str, Enum):
@@ -91,10 +89,8 @@ class MergePromptTexts:
 
     @staticmethod
     def _resource_text(name: str) -> str:
-        """Значение `.txt`-ресурса: без первой строки-источника и без краёв (загрузчик донора отдаёт значения без краёв)."""
-        raw: str = TextResource(name).path.read_text(encoding=RESOURCE_ENCODING)
-        first, _, rest = raw.partition(LINE_BREAK)
-        return (rest if first.startswith(SOURCE_LINE_PREFIX) else raw).strip()
+        """Значение `.txt`-ресурса: текст без строки-источника и без краёв."""
+        return TextResource(name).body.strip()
 
     @staticmethod
     def _resource_value(name: str) -> Any:

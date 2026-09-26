@@ -12,7 +12,9 @@ from app.llm.merges import description as description_module
 from app.llm.merges.answer import AnswerParseMode, MergeAnswer
 from app.llm.merges.layout import TailBlock
 from app.llm.merges.reject import MergeReject, MergeRejectCode, MergeRejectStage
+from app.observability.log_event import LogArea
 from app.tests.conftest import REPO_ROOT
+from app.tests.fixtures.logs import LogCapture
 from app.tools.code_standard.module_shape import TopLevelNames
 from app.tools.code_standard.source import SourceKey, SourceTree
 
@@ -301,13 +303,13 @@ def test_parse_never_raises_on_arbitrary_text() -> None:
         assert isinstance(MergeAnswer.parse(response(wrapped), rng.choice([4, 7])), (MergeAnswer, MergeReject))
 
 
-def test_log_lines_have_donor_keys_and_no_text(caplog: pytest.LogCaptureFixture) -> None:
+def test_log_lines_have_donor_keys_and_no_text() -> None:
     secret_words: str = "Уникальнаяфразаописания"
     description: str = f"{secret_words} one.\n\n{secret_words} two.\n\n#tag"
-    with caplog.at_level(logging.INFO, logger="livecraft.llm"):
+    with LogCapture.on(LogArea.LLM, logging.INFO) as capture:
         accepted(json.dumps({"title": "Название эфира", "description": description}, ensure_ascii=False))
         rejected(json.dumps({"title": "T", "description": "\n\n".join([f"{secret_words} long text here tokens."] * 6)}))
-    messages: list[str] = [record.getMessage() for record in caplog.records]
+    messages: list[str] = capture.messages()
     assert any(line.startswith("merge_payload_parsed model=gpt-test parse_mode=direct title_length=14 ") for line in messages)
     assert any("merge_description_tail_analysis" in line and "final_status=accepted" in line for line in messages)
     assert any("final_status=rejected reject_reason=duplicate_paragraph" in line for line in messages)

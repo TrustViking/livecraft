@@ -8,12 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Final, Protocol
+from typing import Protocol
 
+from app.observability.log_event import LogValue
 from app.sources.metadata import SourceMetadata
 from app.ui import messages_ru as msg
-
-NO_DETAIL: Final[str] = "-"
 
 
 class SourceFailureReason(str, Enum):
@@ -45,7 +44,7 @@ class SourceFetch:
     url: str
     metadata: SourceMetadata | None
     failure: SourceFailureReason | None
-    detail: str = NO_DETAIL
+    detail: str = LogValue.EMPTY.value
 
     @classmethod
     def from_metadata(cls, url: str, metadata: SourceMetadata) -> SourceFetch:
@@ -55,8 +54,8 @@ class SourceFetch:
         return cls(url=url, metadata=metadata, failure=None)
 
     @classmethod
-    def failed(cls, url: str, reason: SourceFailureReason, detail: str = NO_DETAIL) -> SourceFetch:
-        return cls(url=url, metadata=None, failure=reason, detail=detail or NO_DETAIL)
+    def failed(cls, url: str, reason: SourceFailureReason, detail: str = LogValue.EMPTY.value) -> SourceFetch:
+        return cls(url=url, metadata=None, failure=reason, detail=detail or LogValue.EMPTY.value)
 
     @property
     def is_ok(self) -> bool:
@@ -67,7 +66,7 @@ class SourceFetch:
         """`ok` и сводка метаданных либо `reason=… detail=…`."""
         if self.is_ok and self.metadata is not None:
             return f"ok {self.metadata.log_line}"
-        reason: str = self.failure.value if self.failure is not None else NO_DETAIL
+        reason: str = self.failure.value if self.failure is not None else LogValue.EMPTY.value
         return f"reason={reason} detail={self.detail!r}"
 
 

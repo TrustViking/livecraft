@@ -11,21 +11,17 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, ClassVar, Final
+from typing import TYPE_CHECKING, ClassVar
 
 from app.core.safe_trim import SafeTrimResult, safe_trim_right
-from app.observability.logging_setup import get_logger
+from app.core.text_format import PARAGRAPH_BREAK, TEXT_ENCODING
+from app.observability.log_event import LogArea, LogValue, get_logger
 from app.ui import messages_ru as msg
 
 if TYPE_CHECKING:      # только для аннотаций: тексты берут у источника название и описание
     from app.sources.video import SourceVideo
 
-LOGGER_NAME: Final[str] = "slots"
-LOGGER = get_logger(LOGGER_NAME)
-
-TEXT_ENCODING: Final[str] = "utf-8"
-DESCRIPTION_JOINER: Final[str] = "\n\n"      # описания нескольких источников — через пустую строку
-NO_SLOT: Final[str] = "-"
+LOGGER = get_logger(LogArea.SLOTS)
 
 
 class SlotTextOrigin(str, Enum):
@@ -65,7 +61,7 @@ class SlotTexts:
         )
         return cls(
             title=titles[0],
-            description=DESCRIPTION_JOINER.join(text for text in descriptions if text),
+            description=PARAGRAPH_BREAK.join(text for text in descriptions if text),
             origin=origin,
         )
 
@@ -81,7 +77,7 @@ class SlotTexts:
         if replacements or title.trimmed or description.trimmed:
             LOGGER.info(
                 "slot_texts_fitted slot=%s replaced=%d title_reason=%s description_reason=%s %s",
-                slot_id or NO_SLOT, replacements, title.reason, description.reason,
+                slot_id or LogValue.EMPTY.value, replacements, title.reason, description.reason,
                 self._sizes_line(fitted),
             )
         return fitted

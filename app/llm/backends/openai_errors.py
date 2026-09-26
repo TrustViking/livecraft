@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+from http import HTTPStatus
 from typing import Any, Final
 
 from app.llm.errors import LlmErrorKind, LlmRequestError
@@ -18,13 +20,7 @@ REQUEST_SHAPE_SIGNALS: Final[tuple[str, ...]] = ("json_schema", "response format
 UNSUPPORTED_PARAMETER_CODE: Final[str] = "unsupported_parameter"
 UNSUPPORTED_PARAMETER_TEXT: Final[str] = "unsupported parameter"
 MODEL_NOT_FOUND_CODE: Final[str] = "model_not_found"
-TEXT_PARAM_PREFIX: Final[str] = "text"
-STATUS_TOO_MANY: Final[int] = 429
-STATUS_UNAUTHORIZED: Final[int] = 401
-STATUS_FORBIDDEN: Final[int] = 403
-STATUS_NOT_FOUND: Final[int] = 404
-STATUS_SERVER_MIN: Final[int] = 500
-STATUSES_BAD_REQUEST: Final[frozenset[int]] = frozenset({400, 422})
+STATUSES_BAD_REQUEST: Final[frozenset[int]] = frozenset({HTTPStatus.BAD_REQUEST, HTTPStatus.UNPROCESSABLE_ENTITY})
 TIMEOUT_ERROR: Final[str] = "APITimeoutError"
 CONNECTION_ERROR: Final[str] = "APIConnectionError"
 RATE_LIMIT_ERROR: Final[str] = "RateLimitError"
@@ -33,6 +29,12 @@ AUTH_ERROR: Final[str] = "AuthenticationError"
 PERMISSION_ERROR: Final[str] = "PermissionDeniedError"
 NOT_FOUND_ERROR: Final[str] = "NotFoundError"
 BAD_REQUEST_ERRORS: Final[frozenset[str]] = frozenset({"BadRequestError", "UnprocessableEntityError"})
+
+
+class OpenAiParam(str, Enum):
+    """Параметры запроса Responses API, которые OpenAI называет в поле `param` отказа."""
+
+    TEXT = "text"      # формат ответа (`text.format`): отказ по нему — ошибка формы запроса
 
 
 def _text_attr(error: Exception, name: str) -> str:
@@ -68,17 +70,17 @@ class OpenAiFailure:
             return LlmErrorKind.TIMEOUT
         if self.type_name == CONNECTION_ERROR:
             return LlmErrorKind.CONNECTION
-        if status == STATUS_TOO_MANY and any(signal in detail for signal in QUOTA_SIGNALS):
+        if status == HTTPStatus.TOO_MANY_REQUESTS and any(signal in detail for signal in QUOTA_SIGNALS):
             return LlmErrorKind.QUOTA
-        if self.type_name == RATE_LIMIT_ERROR or status == STATUS_TOO_MANY:
+        if self.type_name == RATE_LIMIT_ERROR or status == HTTPStatus.TOO_MANY_REQUESTS:
             return LlmErrorKind.RATE_LIMIT
-        if self.type_name == SERVER_ERROR or (status is not None and status >= STATUS_SERVER_MIN):
+        if self.type_name == SERVER_ERROR or (status is not None and status >= HTTPStatus.INTERNAL_SERVER_ERROR):
             return LlmErrorKind.SERVER
-        if self.type_name == AUTH_ERROR or status == STATUS_UNAUTHORIZED:
+        if self.type_name == AUTH_ERROR or status == HTTPStatus.UNAUTHORIZED:
             return LlmErrorKind.AUTH
-        if self.type_name == PERMISSION_ERROR or status == STATUS_FORBIDDEN:
+        if self.type_name == PERMISSION_ERROR or status == HTTPStatus.FORBIDDEN:
             return LlmErrorKind.ACCESS_DENIED
-        if self.type_name == NOT_FOUND_ERROR or self.code == MODEL_NOT_FOUND_CODE or status == STATUS_NOT_FOUND:
+        if self.type_name == NOT_FOUND_ERROR or self.code == MODEL_NOT_FOUND_CODE or status == HTTPStatus.NOT_FOUND:
             return LlmErrorKind.MODEL_NOT_FOUND
         if self.type_name in BAD_REQUEST_ERRORS or status in STATUSES_BAD_REQUEST:
             return self._bad_request_kind(detail)
@@ -86,8 +88,8 @@ class OpenAiFailure:
 
     def _bad_request_kind(self, detail: str) -> LlmErrorKind:
         if self.code == UNSUPPORTED_PARAMETER_CODE or UNSUPPORTED_PARAMETER_TEXT in detail:
-            return LlmErrorKind.REQUEST_SHAPE if self.param.startswith(TEXT_PARAM_PREFIX) else LlmErrorKind.UNSUPPORTED_PARAMETER
-        if any(signal in detail for signal in REQUEST_SHAPE_SIGNALS) or self.param.startswith(TEXT_PARAM_PREFIX):
+            return LlmErrorKind.REQUEST_SHAPE if self.param.startswith(OpenAiParam.TEXT) else LlmErrorKind.UNSUPPORTED_PARAMETER
+        if any(signal in detail for signal in REQUEST_SHAPE_SIGNALS) or self.param.startswith(OpenAiParam.TEXT):
             return LlmErrorKind.REQUEST_SHAPE
         return LlmErrorKind.BAD_REQUEST
 

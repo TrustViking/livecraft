@@ -24,22 +24,21 @@ from tkinter import messagebox, ttk
 from typing import Final
 
 from app.config.loader import ConfigError, SettingProblem, load_settings
+from app.core.text_format import PARAGRAPH_BREAK
 from app.paths import LivecraftPaths
 from app.setup.fields.channel_draft import ChannelDraft
-from app.setup.fields.language_choice import LanguageCatalog, LanguageSelection
+from app.setup.fields.language_choice import LANGUAGES_KEY, LanguageCatalog, LanguageSelection
 from app.setup.panels.channels_panel import ChannelsPanel, ChannelsPanelEdit
-from app.setup.tabs import NOTICE_JOINER, PAD, TEXT_WRAP_PIXELS, ProblemLine
+from app.setup.tabs import PAD, READONLY, TEXT_WRAP_PIXELS, ProblemLine
 from app.ui import messages_ru as msg
 
 DRAFT_FIELDS: Final[tuple[str, ...]] = tuple(field.name for field in dataclasses.fields(ChannelDraft))
 CHOICE_FIELD: Final[str] = "privacy"       # только выбор из перечня модели
-LANGUAGES_FIELD: Final[str] = "languages"  # выбор языка из списка; печать только сужает список
 FORM_LANGUAGE_VALUES_KEY: Final[str] = "language"   # варианты вопроса о языке в form.values livecraft.json
 TREE_HEIGHT_ROWS: Final[int] = 8
 ENTRY_WIDTH_CHARS: Final[int] = 40
 CHOICE_WIDTH_CHARS: Final[int] = ENTRY_WIDTH_CHARS   # «видимость» и «язык» — одного вида и одной ширины
 TREE_SHOW: Final[str] = "headings"
-READONLY: Final[str] = "readonly"
 ESCAPE_EVENT: Final[str] = "<Escape>"
 VARIABLE_WRITE: Final[str] = "write"
 
@@ -211,7 +210,7 @@ class ChannelsTab:
 
     def _show_languages(self) -> None:
         """Язык — в черновик одним кодом; лишние языки старой записи и язык не из формы — строками под полем."""
-        self.form[LANGUAGES_FIELD].set(self.selection.text)
+        self.form[LANGUAGES_KEY].set(self.selection.text)
         first: str | None = self.selection.first
         self.language_note.show_text(
             msg.SETUP_LANGUAGE_SEVERAL.format(name=self.catalog.name(first))
@@ -225,7 +224,7 @@ class ChannelsTab:
 
     def _show(self) -> None:
         """Перерисовать оговорки, проблему списка и таблицу по модели."""
-        self.notice.configure(text=NOTICE_JOINER.join(self.panel.notices))
+        self.notice.configure(text=PARAGRAPH_BREAK.join(self.panel.notices))
         self.list_problem.show_problem(self.panel.problem)
         self.tree.delete(*self.tree.get_children())
         for index, draft in enumerate(self.panel.drafts):
@@ -235,7 +234,7 @@ class ChannelsTab:
     def _tree_values(self, draft: ChannelDraft) -> tuple[str, ...]:
         """Строка таблицы: поля черновика как есть, языки — названиями."""
         return tuple(
-            self.catalog.names(draft.language_codes) if name == LANGUAGES_FIELD else getattr(draft, name)
+            self.catalog.names(draft.language_codes) if name == LANGUAGES_KEY else getattr(draft, name)
             for name in DRAFT_FIELDS
         )
 
@@ -267,7 +266,7 @@ class ChannelsTab:
             ttk.Label(form_frame, text=msg.SETUP_CHANNEL_FIELD_LABELS[name]).grid(
                 row=row, column=0, sticky=tk.NW, padx=PAD, pady=(PAD, 0)
             )
-            if name == LANGUAGES_FIELD:
+            if name == LANGUAGES_KEY:
                 cell: ttk.Frame = ttk.Frame(form_frame)
                 cell.grid(row=row, column=1, sticky=tk.W, padx=PAD, pady=(PAD, 0))
                 inputs[name] = self._build_language_box(cell)

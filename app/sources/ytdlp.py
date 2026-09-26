@@ -22,13 +22,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from app.observability.logging_setup import get_logger
+from app.core.errors import DETAIL_MAX_CHARS
+from app.core.text_format import TEXT_ENCODING
+from app.observability.log_event import LogArea, get_logger
 from app.paths import LivecraftPaths
 from app.sources.fetcher import SourceFailureReason, SourceFetch
 from app.sources.metadata import SourceMetadata
 
-LOGGER_NAME: Final[str] = "sources.ytdlp"
-LOGGER = get_logger(LOGGER_NAME)
+LOGGER = get_logger(LogArea.SOURCES_YTDLP)
 
 YTDLP_TIMEOUT_SEC: Final[float] = 30.0
 YTDLP_BASE_ARGS: Final[tuple[str, ...]] = (
@@ -40,11 +41,9 @@ YTDLP_BASE_ARGS: Final[tuple[str, ...]] = (
 COOKIES_ARG: Final[str] = "--cookies"
 JS_RUNTIMES_ARG: Final[str] = "--js-runtimes"
 DENO_RUNTIME_TEMPLATE: Final[str] = "deno:{path}"
-OUTPUT_ENCODING: Final[str] = "utf-8"
 OUTPUT_ERRORS: Final[str] = "replace"
 COOKIES_COPY_PREFIX: Final[str] = "livecraft_cookies_"
 COOKIES_COPY_SUFFIX: Final[str] = ".txt"
-DETAIL_MAX_CHARS: Final[int] = 200
 # Подстроки stderr yt-dlp, по которым донор называл причину отказа.
 PRIVATE_MARKERS: Final[tuple[str, ...]] = ("Private video", "Sign in to confirm", "Sign in if you")
 UNAVAILABLE_MARKERS: Final[tuple[str, ...]] = ("Video unavailable", "removed by the uploader")
@@ -145,7 +144,7 @@ class YtDlpFetcher:
                     text=True,
                     check=False,
                     timeout=self.timeout_sec,
-                    encoding=OUTPUT_ENCODING,
+                    encoding=TEXT_ENCODING,
                     errors=OUTPUT_ERRORS,
                 )
             except subprocess.TimeoutExpired:

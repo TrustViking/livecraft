@@ -14,9 +14,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 
 if TYPE_CHECKING:
     from app.config.loader import LlmSettings
@@ -24,11 +24,7 @@ if TYPE_CHECKING:
     from app.llm.merges.attempt import MergeRules
     from app.llm.merges.job import MergeOutcome
 
-LOGGER: logging.Logger = get_logger("llm")
-
-LOG_NONE: Final[str] = "none"
-YES: Final[str] = "yes"
-NO: Final[str] = "no"
+LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
 
 class MergeStopReason(str, Enum):
@@ -124,7 +120,7 @@ class MergeTally:
             f"paragraph_recovery_used={self.paragraph_recovery_used} real_merge_blocks={self.real_merge_blocks} "
             f"merge_candidate_blocks={self.merge_candidate_blocks} fallback_merge_blocks={self.fallback_merge_blocks} "
             f"full_merge_artifacts={self.full_merge_artifacts} partial_merge_artifacts={self.partial_merge_artifacts} "
-            f"had_real_merge_blocks={YES if self.had_real_merge_blocks else NO}"
+            f"had_real_merge_blocks={LogValue.YES.value if self.had_real_merge_blocks else LogValue.NO.value}"
         )
 
 
@@ -149,5 +145,5 @@ class MergeRun:
     @property
     def log_line(self) -> str:
         """Итог запуска: строка донора и причина остановки."""
-        stop: str = self.stop_reason.value if self.stop_reason is not None else LOG_NONE
+        stop: str = self.stop_reason.value if self.stop_reason is not None else LogValue.EMPTY.value
         return f"{self.tally.log_line} stop_reason={stop}"

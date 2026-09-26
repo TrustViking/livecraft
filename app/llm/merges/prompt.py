@@ -17,23 +17,21 @@ from typing import TYPE_CHECKING, Any, Final
 
 import pycountry
 
+from app.core.text_format import PARAGRAPH_BREAK
 from app.llm.merges.contract import MergeContract
 from app.llm.merges.prompt_texts import MergeContractMode, MergePromptTexts
 from app.llm.merges.retry import RetryProfile
 from app.llm.merges.source import MergeSource
-from app.observability.logging_setup import get_logger
+from app.observability.log_event import LogArea, LogValue, get_logger
 
 if TYPE_CHECKING:
     from app.sources.video import SourceVideo
 
-LOGGER: logging.Logger = get_logger("llm")
+LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
 MIN_SOURCES: Final[int] = 2
 UNKNOWN_LANGUAGE_NAME: Final[str] = "Unknown"
 MERGE_CONTRACT_PLACEHOLDER: Final[str] = "{merge_contract_block}"
-PARAGRAPH_BREAK: Final[str] = "\n\n"
-YES: Final[str] = "yes"
-NO: Final[str] = "no"
 
 
 def language_full_name(language: str) -> str:
@@ -158,7 +156,7 @@ class MergePrompt:
             (
                 f"merge_prompt_contract_selected language={self.language} source_count={contract.source_count} "
                 f"contract_mode={contract.mode.value} expected_bullet_range={contract.bullet_range_label} "
-                f"expanded_structure_enabled={YES if contract.expanded_structure_enabled else NO} "
-                f"narrative_trigger={YES if contract.mode is MergeContractMode.NARRATIVE else NO}"
+                f"expanded_structure_enabled={LogValue.YES.value if contract.expanded_structure_enabled else LogValue.NO.value} "
+                f"narrative_trigger={LogValue.YES.value if contract.mode is MergeContractMode.NARRATIVE else LogValue.NO.value}"
             ),
         )

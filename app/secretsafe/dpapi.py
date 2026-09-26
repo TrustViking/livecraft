@@ -26,14 +26,14 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Final
 
-from app.observability.logging_setup import get_logger
+from app.core.system import WINDOWS_PLATFORM
+from app.observability.log_event import LogArea, get_logger
 
-LOGGER = get_logger("vault")
+LOGGER = get_logger(LogArea.VAULT)
 
 DATA_DESCRIPTION: Final[str] = "Livecraft local vault"
 CRYPT32_LIBRARY: Final[str] = "crypt32.dll"
 KERNEL32_LIBRARY: Final[str] = "kernel32.dll"
-WINDOWS_PLATFORM: Final[str] = "win32"
 NO_FLAGS: Final[int] = 0      # CRYPTPROTECT_LOCAL_MACHINE не ставится: привязка к пользователю (§7.2)
 PROTECT_ENTRY_POINT: Final[str] = "CryptProtectData"
 UNPROTECT_ENTRY_POINT: Final[str] = "CryptUnprotectData"

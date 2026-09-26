@@ -13,9 +13,10 @@ from app.llm.merges.contract import MergeContractMode
 from app.llm.merges.prompt import MergePrompt, MergePromptRefusal, language_full_name
 from app.llm.merges.prompt_texts import MergePromptTexts
 from app.llm.merges.retry import RetryFacts, RetryProfile, RetrySignal
+from app.observability.log_event import LogArea
 from app.resources.loader import TextResource
 from app.sources.video import SourceVideo
-from app.tests.conftest import LogCollector
+from app.tests.fixtures.logs import LogCapture
 from app.tests.test_llm_merges_source import merge_video
 
 TEXTS: MergePromptTexts = MergePromptTexts.load()
@@ -142,15 +143,9 @@ def build(language: str, videos: tuple[SourceVideo, ...], texts: MergePromptText
 
 
 @pytest.fixture
-def llm_log() -> Iterator[LogCollector]:
-    logger: logging.Logger = logging.getLogger("livecraft.llm")
-    collector: LogCollector = LogCollector()
-    previous: int = logger.level
-    logger.addHandler(collector)
-    logger.setLevel(logging.DEBUG)
-    yield collector
-    logger.removeHandler(collector)
-    logger.setLevel(previous)
+def llm_log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.LLM, logging.DEBUG) as capture:
+        yield capture
 
 
 # --- ресурсы
@@ -218,7 +213,7 @@ def test_prompt_targets_youtube_title_and_description_only() -> None:
     assert "URL:" not in text
 
 
-def test_prompt_uses_expanded_contract_for_three_or_more_sources(llm_log: LogCollector) -> None:
+def test_prompt_uses_expanded_contract_for_three_or_more_sources(llm_log: LogCapture) -> None:
     text: str = build("en", three_videos(), donor_test_texts()).text
     assert "Use the expanded merge contract for 3 or more source items." in text
     assert "Write 4 to 6 short bullet lines total." in text
@@ -251,7 +246,7 @@ def test_compact_prompt_keeps_the_compact_contract_under_a_targeted_retry() -> N
     assert "Use the compact merge contract for 1 to 2 source items." in text
 
 
-def test_merge_prompt_uses_clean_full_source_text_without_urls_hashtags_or_truncation(llm_log: LogCollector) -> None:
+def test_merge_prompt_uses_clean_full_source_text_without_urls_hashtags_or_truncation(llm_log: LogCapture) -> None:
     videos: tuple[SourceVideo, ...] = (
         merge_video(
             1,
@@ -422,7 +417,7 @@ def test_contract_is_chosen_by_the_prompt_descriptions() -> None:
 # --- лог и отказ
 
 
-def test_log_lines_have_counters_and_no_source_text(llm_log: LogCollector) -> None:
+def test_log_lines_have_counters_and_no_source_text(llm_log: LogCapture) -> None:
     videos = (merge_video(5, "Secret one", "Private https://x.example"), merge_video(6, "Secret two", ""))
     prompt: MergePrompt = build("en", videos, TEXTS)
     assert llm_log.messages(logging.INFO) == list(prompt.log_lines)
@@ -446,7 +441,7 @@ def test_narrative_log_line_has_no_bullet_range() -> None:
 
 
 @pytest.mark.parametrize("count", [0, 1])
-def test_fewer_than_two_sources_is_a_refusal_value(count: int, llm_log: LogCollector) -> None:
+def test_fewer_than_two_sources_is_a_refusal_value(count: int, llm_log: LogCapture) -> None:
     result: MergePrompt | MergePromptRefusal = MergePrompt.of("uk", two_videos()[:count], TEXTS)
     assert result == MergePromptRefusal(language="uk", source_count=count)
     assert llm_log.messages(logging.WARNING) == [f"merge_prompt_refused language=uk source_count={count} min_sources=2"]

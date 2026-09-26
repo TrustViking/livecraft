@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
+from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
 from app.texts.description_marks import (
     URL_LINE_PATTERN,
     URL_PATTERN,
@@ -23,8 +24,6 @@ from app.texts.description_marks import (
 
 PARAGRAPH_BREAK_PATTERN: Final[re.Pattern[str]] = re.compile(r"\n\s*\n")
 WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
-PARAGRAPH_JOINER: Final[str] = "\n\n"
-LINE_JOINER: Final[str] = "\n"
 URL_PATH_SLASHES: Final[int] = 3                  # «https://site.org/» — у ссылки на корень сайта слэш снимается
 
 SCRIPT_MIX_LANGUAGES: Final[frozenset[str]] = frozenset({"uk", "en", "ru"})
@@ -55,7 +54,7 @@ def _collapse(text: str) -> str:
 
 
 def _lines(paragraph: str) -> list[str]:
-    return [line.strip() for line in paragraph.split(LINE_JOINER) if line.strip()]
+    return [line.strip() for line in paragraph.split(NEWLINE) if line.strip()]
 
 
 def _script_mix_probe_text(text: str) -> str:
@@ -120,12 +119,12 @@ class DescriptionBlocks:
         if self.hook:
             paragraphs.append(_collapse(self.hook))
         if self.theses_lines:
-            paragraphs.append(LINE_JOINER.join(line.strip() for line in self.theses_lines if line.strip()).strip())
+            paragraphs.append(NEWLINE.join(line.strip() for line in self.theses_lines if line.strip()).strip())
         if self.links_heading:
-            paragraphs.append(LINE_JOINER.join([self.links_heading.strip(), *self._rendered_urls()]).strip())
+            paragraphs.append(NEWLINE.join([self.links_heading.strip(), *self._rendered_urls()]).strip())
         if self.cta:
             paragraphs.append(_collapse(self.cta))
-        return PARAGRAPH_JOINER.join(paragraph for paragraph in paragraphs if paragraph).strip()
+        return PARAGRAPH_BREAK.join(paragraph for paragraph in paragraphs if paragraph).strip()
 
     def _rendered_urls(self) -> list[str]:
         urls: list[str] = []

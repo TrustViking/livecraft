@@ -15,6 +15,7 @@ import tkinter as tk
 from tkinter import font, messagebox, ttk
 from typing import Final
 
+from app.core.text_format import NEWLINE
 from app.paths import LivecraftPaths
 from app.setup.readiness import Readiness
 from app.setup.tabs import PAD, TEXT_WRAP_PIXELS, EditShortcuts
@@ -26,7 +27,6 @@ from app.version import APP_VERSION
 
 PROCESS_SYSTEM_DPI_AWARE: Final[int] = 1   # SetProcessDpiAwareness: осведомлённость о DPI системы
 CLOSE_PROTOCOL: Final[str] = "WM_DELETE_WINDOW"
-READINESS_JOINER: Final[str] = "\n"
 TAB_CHANGED_EVENT: Final[str] = "<<NotebookTabChanged>>"
 # Вид вкладок (итог смотра окна 23-09-2026): вкладки должны быть заметны человеку, который видит окно впервые.
 THEME: Final[str] = "clam"                  # vista и xpnative фон вкладки не берут: рисуют её картинкой
@@ -78,7 +78,7 @@ class SetupWindow:
     def refresh_readiness(self) -> None:
         """Строка готовности по свежей проверке: готово — одна строка, нет — проблемы Readiness."""
         readiness: Readiness = Readiness.check(self.paths)
-        text: str = msg.SETUP_READY if readiness.is_ready else READINESS_JOINER.join(readiness.problems)
+        text: str = msg.SETUP_READY if readiness.is_ready else NEWLINE.join(readiness.problems)
         self.readiness_line.configure(text=text)
 
     def settings_saved(self) -> None:

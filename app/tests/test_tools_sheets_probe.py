@@ -9,12 +9,13 @@ from app.google.auth import AuthError, AuthErrorReason, GoogleLogin
 from app.paths import LivecraftPaths, ROOT_ENV_VAR
 from app.secretsafe.value import SecretField
 from app.secretsafe.vault import Vault
+from app.setup.run_mode import ExitCode
 from app.sheets.client import SheetsReader, SheetsReadError, SheetsReadReason
 from app.sheets.plan import SheetPlan
 from app.sheets.rows import RowSkipReason
 from app.tests.conftest import FIXED_NOW, REPO_SETTINGS_FILE, SUPPLIED_VALUES
 from app.tools import sheets_probe
-from app.tools.sheets_probe import ProbeExit, SheetsProbe
+from app.tools.sheets_probe import SheetsProbe
 from app.ui import messages_ru as msg
 
 LINK: str = "https://youtu.be/dQw4w9WgXcQ"
@@ -87,7 +88,7 @@ def test_probe_prints_columns_and_counters_only(
     reader: _FakeReader = _FakeReader(values=VALUES)
     logins: list[GoogleLogin] = patch_open(monkeypatch, reader)
     code, lines = run_probe(ready_paths)
-    assert code == ProbeExit.OK == 0
+    assert code == ExitCode.OK == 0
     assert logins == [GoogleLogin.operator(ready_paths)]
     assert reader.vaults[0].get(SecretField.SHEETS_ID) is not None
     assert lines[0] == msg.SHEETS_PROBE_TITLE
@@ -106,7 +107,7 @@ def test_probe_prints_columns_and_counters_only(
 def test_probe_prints_the_plan_problem(ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_open(monkeypatch, _FakeReader(values=[["Links", "Time"]]))
     code, lines = run_probe(ready_paths)
-    assert code == ProbeExit.OK
+    assert code == ExitCode.OK
     assert lines[1:] == [SheetPlan.from_values([["Links", "Time"]]).problem]
 
 
@@ -116,7 +117,7 @@ def test_probe_without_vault_is_code_2_and_does_not_open_google(
     livecraft_paths.config_file.write_bytes(REPO_SETTINGS_FILE.read_bytes())
     logins: list[GoogleLogin] = patch_open(monkeypatch, _FakeReader(values=VALUES))
     code, lines = run_probe(livecraft_paths)
-    assert code == ProbeExit.CONFIG == 2
+    assert code == ExitCode.CONFIG == 2
     assert logins == []
     assert lines[-1] == msg.SETUP_REQUIRED
     assert SecretField.SHEETS_ID.human_label in "\n".join(lines)
@@ -129,7 +130,7 @@ def test_probe_with_a_broken_vault_file_names_it_in_russian_and_is_code_2(
     ready_paths.vault_local_file.write_text("{не json", encoding="utf-8")
     logins: list[GoogleLogin] = patch_open(monkeypatch, _FakeReader(values=VALUES))
     code, lines = run_probe(ready_paths)
-    assert code == ProbeExit.CONFIG and logins == []
+    assert code == ExitCode.CONFIG and logins == []
     assert lines[-1] == msg.SETUP_REQUIRED
     refusal: str = lines[-2]
     assert ready_paths.vault_local_file.name in refusal and msg.VAULT_FILE_ADVICE_LOCAL in refusal
@@ -141,7 +142,7 @@ def test_probe_without_settings_is_code_2(ready_paths: LivecraftPaths, monkeypat
     ready_paths.config_file.unlink()
     logins: list[GoogleLogin] = patch_open(monkeypatch, _FakeReader(values=VALUES))
     code, lines = run_probe(ready_paths)
-    assert code == ProbeExit.CONFIG
+    assert code == ExitCode.CONFIG
     assert logins == []
     assert lines[-1] == msg.SETUP_REQUIRED
 
@@ -150,7 +151,7 @@ def test_probe_read_error_is_code_1(ready_paths: LivecraftPaths, monkeypatch: py
     error: SheetsReadError = SheetsReadError(SheetsReadReason.NO_ACCESS, "sheets-plan(abcd)", status=403)
     patch_open(monkeypatch, _FakeReader(error=error))
     code, lines = run_probe(ready_paths)
-    assert code == ProbeExit.ERRORS == 1
+    assert code == ExitCode.ERRORS == 1
     assert lines[-2:] == [error.human, msg.SHEETS_PROBE_RELOGIN_HINT]
     assert_no_vault_values(lines)
 
@@ -159,7 +160,7 @@ def test_other_read_errors_give_no_relogin_hint(ready_paths: LivecraftPaths, mon
     error: SheetsReadError = SheetsReadError(SheetsReadReason.NOT_FOUND, "sheets-plan(abcd)", status=404)
     patch_open(monkeypatch, _FakeReader(error=error))
     code, lines = run_probe(ready_paths)
-    assert code == ProbeExit.ERRORS
+    assert code == ExitCode.ERRORS
     assert lines[-1] == error.human
     assert msg.SHEETS_PROBE_RELOGIN_HINT not in lines
 
@@ -169,7 +170,7 @@ def test_relogin_logs_in_again_before_reading(ready_paths: LivecraftPaths, monke
     logins: list[GoogleLogin] = patch_open(monkeypatch, reader)
     calls: list[dict[str, Any]] = patch_credentials(monkeypatch)
     code, _lines = run_probe(ready_paths, relogin=True)
-    assert code == ProbeExit.OK
+    assert code == ExitCode.OK
     assert len(calls) == 1 and calls[0]["force_reauth"] is True
     assert logins == [GoogleLogin.operator(ready_paths)]
     assert len(reader.vaults) == 1
@@ -179,7 +180,7 @@ def test_without_relogin_the_token_is_not_forced(ready_paths: LivecraftPaths, mo
     patch_open(monkeypatch, _FakeReader(values=VALUES))
     calls: list[dict[str, Any]] = patch_credentials(monkeypatch)
     code, _lines = run_probe(ready_paths)
-    assert code == ProbeExit.OK
+    assert code == ExitCode.OK
     assert calls == []
 
 
@@ -190,7 +191,7 @@ def test_a_failed_relogin_is_code_1_and_reads_nothing(
     logins: list[GoogleLogin] = patch_open(monkeypatch, reader)
     patch_credentials(monkeypatch, AuthError(AuthErrorReason.LOGIN_TIMEOUT, "no answer"))
     code, lines = run_probe(ready_paths, relogin=True)
-    assert code == ProbeExit.ERRORS
+    assert code == ExitCode.ERRORS
     assert logins == [] and reader.vaults == []
     assert AuthErrorReason.LOGIN_TIMEOUT.human in lines[-1]
     assert_no_vault_values(lines)
@@ -200,7 +201,7 @@ def test_main_passes_the_relogin_flag(ready_paths: LivecraftPaths, monkeypatch: 
     monkeypatch.setenv(ROOT_ENV_VAR, str(ready_paths.root))
     patch_open(monkeypatch, _FakeReader(values=VALUES))
     calls: list[dict[str, Any]] = patch_credentials(monkeypatch)
-    assert sheets_probe.main([sheets_probe.RELOGIN_FLAG]) == ProbeExit.OK
+    assert sheets_probe.main([sheets_probe.RELOGIN_FLAG]) == ExitCode.OK
     assert [call["force_reauth"] for call in calls] == [True]
 
 
@@ -209,7 +210,7 @@ def test_probe_main_runs_on_the_root_from_the_environment(
 ) -> None:
     monkeypatch.setenv(ROOT_ENV_VAR, str(ready_paths.root))
     patch_open(monkeypatch, _FakeReader(values=VALUES))
-    assert sheets_probe.main([]) == ProbeExit.OK
+    assert sheets_probe.main([]) == ExitCode.OK
     out: str = capsys.readouterr().out
     assert msg.SHEETS_PROBE_TITLE in out
     assert_no_vault_values([out])

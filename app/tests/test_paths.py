@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import os
 from pathlib import Path
 
 import pytest
@@ -10,6 +9,7 @@ from app import paths as paths_module
 from app.paths import (
     ROOT_ENV_VAR,
     TEMP_FILE_SUFFIX,
+    AtomicFile,
     LivecraftPaths,
     build_paths,
     ensure_dirs,
@@ -132,22 +132,46 @@ def test_atomic_write_keeps_line_endings_as_given(tmp_path: Path) -> None:
     assert target.read_bytes() == "первая\nвторая\n".encode(ENCODING)
 
 
-def test_atomic_write_removes_the_temporary_when_replace_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Сбой замены — OSError наружу, временного файла не остаётся, прежний файл цел."""
+def test_atomic_write_removes_the_temporary_when_replace_fails(tmp_path: Path) -> None:
+    """Сбой замены (имя цели занято непустой папкой) — OSError наружу, временного файла не остаётся."""
     target: Path = tmp_path / "keys.txt"
-    target.write_text("прежнее", encoding=ENCODING)
-
-    def _refuse(source: object, destination: object) -> None:
-        raise OSError("replace refused")
-
-    monkeypatch.setattr(os, "replace", _refuse)
+    target.mkdir()
+    (target / "inside.txt").write_text("прежнее", encoding=ENCODING)
     with pytest.raises(OSError):
         write_text_atomically(target, "новое", ENCODING)
-    assert target.read_text(encoding=ENCODING) == "прежнее"
+    assert (target / "inside.txt").read_text(encoding=ENCODING) == "прежнее"
     assert not any(item.name.endswith(TEMP_FILE_SUFFIX) for item in tmp_path.iterdir())
+
+
+def test_atomic_file_writes_what_the_filler_wrote(tmp_path: Path) -> None:
+    """Содержимое пишет вызывающий — во временный файл рядом; на место цели он встаёт целиком."""
+    target: Path = tmp_path / "plan.bcast"
+    AtomicFile(target=target, prefix=".plan_").write(lambda path: path.write_bytes(b"PK"))
+    assert target.read_bytes() == b"PK"
+    assert [item.name for item in tmp_path.iterdir()] == [target.name]
+
+
+def test_atomic_file_removes_the_temporary_when_the_filler_fails(tmp_path: Path) -> None:
+    """Сбой записи — ошибка наружу, прежний файл цел, временного файла нет."""
+    target: Path = tmp_path / "plan.bcast"
+    target.write_bytes(b"old")
+
+    def fail(path: Path) -> None:
+        path.write_bytes(b"half")
+        raise OSError("disk full")
+
+    with pytest.raises(OSError):
+        AtomicFile(target=target, prefix=".plan_").write(fail)
+    assert target.read_bytes() == b"old"
+    assert [item.name for item in tmp_path.iterdir()] == [target.name]
+
+
+def test_atomic_file_names_the_temporary_by_its_prefix(tmp_path: Path) -> None:
+    """Временный файл лежит рядом с целью и начинается с приставки: недописанное видно по имени."""
+    target: Path = tmp_path / "keys.txt"
+    seen: list[str] = []
+    AtomicFile.at(target).write(lambda path: seen.append(path.name) or path.write_text("", encoding=ENCODING))
+    assert seen[0].startswith(target.name) and seen[0].endswith(TEMP_FILE_SUFFIX)
 
 
 def test_atomic_write_needs_an_existing_parent_directory(tmp_path: Path) -> None:

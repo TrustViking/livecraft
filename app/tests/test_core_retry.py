@@ -1,10 +1,24 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Callable
+from enum import Enum
+from http import HTTPStatus
 
 import pytest
 
-from app.core.retry import BASE_DELAY_SEC, JITTER_MAX_SEC, MAX_DELAY_SEC, MAX_RETRIES, RetryPolicy
+from app.core.retry import (
+    BASE_DELAY_SEC,
+    JITTER_MAX_SEC,
+    MAX_DELAY_SEC,
+    MAX_RETRIES,
+    RETRYABLE_HTTP_STATUSES,
+    AttemptFailure,
+    RetryLoop,
+    RetryPolicy,
+    RetryRun,
+    RetryStep,
+)
 
 
 class _FixedRandom(random.Random):
@@ -51,3 +65,70 @@ def test_delay_never_exceeds_the_ceiling() -> None:
 def test_has_retry_left() -> None:
     policy: RetryPolicy = RetryPolicy()
     assert [policy.has_retry_left(number) for number in range(0, 6)] == [False, True, True, True, True, False]
+
+
+# --- RetryLoop: один цикл повторов для таблицы, превью и OpenAI
+
+
+class _Reason(str, Enum):
+    BUSY = "busy"
+    REFUSED = "refused"
+
+
+BUSY: AttemptFailure = AttemptFailure(_Reason.BUSY, True, HTTPStatus.SERVICE_UNAVAILABLE, "HttpError")
+REFUSED: AttemptFailure = AttemptFailure(_Reason.REFUSED, False, HTTPStatus.NOT_FOUND)
+
+
+def _loop(sleeps: list[float]) -> RetryLoop:
+    return RetryLoop(RetryPolicy(), _FixedRandom(0.0), sleeps.append)
+
+
+def _attempts(*outcomes: str | AttemptFailure) -> Callable[[], str | AttemptFailure]:
+    queue: list[str | AttemptFailure] = list(outcomes)
+    return lambda: queue.pop(0)
+
+
+def test_a_result_at_once_is_one_attempt_without_pauses() -> None:
+    sleeps: list[float] = []
+    steps: list[RetryStep] = []
+    run: RetryRun[str] = _loop(sleeps).run(_attempts("rows"), steps.append)
+    assert (run.value, run.failure, run.attempts) == ("rows", None, 1)
+    assert sleeps == [] and steps == []
+
+
+def test_retryable_failures_are_repeated_with_the_policy_pauses() -> None:
+    sleeps: list[float] = []
+    steps: list[RetryStep] = []
+    run: RetryRun[str] = _loop(sleeps).run(_attempts(BUSY, BUSY, "rows"), steps.append)
+    assert (run.value, run.failure, run.attempts) == ("rows", None, 3)
+    assert sleeps == [2.0, 4.0]
+    assert [(step.failure, step.retry, step.delay_sec) for step in steps] == [(BUSY, 1, 2.0), (BUSY, 2, 4.0)]
+
+
+def test_a_failure_that_is_not_retryable_stops_at_once() -> None:
+    sleeps: list[float] = []
+    run: RetryRun[str] = _loop(sleeps).run(_attempts(BUSY, REFUSED, "rows"), lambda step: None)
+    assert (run.value, run.failure, run.attempts) == (None, REFUSED, 2)
+    assert sleeps == [2.0]
+
+
+def test_the_last_failure_comes_back_when_the_retries_run_out() -> None:
+    sleeps: list[float] = []
+    run: RetryRun[str] = _loop(sleeps).run(_attempts(*[BUSY] * MAX_RETRIES, BUSY), lambda step: None)
+    assert (run.value, run.failure, run.attempts) == (None, BUSY, RetryPolicy().max_attempts)
+    assert sleeps == [2.0, 4.0, 8.0, 16.0]
+
+
+def test_the_failure_gives_its_status_and_error_name_to_the_log() -> None:
+    assert BUSY.log_fields == {"status": HTTPStatus.SERVICE_UNAVAILABLE, "error": "HttpError"}
+    assert REFUSED.log_fields == {"status": HTTPStatus.NOT_FOUND, "error": None}
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_overload_and_temporary_server_failures_are_retryable(status: int) -> None:
+    assert status in RETRYABLE_HTTP_STATUSES
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422, 501])
+def test_client_errors_are_not_retryable(status: int) -> None:
+    assert status not in RETRYABLE_HTTP_STATUSES

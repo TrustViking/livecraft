@@ -4,11 +4,10 @@
 пройдёт до того, как первый успеет создать эфир, — и оба увидят «эфира нет» (инвариант 1: истина об
 эфирах на YouTube, а не в памяти).
 
-Замок берётся в `main.run_cli` **до** настройки логов, поэтому единственный надёжный след событий —
-`logs\\startup.log`: записи `lock_acquired`, `lock_released`, `lock_rejected` пишет сам объект-замок.
-Записи в LOGGER на момент захвата и освобождения обработчиков ещё (уже) не имеют — они остаются на
-случай, когда замок держит живой пайплайн, и потому не поднимаются выше INFO: WARNING без настроенных
-логов ушёл бы английской строкой в консоль оператора через `logging.lastResort`.
+Замок берётся в `main.run_cli` **до** настройки логов и снимается **после** их закрытия, поэтому пишет он
+только свой журнал `logs\\startup.log`: захват, освобождение, отказ и каждый сбой файловой системы. Логгеров
+программы он не зовёт — без настроенных логов их запись ушла бы английской строкой в консоль оператора.
+Отметки журнала и время владельца в файле замка — по часам программы (`Clock`), то есть по её поясу.
 
 Захват атомарный: `os.open(..., O_CREAT | O_EXCL | O_WRONLY)` — гонку создания выигрывает ровно один
 процесс. Проигравший читает запись владельца и либо уступает (владелец жив), либо снимает застарелый
@@ -17,38 +16,55 @@
 
 Живость процесса-владельца: на Windows — `OpenProcess` + `GetExitCodeProcess` через `ctypes` с явными
 `argtypes` и `restype` (на 64-битной Windows это обязательно, иначе HANDLE обрезается до 32 бит и
-`GetExitCodeProcess` врёт); на остальных системах — `os.kill(pid, 0)`. Поведение перенесено из
-`restreamer\\app\\runtime\\single_instance.py` без упрощений. Новых зависимостей нет: ни psutil, ни pywin32.
+`GetExitCodeProcess` врёт); на остальных системах — `os.kill(pid, 0)`. Новых зависимостей нет.
 """
 from __future__ import annotations
 
 import os
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Final, NoReturn
 
-from app.core.dates import format_datetime_text
-from app.observability.logging_setup import get_logger
+from app.core.clock import Clock
+from app.core.dates import format_datetime_text, format_timestamp
+from app.core.errors import os_error_reason
+from app.core.system import WINDOWS_PLATFORM
+from app.core.text_format import TEXT_ENCODING
+from app.observability.log_event import LogEvent
+from app.ui import messages_ru as msg
 
-LOGGER = get_logger("runtime")
-
-LOCK_ENCODING: Final[str] = "utf-8"
 LOCK_FILE_MODE: Final[int] = 0o644
+APPEND_MODE: Final[str] = "a"
 OWNER_TOKENS: Final[int] = 2          # запись владельца — «<pid> <время запуска>», ровно два токена
 UNKNOWN_PID: Final[int] = -1          # владельца опознать не удалось: файл занят, но запись не наша
+OWNER_LINE_TEMPLATE: Final[str] = "{pid} {started_at}\n"
+STARTUP_LOG_LINE: Final[str] = "{stamp} | pid={pid} | {event}\n"
+PROCESS_QUERY_LIMITED_INFORMATION: Final[int] = 0x1000   # право OpenProcess: только спросить о состоянии
+STILL_ACTIVE: Final[int] = 259                           # код выхода процесса, который ещё работает
 
-EVENT_ACQUIRED: Final[str] = "lock_acquired"
-EVENT_RELEASED: Final[str] = "lock_released"
-EVENT_REJECTED: Final[str] = "lock_rejected"
-EVENT_STALE: Final[str] = "lock_stale"
-EVENT_CREATE_DENIED: Final[str] = "lock_create_denied"
-EVENT_STALE_KEPT: Final[str] = "lock_stale_not_removed"
-EVENT_RELEASE_FAILED: Final[str] = "lock_release_failed"
-EVENT_FOREIGN: Final[str] = "lock_foreign_not_released"
-EVENT_UNREADABLE: Final[str] = "lock_unreadable"
-STARTUP_LOG_LINE: Final[str] = "{stamp} | pid={pid} | {event} path={path}\n"
+
+class LockEvent(str, Enum):
+    """События замка в журнале startup.log."""
+
+    ACQUIRED = "lock_acquired"
+    RELEASED = "lock_released"
+    REJECTED = "lock_rejected"
+    STALE = "lock_stale"
+    UNREADABLE = "lock_unreadable"
+    CREATE_DENIED = "lock_create_denied"
+    STALE_KEPT = "lock_stale_not_removed"
+    RELEASE_FAILED = "lock_release_failed"
+    FOREIGN = "lock_foreign_not_released"
+    READ_FAILED = "lock_read_failed"
+
+
+class LockRejection(str, Enum):
+    """Почему запуск уступил: владелец замка опознан или нет."""
+
+    OWNER_KNOWN = "owner_known"
+    OWNER_UNKNOWN = "owner_unknown"
 
 
 @dataclass(frozen=True)
@@ -92,7 +108,7 @@ class LockOwner:
         """Жив ли процесс-владелец. Мёртвый владелец — застарелый замок, его можно снять."""
         if self.pid <= 0:
             return False
-        if sys.platform == "win32":
+        if sys.platform == WINDOWS_PLATFORM:
             return self._is_alive_on_windows()
         try:
             os.kill(self.pid, 0)
@@ -106,15 +122,13 @@ class LockOwner:
 
     def render(self) -> str:
         """Содержимое файла замка: ровно одна строка."""
-        return f"{self.pid} {self.started_at}\n"
+        return OWNER_LINE_TEMPLATE.format(pid=self.pid, started_at=self.started_at)
 
     def _is_alive_on_windows(self) -> bool:
         """ctypes напрямую: argtypes и restype заданы явно — иначе на Win64 HANDLE теряет старшие 32 бита."""
         import ctypes
         from ctypes import wintypes
 
-        process_query_limited_information: int = 0x1000
-        still_active: int = 259
         kernel32 = ctypes.windll.kernel32
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -122,26 +136,40 @@ class LockOwner:
         kernel32.GetExitCodeProcess.restype = wintypes.BOOL
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
-        handle = kernel32.OpenProcess(process_query_limited_information, False, self.pid)
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, self.pid)
         if not handle:
             return False
         try:
             exit_code: wintypes.DWORD = wintypes.DWORD()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
                 return False
-            return exit_code.value == still_active
+            return exit_code.value == STILL_ACTIVE
         finally:
             kernel32.CloseHandle(handle)
 
 
 class AnotherInstanceRunning(RuntimeError):
-    """Замок держит другой процесс. Русскую строку оператору печатает main, здесь — след для лога."""
+    """Замок держит другой процесс: запуск уступает. `str(error)` — русская строка оператору (контракт ошибок)."""
 
     def __init__(self, owner: LockOwner) -> None:
-        super().__init__(
-            f"another livecraft instance holds the lock (pid={owner.pid}, started_at={owner.started_at!r})"
-        )
         self.owner: LockOwner = owner
+        self.reason: LockRejection = LockRejection.OWNER_KNOWN if owner.is_known else LockRejection.OWNER_UNKNOWN
+        super().__init__(self.human)
+
+    @property
+    def human(self) -> str:
+        """Называем владельца, если его удалось опознать."""
+        if self.reason is LockRejection.OWNER_UNKNOWN:
+            return msg.LOCK_REJECTED_UNKNOWN_OWNER
+        return msg.LOCK_REJECTED.format(pid=self.owner.pid, started_at=self.owner.started_at)
+
+    @property
+    def event(self) -> LogEvent:
+        return LogEvent.of(LockEvent.REJECTED, owner_pid=self.owner.pid)
+
+    @property
+    def log_line(self) -> str:
+        return self.event.text
 
 
 @dataclass(frozen=True)
@@ -149,35 +177,34 @@ class InstanceLock:
     """Замок одного экземпляра: сам себя берёт, сам снимает и сам пишет свой след в startup.log.
 
     `pid` — отдельное поле, а не `os.getpid()` по месту: так объект можно построить от имени другого
-    процесса — это нужно и тестам, и чтению застарелого замка.
+    процесса — это нужно и тестам, и чтению застарелого замка. `clock` — часы программы.
     """
 
     path: Path
     startup_log: Path
+    clock: Clock
     pid: int = field(default_factory=os.getpid)
 
     def acquire(self) -> None:
         """Инвариант 12: одна попытка O_EXCL; живой чужой владелец — отказ; застарелый — unlink и ровно
         одна повторная попытка; проигрыш повтора — тоже отказ (fail-closed), а не перезапись."""
         if self._create_exclusively():
-            self._note(EVENT_ACQUIRED)
-            LOGGER.info("lock_acquired pid=%d path=%s", self.pid, self.path)
+            self._note(LogEvent.of(LockEvent.ACQUIRED))
             return
         owner: LockOwner | None = LockOwner.parse(self._read())
         if owner is not None:
             if owner.pid == self.pid:
-                self._note(EVENT_ACQUIRED)       # свой же замок: перезахват тем же процессом
+                self._note(LogEvent.of(LockEvent.ACQUIRED))       # свой же замок: перезахват тем же процессом
                 return
             if owner.is_alive:
                 self._reject(owner)
-            self._note(f"{EVENT_STALE} owner_pid={owner.pid}")
+            self._note(LogEvent.of(LockEvent.STALE, owner_pid=owner.pid))
         else:
-            self._note(EVENT_UNREADABLE)         # запись нечитаема — инвариант 12 велит снимать как застарелую
+            self._note(LogEvent.of(LockEvent.UNREADABLE))   # нечитаемую запись инвариант 12 велит снимать как застарелую
         self._discard_stale()
         if not self._create_exclusively():
             self._reject(LockOwner.parse(self._read()) or LockOwner.unknown())
-        self._note(EVENT_ACQUIRED)
-        LOGGER.info("lock_acquired pid=%d path=%s stale=1", self.pid, self.path)
+        self._note(LogEvent.of(LockEvent.ACQUIRED))
 
     def release(self) -> None:
         """Снимает только свой замок: чужой не трогает, отсутствующий не ищет."""
@@ -185,24 +212,22 @@ class InstanceLock:
         if owner is None:
             return
         if owner.pid != self.pid:
-            self._note(f"{EVENT_FOREIGN} owner_pid={owner.pid}")
-            LOGGER.warning("lock_foreign_not_released owner_pid=%d pid=%d", owner.pid, self.pid)
+            self._note(LogEvent.of(LockEvent.FOREIGN, owner_pid=owner.pid))
             return
         try:
             self.path.unlink()
         except FileNotFoundError:
             return
         except OSError as error:
-            self._note(f"{EVENT_RELEASE_FAILED} error={error.strerror}")
-            LOGGER.warning("lock_release_failed path=%s error=%s", self.path, error)
+            self._note(LogEvent.of(LockEvent.RELEASE_FAILED, error=os_error_reason(error)))
             return
-        self._note(EVENT_RELEASED)
-        LOGGER.info("lock_released pid=%d path=%s", self.pid, self.path)
+        self._note(LogEvent.of(LockEvent.RELEASED))
 
     def _reject(self, owner: LockOwner) -> NoReturn:
         """Уступить владельцу: след в startup.log и исключение — решение о выводе и коде принимает main."""
-        self._note(f"{EVENT_REJECTED} owner_pid={owner.pid}")
-        raise AnotherInstanceRunning(owner)
+        rejection: AnotherInstanceRunning = AnotherInstanceRunning(owner)
+        self._note(rejection.event)
+        raise rejection
 
     def _create_exclusively(self) -> bool:
         """Ровно одна атомарная попытка: True — файл создан нами, False — путь замка занят.
@@ -212,17 +237,16 @@ class InstanceLock:
         сама причина уходит в startup.log, иначе её негде было бы увидеть. Нет папки под замок
         (FileNotFoundError) — это уже не занятость, а сломанное окружение: ошибка идёт наружу.
         """
-        owner: LockOwner = LockOwner(pid=self.pid, started_at=format_datetime_text(datetime.now().astimezone()))
+        owner: LockOwner = LockOwner(pid=self.pid, started_at=format_datetime_text(self.clock.now()))
         try:
             handle: int = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, LOCK_FILE_MODE)
         except FileExistsError:
             return False
         except PermissionError as error:
-            self._note(f"{EVENT_CREATE_DENIED} error={error.strerror}")
-            LOGGER.warning("lock_create_denied path=%s error=%s", self.path, error)
+            self._note(LogEvent.of(LockEvent.CREATE_DENIED, error=os_error_reason(error)))
             return False
         try:
-            os.write(handle, owner.render().encode(LOCK_ENCODING))
+            os.write(handle, owner.render().encode(TEXT_ENCODING))
         finally:
             os.close(handle)
         return True
@@ -234,29 +258,29 @@ class InstanceLock:
         except FileNotFoundError:
             return
         except OSError as error:
-            self._note(f"{EVENT_STALE_KEPT} error={error.strerror}")
-            LOGGER.warning("lock_stale_not_removed path=%s error=%s", self.path, error)
+            self._note(LogEvent.of(LockEvent.STALE_KEPT, error=os_error_reason(error)))
 
     def _read(self) -> str:
         """Содержимое файла замка; нет файла или не читается — пустая строка (владелец неопознан)."""
         try:
-            return self.path.read_text(encoding=LOCK_ENCODING)
+            return self.path.read_text(encoding=TEXT_ENCODING)
         except FileNotFoundError:
             return ""
         except OSError as error:
-            LOGGER.warning("lock_read_failed path=%s error=%s", self.path, error)
+            self._note(LogEvent.of(LockEvent.READ_FAILED, error=os_error_reason(error)))
             return ""
 
-    def _note(self, event: str) -> None:
-        """Событие в logs\\startup.log: на момент захвата и освобождения обработчиков логов нет."""
+    def _note(self, event: LogEvent) -> None:
+        """Событие в logs\\startup.log с отметкой до секунды и путём замка.
+
+        Журнал не пишется (нет прав, диск полон) — событие теряется, а замок работает дальше: сообщить о
+        сбое журнала некуда, логов программы в этот момент нет, а отказ запуска из-за журнала хуже потери строки.
+        """
         line: str = STARTUP_LOG_LINE.format(
-            stamp=format_datetime_text(datetime.now().astimezone()),
-            pid=self.pid,
-            event=event,
-            path=self.path,
+            stamp=format_timestamp(self.clock.now()), pid=self.pid, event=event.extended(path=self.path).text
         )
         try:
-            with self.startup_log.open("a", encoding=LOCK_ENCODING) as stream:
+            with self.startup_log.open(APPEND_MODE, encoding=TEXT_ENCODING) as stream:
                 stream.write(line)
-        except OSError as error:
-            LOGGER.warning("startup_log_write_failed path=%s error=%s", self.startup_log, error)
+        except OSError:
+            return
