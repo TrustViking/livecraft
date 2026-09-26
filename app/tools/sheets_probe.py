@@ -10,35 +10,44 @@
 Печатает только то, что не секретно: заголовки распознанных колонок, сколько рядов прочитано, допущено
 и отсеяно по каждой причине, проблему плана. Ни id таблицы, ни диапазона, ни ссылок рядов (§7.4).
 Фильтр секретов в логах ставится сразу после чтения сейфа, до первого обращения к Google.
-Коды: 0 — прочитано; 1 — Google или вход не дали прочитать; 2 — сейф или настройки не готовы.
+Коды — по правилу запуска (§10): 0 — прочитано; 1 — Google не дал прочитать; 2 — сейф или настройки не готовы
+или вход в Google не удался (`SheetsReadReason.is_configuration`).
 """
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from enum import Enum
 from typing import Final
 
-from app.config.loader import ConfigError, LivecraftSettings, ShippedSettings, load_settings
+from app.config.loader import ConfigError, LivecraftSettings, load_settings
 from app.google.auth import AuthError, GoogleLogin
-from app.observability.log_event import LogArea, get_logger
-from app.observability.logging_setup import close_logging, install_secret_filter, setup_logging
-from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
+from app.observability.log_event import LogArea, LogEvent, get_logger
+from app.run.exit_code import ExitCode
+from app.run.flag import ArgAction
 from app.secretsafe.crypto import VaultFormatError
 from app.secretsafe.store import VaultLoad, VaultStore
 from app.secretsafe.value import SecretField
 from app.sheets.client import SheetsReader, SheetsReadError, SheetsReadReason, SheetsTarget
 from app.sheets.plan import SheetColumns, SheetPlan
-from app.setup.run_mode import ExitCode
 from app.sheets.rows import PlanRow, RowSkipReason
+from app.tools.probe import ProbeConsole, ProbeLauncher, ProbeSession
 from app.ui import messages_ru as msg
 
 LOGGER = get_logger(LogArea.SHEETS_PROBE)
-SHIPPED_SETTINGS: ShippedSettings = ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE)
+PROG: Final[str] = "python -m app.tools.sheets_probe"
 RELOGIN_FLAG: Final[str] = "--relogin"
+
+
+class SheetsProbeEvent(str, Enum):
+    """События пробника таблицы в логе."""
+
+    FAILED = "sheets_probe_failed"
+    RELOGIN_FAILED = "sheets_probe_relogin_failed"
 
 
 @dataclass(frozen=True)
@@ -82,40 +91,35 @@ class SheetsProbeReport:
 
 @dataclass(frozen=True)
 class SheetsProbe:
-    """Один прогон пробника на корне `paths`; `now` и вывод `say` — параметрами, в тестах свои.
+    """Один прогон пробника в сессии запуска; `relogin` — войти в браузере заново до чтения таблицы."""
 
-    `relogin` — войти в браузере заново до чтения таблицы (ключ `--relogin`).
-    """
-
-    paths: LivecraftPaths
-    now: datetime
-    say: Callable[[str], None]
+    session: ProbeSession
     relogin: bool = False
 
     def run(self) -> int:
-        self.say(msg.SHEETS_PROBE_TITLE)
+        console: ProbeConsole = self.session.console
+        console.say(msg.SHEETS_PROBE_TITLE)
         try:
-            loaded: VaultLoad = VaultStore.open(self.paths).load()
-            settings: LivecraftSettings = load_settings(self.paths.config_file)
+            loaded: VaultLoad = VaultStore.open(self.session.paths).load()
+            settings: LivecraftSettings = load_settings(self.session.paths.config_file)
         except VaultFormatError as error:
-            return self._refuse(error.human)
+            return console.refuse(error.human)
         except ConfigError as error:
-            return self._refuse(str(error))
-        install_secret_filter(loaded.vault)          # до первого обращения к Google (§7.4)
+            return console.refuse(str(error))
+        self.session.log.protect(loaded.vault.log_filter())      # до первого обращения к Google (§7.4)
         if loaded.is_local_unreadable:
-            self.say(msg.VAULT_LOCAL_UNREADABLE)
+            console.say(msg.VAULT_LOCAL_UNREADABLE)
         try:
             SheetsTarget.from_vault(loaded.vault)
             plan: SheetPlan = self._read(loaded)
         except SheetsReadError as error:
             return self._fail(error)
-        rows: tuple[PlanRow, ...] = plan.plan_rows(settings.zone, self.now.astimezone(settings.zone))
-        for line in SheetsProbeReport(plan=plan, rows=rows).lines:
-            self.say(line)
+        rows: tuple[PlanRow, ...] = plan.plan_rows(settings.zone, self.session.started.astimezone(settings.zone))
+        console.say_lines(SheetsProbeReport(plan=plan, rows=rows).lines)
         return int(ExitCode.OK)
 
     def _read(self, loaded: VaultLoad) -> SheetPlan:
-        login: GoogleLogin = GoogleLogin.operator(self.paths)
+        login: GoogleLogin = GoogleLogin.operator(self.session.paths)
         if self.relogin:
             self._log_in_again(login)
         reader: SheetsReader = SheetsReader.open(login, on_login=self._announce_login)
@@ -129,51 +133,33 @@ class SheetsProbe:
         try:
             login.credentials(force_reauth=True, on_login=self._announce_login)
         except AuthError as error:
-            LOGGER.warning("sheets_probe_relogin_failed reason=%s detail=%s", error.reason.value, error.detail)
+            failed: LogEvent = LogEvent.of(SheetsProbeEvent.RELOGIN_FAILED, reason=error.reason, detail=error.detail)
+            failed.emit(LOGGER, logging.WARNING)
             raise SheetsReadError(
                 SheetsReadReason.AUTH, SecretField.SHEETS_ID.log_label, detail=error.human
             ) from error
 
     def _announce_login(self) -> None:
-        self.say(msg.SHEETS_PROBE_LOGIN)
+        self.session.console.say(msg.SHEETS_PROBE_LOGIN)
 
     def _fail(self, error: SheetsReadError) -> int:
-        """Не настроено — код 2 и совет про настройщик; прочее — код 1."""
-        LOGGER.error("sheets_probe_failed %s", error.log_line)
+        """Не настроено — код 2 и совет про настройщик; вход не удался — код 2; прочее — код 1 (§10)."""
+        failed: LogEvent = LogEvent.of(SheetsProbeEvent.FAILED, reason=error.reason, sheet=error.label)
+        failed.extended(status=error.status).emit(LOGGER, logging.ERROR)
         if error.reason is SheetsReadReason.NOT_CONFIGURED:
-            return self._refuse(error.human)
-        self.say(error.human)
+            return self.session.console.refuse(error.human)
+        self.session.console.say(error.human)
         if error.reason is SheetsReadReason.NO_ACCESS:
-            self.say(msg.SHEETS_PROBE_RELOGIN_HINT)
-        return int(ExitCode.ERRORS)
-
-    def _refuse(self, text: str) -> int:
-        self.say(text)
-        self.say(msg.SETUP_REQUIRED)
-        return int(ExitCode.CONFIG)
+            self.session.console.say(msg.SHEETS_PROBE_RELOGIN_HINT)
+        return int(ExitCode.CONFIG if error.reason.is_configuration else ExitCode.ERRORS)
 
 
-def _say(text: str) -> None:
-    print(text, flush=True)
-
-
-def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser: argparse.ArgumentParser = argparse.ArgumentParser(prog="python -m app.tools.sheets_probe")
-    parser.add_argument(RELOGIN_FLAG, action="store_true", help=msg.SHEETS_PROBE_RELOGIN_HELP)
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    """Точка входа пробника: ключи, корень, папки, логи; дальше — `SheetsProbe`."""
-    relogin: bool = bool(_parse_args(argv).relogin)
-    paths: LivecraftPaths = build_paths(resolve_root())
-    ensure_dirs(paths)
-    started: datetime = SHIPPED_SETTINGS.clock.now()
-    setup_logging(paths.logs_dir, debug=False, started=started)
-    try:
-        return SheetsProbe(paths=paths, now=started, say=_say, relogin=relogin).run()
-    finally:
-        close_logging()
+def main(argv: Sequence[str] | None = None) -> int:
+    """Точка входа пробника: ключи; корень, папки и лог — у `ProbeLauncher`; дальше — `SheetsProbe`."""
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(prog=PROG)
+    parser.add_argument(RELOGIN_FLAG, action=ArgAction.STORE_TRUE.value, help=msg.SHEETS_PROBE_RELOGIN_HELP)
+    relogin: bool = bool(parser.parse_args(argv).relogin)
+    return ProbeLauncher.system().run(lambda session: SheetsProbe(session=session, relogin=relogin).run())
 
 
 if __name__ == "__main__":

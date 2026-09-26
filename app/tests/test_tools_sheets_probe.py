@@ -6,14 +6,15 @@ from typing import Any
 import pytest
 
 from app.google.auth import AuthError, AuthErrorReason, GoogleLogin
-from app.paths import LivecraftPaths, ROOT_ENV_VAR
+from app.paths import ROOT_ENV_VAR, LivecraftPaths
+from app.run.exit_code import ExitCode
 from app.secretsafe.value import SecretField
 from app.secretsafe.vault import Vault
-from app.setup.run_mode import ExitCode
 from app.sheets.client import SheetsReader, SheetsReadError, SheetsReadReason
 from app.sheets.plan import SheetPlan
 from app.sheets.rows import RowSkipReason
 from app.tests.conftest import FIXED_NOW, REPO_SETTINGS_FILE, SUPPLIED_VALUES
+from app.tests.fixtures.probe import ProbeRun
 from app.tools import sheets_probe
 from app.tools.sheets_probe import SheetsProbe
 from app.ui import messages_ru as msg
@@ -57,9 +58,9 @@ def patch_open(monkeypatch: pytest.MonkeyPatch, reader: _FakeReader) -> list[Goo
 
 
 def run_probe(paths: LivecraftPaths, now: datetime = FIXED_NOW, relogin: bool = False) -> tuple[int, list[str]]:
-    lines: list[str] = []
-    code: int = SheetsProbe(paths=paths, now=now, say=lines.append, relogin=relogin).run()
-    return code, lines
+    with ProbeRun.open(paths, now) as run:
+        code: int = SheetsProbe(session=run.session, relogin=relogin).run()
+    return code, run.lines
 
 
 def patch_credentials(monkeypatch: pytest.MonkeyPatch, error: AuthError | None = None) -> list[dict[str, Any]]:
@@ -184,14 +185,16 @@ def test_without_relogin_the_token_is_not_forced(ready_paths: LivecraftPaths, mo
     assert calls == []
 
 
-def test_a_failed_relogin_is_code_1_and_reads_nothing(
+def test_a_failed_relogin_is_code_2_and_reads_nothing(
     ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Вход не удался — ошибка авторизации, код 2 (§10), как у прогона; строки прежние, без совета про --setup."""
     reader: _FakeReader = _FakeReader(values=VALUES)
     logins: list[GoogleLogin] = patch_open(monkeypatch, reader)
     patch_credentials(monkeypatch, AuthError(AuthErrorReason.LOGIN_TIMEOUT, "no answer"))
     code, lines = run_probe(ready_paths, relogin=True)
-    assert code == ExitCode.ERRORS
+    assert code == ExitCode.CONFIG == 2
+    assert msg.SETUP_REQUIRED not in lines
     assert logins == [] and reader.vaults == []
     assert AuthErrorReason.LOGIN_TIMEOUT.human in lines[-1]
     assert_no_vault_values(lines)
@@ -216,3 +219,16 @@ def test_probe_main_runs_on_the_root_from_the_environment(
     assert_no_vault_values([out])
     log_text: str = "\n".join(path.read_text(encoding="utf-8") for path in ready_paths.logs_dir.glob("*_livecraft.log"))
     assert_no_vault_values([log_text])
+
+
+def test_a_failed_login_on_open_is_code_2(ready_paths: LivecraftPaths, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Вход в Google при открытии читателя не удался (SheetsReadReason.AUTH): код 2 вместо прежнего 1."""
+    error: SheetsReadError = SheetsReadError(SheetsReadReason.AUTH, "sheets-plan(abcd)", detail="вход не удался")
+
+    def _open(cls: Any, login: GoogleLogin, allow_login: bool = True, on_login: Any = None) -> _FakeReader:
+        raise error
+
+    monkeypatch.setattr(SheetsReader, "open", classmethod(_open))
+    code, lines = run_probe(ready_paths)
+    assert code == ExitCode.CONFIG
+    assert lines[1:] == [error.human]

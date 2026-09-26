@@ -1,9 +1,11 @@
 """Обложка источника: скачивание и JPEG, пригодный для YouTube (CLAUDE.md §2: `media\\image_normalizer.py`).
 
-Нормализация — правило донора `normalize_thumbnail` (restreamer): Pillow → RGB → JPEG quality 90. Обложку
-эфира ставит `thumbnails.set` (этап 4) с типом `image/jpeg` и потолком YouTube 2 МБ, поэтому, в отличие
-от донора, исходный формат «как есть» не сохраняется: не открылась картинка или не ужалась до 2 МБ
-(quality 90, затем 80 и 70) — это проблема обложки, а не обложка.
+Готовая обложка — значение шва `app\\slots\\preview.py::Preview`; здесь — как её получить: `PreviewDownloader`
+скачивает, `PreviewNormalizer` делает из скачанного JPEG.
+
+Нормализация: Pillow → RGB → JPEG quality 90. Обложку эфира ставит `thumbnails.set` (этап 4) с типом `image/jpeg`
+и потолком YouTube 2 МБ, поэтому исходный формат «как есть» не сохраняется: не открылась картинка или не ужалась
+до 2 МБ (quality 90, затем 80 и 70) — это проблема обложки, а не обложка.
 
 Скачивание — донор `HttpClient.get_bytes` (`requests.get`, таймаут 20 с) плюс повторы `RetryLoop` (§11)
 на 429, 5xx, обрыве связи и таймауте; 404 и прочие 4xx — отказ сразу.
@@ -18,20 +20,21 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from http import HTTPStatus
-from typing import Any, ClassVar, Final
+from typing import Any, Final
 
 import requests
 from PIL import Image, UnidentifiedImageError
 
 from app.core.retry import RETRYABLE_HTTP_STATUSES, AttemptFailure, RetryLoop, RetryPolicy, RetryRun, RetryStep
 from app.observability.log_event import LogArea, LogEvent, get_logger
+from app.slots.preview import Preview
 from app.ui import messages_ru as msg
 
 LOGGER = get_logger(LogArea.SOURCES_PREVIEW)
 
-MIME_TYPE: Final[str] = "image/jpeg"
 JPEG_FORMAT: Final[str] = "JPEG"
 RGB_MODE: Final[str] = "RGB"
+IMAGE_SIZE_TEMPLATE: Final[str] = "{width}x{height}"
 JPEG_QUALITIES: Final[tuple[int, ...]] = (90, 80, 70)   # первая — донора; дальше — чтобы уложиться в MAX_BYTES
 PREVIEW_TIMEOUT_SEC: Final[float] = 20.0
 OK_STATUSES: Final[range] = range(200, 300)
@@ -68,45 +71,38 @@ class PreviewEvent(str, Enum):
     DOWNLOADED = "preview_downloaded"
     DOWNLOAD_RETRY = "preview_download_retry"
     DOWNLOAD_FAILED = "preview_download_failed"
+    NOT_IMAGE = "preview_not_image"
+    NORMALIZED = "preview_normalized"
+    TOO_LARGE = "preview_too_large"
 
 
 @dataclass(frozen=True)
-class Preview:
-    """Готовая обложка: JPEG не больше MAX_BYTES и её размеры в пикселях."""
+class PreviewNormalizer:
+    """Картинка, которую открывает Pillow → JPEG не больше `Preview.MAX_BYTES`: качество — по порядку `qualities`."""
 
-    MAX_BYTES: ClassVar[int] = 2 * 1024 * 1024      # потолок YouTube для thumbnails.set
+    qualities: tuple[int, ...] = JPEG_QUALITIES
 
-    data: bytes
-    width: int
-    height: int
-
-    @property
-    def mime_type(self) -> str:
-        return MIME_TYPE
-
-    @property
-    def size_bytes(self) -> int:
-        return len(self.data)
-
-    @classmethod
-    def from_image_bytes(cls, raw: bytes) -> PreviewResult:
-        """Любая картинка, которую открывает Pillow → JPEG ≤ MAX_BYTES; иначе — проблема."""
+    def normalized(self, raw: bytes) -> PreviewResult:
+        """Готовая обложка или проблема: не открылась картинка — NOT_IMAGE, не ужалась — TOO_LARGE."""
         try:
             with Image.open(io.BytesIO(raw)) as image:
                 rgb: Image.Image = image.convert(RGB_MODE)
         except IMAGE_ERRORS as error:
-            LOGGER.warning("preview_not_image bytes=%d error=%s", len(raw), type(error).__name__)
+            not_image: LogEvent = LogEvent.of(PreviewEvent.NOT_IMAGE, bytes=len(raw), error=type(error).__name__)
+            not_image.emit(LOGGER, logging.WARNING)
             return PreviewResult.failed(PreviewProblem.NOT_IMAGE)
-        for quality in JPEG_QUALITIES:
-            data: bytes = cls._encode(rgb, quality)
-            if len(data) <= cls.MAX_BYTES:
-                LOGGER.debug("preview_normalized size=%dx%d bytes=%d quality=%d", *rgb.size, len(data), quality)
-                return PreviewResult.ready(cls(data=data, width=rgb.width, height=rgb.height))
-        LOGGER.warning("preview_too_large size=%dx%d bytes=%d", *rgb.size, len(data))
+        size: str = IMAGE_SIZE_TEMPLATE.format(width=rgb.width, height=rgb.height)
+        data: bytes = b""
+        for quality in self.qualities:
+            data = self._encode(rgb, quality)
+            if len(data) <= Preview.MAX_BYTES:
+                normalized: LogEvent = LogEvent.of(PreviewEvent.NORMALIZED, size=size, bytes=len(data), quality=quality)
+                normalized.emit(LOGGER, logging.DEBUG)
+                return PreviewResult.ready(Preview(data=data, width=rgb.width, height=rgb.height))
+        LogEvent.of(PreviewEvent.TOO_LARGE, size=size, bytes=len(data)).emit(LOGGER, logging.WARNING)
         return PreviewResult.failed(PreviewProblem.TOO_LARGE)
 
-    @staticmethod
-    def _encode(image: Image.Image, quality: int) -> bytes:
+    def _encode(self, image: Image.Image, quality: int) -> bytes:
         output: io.BytesIO = io.BytesIO()
         image.save(output, format=JPEG_FORMAT, quality=quality)
         return output.getvalue()
@@ -145,6 +141,7 @@ class PreviewDownloader:
     policy: RetryPolicy = field(default_factory=RetryPolicy)
     rng: random.Random = field(default_factory=random.Random)
     sleep: Callable[[float], None] = time.sleep
+    normalizer: PreviewNormalizer = field(default_factory=PreviewNormalizer)
 
     def preview(self, url: str) -> PreviewResult:
         """Обложка по адресу: скачать и нормализовать; нет адреса — NO_URL без обращения."""
@@ -153,7 +150,7 @@ class PreviewDownloader:
         downloaded: bytes | PreviewProblem = self.download(url)
         if isinstance(downloaded, PreviewProblem):
             return PreviewResult.failed(downloaded)
-        return Preview.from_image_bytes(downloaded)
+        return self.normalizer.normalized(downloaded)
 
     def download(self, url: str) -> bytes | PreviewProblem:
         """Байты по адресу; сбои 429, 5xx, обрыв и таймаут — повторами по `policy`, прочее — причиной."""

@@ -1,10 +1,9 @@
 """Язык источника по данным видео (CLAUDE.md §3 шаг 2.3, §14 решение 12; §2: `core\\language*.py` restreamer).
 
 Колонку языка таблицы программа не читает: язык решается один раз по тому, что yt-dlp сказал о видео,
-и дальше переходит в слот. Правила перенесены из restreamer без изменений:
+и дальше переходит в слот. Код языка из сырого значения и язык текста — `app\\texts\\language_detector.py`
+(`normalize_language`, `TextLanguageDetector`). Правила перенесены из restreamer без изменений:
 
-- `normalize_language` — код языка из сырого значения (`ua` → `uk`, `en-US` → `en`);
-- `TextLanguageDetector` — langdetect по тексту, очищенному от ссылок, хештегов и служебного хвоста;
 - `LanguageProfile` — все сигналы языка одного видео; `decide` — голосование донора `resolve_language`
   с тем же порядком приоритетов;
 - `LanguageResolver` — точка входа: данные видео → решение и строка лога.
@@ -13,54 +12,20 @@
 """
 from __future__ import annotations
 
-import re
 from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
-from langdetect import DetectorFactory, detect
-from langdetect.lang_detect_exception import LangDetectException
-
 from app.core.sequence import unique_in_order
 from app.observability.log_event import LogArea, LogValue, get_logger
 from app.sources.metadata import SourceMetadata
-from app.texts.analysis_text import AnalysisTextReport
-from app.texts.phrase_lexicon import ServiceHints
+from app.texts.language_detector import TextLanguageDetector, normalize_language
 
 LOGGER = get_logger(LogArea.SOURCES)
 
-DETECTOR_SEED: Final[int] = 0              # langdetect без сида отвечает по-разному на один текст
-MIN_DETECT_LENGTH: Final[int] = 20         # короче — langdetect гадает (порог донора)
 CONSENSUS_VOTES: Final[int] = 3
 ORIGINAL_CAPTION_SUFFIX: Final[str] = "-orig"   # YouTube так помечает автосубтитры на языке звука
-LANGUAGE_ALIASES: Final[dict[str, str]] = {
-    "ua": "uk",
-    "uk": "uk",
-    "ukr": "uk",
-    "en": "en",
-    "eng": "en",
-    "ru": "ru",
-    "rus": "ru",
-}
-LANGUAGE_CODE_PATTERN: Final[re.Pattern[str]] = re.compile(r"([a-z]{2,3})(?:-[a-z]{2,3})?")
-LANGUAGE_PREFIXES: Final[tuple[tuple[str, str], ...]] = (("uk", "uk"), ("ua", "uk"), ("en", "en"), ("ru", "ru"))
-
-
-def normalize_language(raw: str | None) -> str | None:
-    """Код языка из сырого значения yt-dlp или langdetect; не похоже на язык — None (правило донора)."""
-    text: str = str(raw or "").strip().lower().replace("_", "-")
-    if not text:
-        return None
-    if text in LANGUAGE_ALIASES:
-        return LANGUAGE_ALIASES[text]
-    code: re.Match[str] | None = LANGUAGE_CODE_PATTERN.fullmatch(text)
-    if code is not None:
-        return code.group(1)
-    for prefix, canonical in LANGUAGE_PREFIXES:
-        if text.startswith(prefix):
-            return canonical
-    return None
 
 
 class LanguageSource(str, Enum):
@@ -85,32 +50,6 @@ class LanguageSignal(str, Enum):
     AUTO_CAPTION_ORIG = "auto_caption_orig"
     DESCRIPTION_LANGUAGE = "description_language"
     LANGDETECT_TEXT = "langdetect_text"
-
-
-@dataclass(frozen=True)
-class TextLanguageDetector:
-    """langdetect по тексту видео: сначала чистка, короткий текст — без ответа."""
-
-    service_hints: ServiceHints
-    min_length: int = MIN_DETECT_LENGTH
-
-    def __post_init__(self) -> None:
-        DetectorFactory.seed = DETECTOR_SEED
-
-    @classmethod
-    def from_resources(cls) -> TextLanguageDetector:
-        return cls(service_hints=ServiceHints.load())
-
-    def detect(self, text: str) -> str | None:
-        """Код языка текста; текст после чистки короче `min_length` или langdetect не решил — None."""
-        cleaned: str = AnalysisTextReport.of(text, self.service_hints).text
-        if len(cleaned) < self.min_length:
-            return None
-        try:
-            detected: str = str(detect(cleaned) or "").strip().lower()
-        except LangDetectException:
-            return None
-        return normalize_language(detected)
 
 
 @dataclass(frozen=True)

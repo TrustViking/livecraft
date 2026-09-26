@@ -313,6 +313,12 @@ def test_every_read_reason_has_a_russian_text() -> None:
     assert set(client_module.msg.SHEETS_READ_REASON_TEXT) == {reason.value for reason in SheetsReadReason}
 
 
+def test_only_setup_and_login_failures_are_configuration() -> None:
+    """Таблица не настроена или вход не удался — лечится настройкой, а не повтором: код 2 и у прогона, и у пробника."""
+    configuration: set[SheetsReadReason] = {reason for reason in SheetsReadReason if reason.is_configuration}
+    assert configuration == {SheetsReadReason.NOT_CONFIGURED, SheetsReadReason.AUTH}
+
+
 @pytest.mark.parametrize(
     ("status", "reason"),
     [

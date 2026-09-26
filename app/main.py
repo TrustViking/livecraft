@@ -1,343 +1,222 @@
-"""Точка входа livecraft: флаги (CLAUDE.md §10), коды выхода (§10).
+"""Точка входа livecraft: ключи (CLAUDE.md §10), коды выхода (§10) и шаги запуска.
 
-Только разбор флагов, построение зависимостей и печать; оркестрация — app\\pipeline\\runner.py (этап 4).
-Вывод в консоль — только отсюда и только текстами из messages_ru: шапка сразу после настройки логов
-(до конфигов и сети), строки прогресса по ходу работы, пустая строка, итоговые блоки.
-Обрыв (Ctrl+C) и любое необработанное исключение ловятся в run_cli: строка в лог и в консоль, код 1 —
-это единственный перехват Exception во всей программе (§11).
+`run_cli` — одна свободная функция: консоль, ключи, корень, папки, замок одного экземпляра до логов, лог запуска,
+`Launch` и освобождение. `Launch` ведёт шаги запуска: шапка сразу после настройки логов (до конфигов и сети),
+строки по ходу работы, итоговые строки. Обрыв (Ctrl+C) и любое необработанное исключение ловит `Launch.run`:
+строка в лог и в консоль, код 1 — это единственный перехват Exception во всей программе (§11).
 
 Каждый запуск, кроме --version, сначала кладёт livecraft.json из поставочного шаблона, если файла нет
 (в git его нет, §5), затем читает сейф и оба конфига (app\\setup\\readiness.py) — независимо друг от друга.
 Фильтр секретов в логах встаёт сразу после чтения сейфа (§7.4). Ссылка на форму, оставшаяся в сейфе, один раз
 сама переносится в livecraft.json (app\\setup\\migration.py).
 
-Режим задаёт ярлык (§10, §14 решения 17, 18): --announce, --broadcast, --from-package, без флага — «всё».
-Готовность считается по частям режима (app\\setup\\run_mode.py): не готова часть — одна строка с точным
-действием и код 1; не готово ничего — программа сама открывает окно настройки и после него отдаёт код 2 (§8.2).
-Шаблоны файлов в консоль не печатаются: файлы правит настройщик. --setup открывает окно при любом состоянии
-(app\\setup\\app.py); --check, --auth и --status пока требуют полной настройки.
-
-Готова основа режима А (таблица плана) — main собирает запрос прогона и отдаёт его app\\slots\\intake.py:
-таблица → источники → слоты → пакет в bcast\\. Код запуска сводит код готовности частей и код прогона (§10).
+Режим задаёт ярлык (§10, §14 решения 17, 18). Что делает запуск режима, решает его готовность
+(`ModeReadiness.step`): не готово ничего — окно настройки и код 2 (§8.2); готова таблица плана — прогон контура A
+(app\\intake): таблица → источники → слоты → пакет в bcast\\. --setup открывает окно при любом состоянии;
+--check, --auth и --status пока требуют полной настройки. Код запуска — самый важный из исходов частей (app\\run).
 --dry-run прогон не меняет: контур A ничего снаружи не создаёт, пакет пишется всегда (§10).
 """
 from __future__ import annotations
 
-import argparse
-import io
+import logging
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from enum import Enum
 from uuid import uuid4
 
-from app.config.loader import ConfigProblem, ShippedSettings
+from app.config.loader import LivecraftSettings, ShippedSettings
 from app.core.clock import Clock
-from app.core.dates import format_datetime_text
-from app.observability.log_event import LogArea, get_logger
-from app.observability.logging_setup import close_logging, install_secret_filter, setup_logging
-from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
+from app.intake.intake import IntakeRequest, IntakeResult, PlanIntake
+from app.observability.log_event import MESSAGE_TEMPLATE, LogArea, LogEvent, get_logger
+from app.observability.logging_setup import RunLog
+from app.paths import LivecraftPaths
+from app.run.exit_code import ExitCode, RunOutcome
+from app.run.mode import ModeReadiness, ModeStep, RunMode
+from app.run.request import RunRequest
 from app.runtime.single_instance import AnotherInstanceRunning, InstanceLock
+from app.secretsafe.vault import Vault
 from app.setup.migration import FormUrlMigration, FormUrlMigrationResult
-from app.setup.readiness import ModeReadiness, Readiness
-from app.setup.run_mode import ExitCode, RunMode, RunPart
-from app.slots.intake import IntakeRequest, IntakeResult, PlanIntake
+from app.setup.readiness import Readiness
 from app.ui import messages_ru as msg
-from app.version import APP_NAME, APP_VERSION
+from app.ui.console import Console
+from app.version import APP_VERSION
 
 LOGGER = get_logger(LogArea.MAIN)
 SHIPPED_SETTINGS: ShippedSettings = ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE)
 
 
-__all__ = ["ExitCode", "RunRequest", "build_parser", "run_cli"]   # ExitCode — из run_mode
+class LaunchEvent(str, Enum):
+    """События запуска в логе."""
+
+    STARTED = "run_started"
+    FINISHED = "run_finished"
+    INTERRUPTED = "run_interrupted"
+    CRASHED = "run_crashed"
+    SETTINGS_FILE_CREATED = "settings_file_created"
+    FORM_URL_MIGRATED = "form_url_migrated"
+    FORM_URL_NOT_MIGRATED = "form_url_not_migrated"
+    SETUP_WINDOW_FAILED = "setup_window_failed"
 
 
 @dataclass(frozen=True)
-class RunRequest:
-    """Что запросила командная строка: один объект вместо россыпи флагов по параметрам (CLAUDE.md §0).
+class Launch:
+    """Шаги одного запуска: что запрошено, где корень, куда писать оператору и в какой лог."""
 
-    Режимы работы (announce / broadcast / from-package / без флага) и служебные запуски (setup / check /
-    auth / status) взаимоисключающие — это держит argparse; объект знает только, что именно запрошено,
-    и сам отвечает на вопросы о себе.
-    """
+    request: RunRequest
+    paths: LivecraftPaths
+    console: Console
+    log: RunLog
 
-    mode: RunMode
-    setup: bool
-    check: bool
-    auth: str | None
-    status: bool
-    dry_run: bool
-    no_llm: bool
-    debug: bool
+    def run(self, started: datetime) -> ExitCode:
+        """Строка запуска и шапка, шаги запуска, строка итога. Обрыв и падение не пропадают без следа."""
+        started_event: LogEvent = LogEvent.of(LaunchEvent.STARTED, version=APP_VERSION, root=self.paths.root)
+        started_event.extended(**self.request.log_fields, log=self.log.path).emit(LOGGER)
+        self.console.title(started)
+        code: ExitCode = ExitCode.ERRORS
+        try:
+            code = self._run()
+        except KeyboardInterrupt:
+            LogEvent.of(LaunchEvent.INTERRUPTED).emit(LOGGER, logging.WARNING)
+            self.console.say(msg.RUN_INTERRUPTED)
+        # Единственный перехват Exception в livecraft (CLAUDE.md §11): всё, что не обработано ниже, — ошибка
+        # программы. Без него трассировка ушла бы только в окно консоли, которое оператор закроет, а лог остался бы
+        # оборванным на последней строке.
+        except Exception:
+            LOGGER.exception(MESSAGE_TEMPLATE, LogEvent.of(LaunchEvent.CRASHED, log=self.log.path).text)
+            self.console.say(msg.RUN_CRASHED.format(log=self.log.path))
+        LogEvent.of(LaunchEvent.FINISHED, exit_code=code).emit(LOGGER)
+        return code
 
-    @classmethod
-    def from_args(cls, args: argparse.Namespace) -> RunRequest:
-        """Namespace argparse дальше главной функции не уходит: ниже работают только с этим объектом."""
-        return cls(
-            mode=RunMode.of(announce=args.announce, broadcast=args.broadcast, from_package=args.from_package),
-            setup=args.setup,
-            check=args.check,
-            auth=args.auth,
-            status=args.status,
-            dry_run=args.dry_run,
-            no_llm=args.no_llm,
-            debug=args.debug,
+    def _run(self) -> ExitCode:
+        """Готовность решает Readiness; здесь — только порядок шагов и печать (§8.2, §10)."""
+        self._install_settings()
+        readiness: Readiness = Readiness.check(self.paths)
+        vault: Vault | None = readiness.vault
+        if vault is not None:
+            self.log.protect(vault.log_filter())     # сразу после чтения сейфа, до любых строк лога (§7.4)
+        readiness = self._migrate_form_url(readiness)
+        readiness.log(LOGGER)
+        self.console.say_lines(readiness.warnings)
+        if self.request.mode.is_service:
+            return self._service(readiness).exit_code
+        return self._mode(readiness)
+
+    def _service(self, readiness: Readiness) -> RunOutcome:
+        """--setup — окно при любом состоянии; --check, --auth, --status — только при полной настройке."""
+        if self.request.mode is RunMode.SETUP:
+            return self._setup()
+        if not readiness.is_ready:
+            self.console.say_lines(readiness.problems)
+            self.console.say(msg.SETUP_REQUIRED)
+            return RunOutcome.NOT_CONFIGURED
+        self.console.say_lines(readiness.summary_lines)
+        return RunOutcome.DONE
+
+    def _mode(self, readiness: Readiness) -> ExitCode:
+        """Режим по частям (§10): что делать, решает `ModeReadiness.step`; код — важнейший из исходов частей."""
+        mode: ModeReadiness = readiness.for_mode(self.request.mode, no_llm=self.request.no_llm)
+        mode.event.emit(LOGGER)
+        step: ModeStep = mode.step
+        if step is ModeStep.REFUSE:
+            self.console.say_lines(readiness.problems)
+            return RunOutcome.NOT_CONFIGURED.exit_code
+        if step is ModeStep.OPEN_SETUP:
+            self.console.say_lines(mode.lines)
+            self.console.say(msg.SETUP_OPENING)
+            self._setup()
+            return RunOutcome.NOT_CONFIGURED.exit_code
+        self.console.say_lines(readiness.summary_lines)
+        self.console.say_lines(mode.lines)
+        code: ExitCode = mode.outcome.exit_code
+        settings: LivecraftSettings | None = readiness.settings
+        vault: Vault | None = readiness.vault
+        if step is ModeStep.REPORT or settings is None or vault is None:    # готовая таблица — прочитаны оба
+            return code
+        result: IntakeResult = self._intake(settings, vault)
+        self.console.say_lines(result.console_lines)
+        return code.combined(result.outcome.exit_code)
+
+    def _intake(self, settings: LivecraftSettings, vault: Vault) -> IntakeResult:
+        """Прогон контура A: «сейчас» — в зоне программы, id пакета — новый на каждый запуск.
+
+        Первый вход оператора открывает браузер — перед этим строка в консоль.
+        """
+        request: IntakeRequest = IntakeRequest(
+            paths=self.paths, settings=settings, vault=vault, now=Clock(settings.zone).now(), package_id=uuid4().hex
         )
+        return PlanIntake.of(request, on_login=lambda: self.console.say(msg.SHEETS_LOGIN_BROWSER)).run()
 
-    @property
-    def is_service_run(self) -> bool:
-        """Служебный запуск (--setup, --check, --auth, --status), а не работа режима."""
-        return self.setup or self.check or self.auth is not None or self.status
+    def _install_settings(self) -> None:
+        """livecraft.json в git нет (§5): нет файла — программа кладёт поставочный вид сама, человеку делать нечего."""
+        if not SHIPPED_SETTINGS.install(self.paths.config_file):
+            return
+        LogEvent.of(LaunchEvent.SETTINGS_FILE_CREATED, path=self.paths.config_file).emit(LOGGER)
+        self.console.say(msg.SETTINGS_FILE_CREATED.format(path=self.paths.config_file))
 
-    @property
-    def log_line(self) -> str:
-        """Строка запуска для лога: секретов в флагах нет, ник канала — в кавычках (CLAUDE.md §11)."""
-        return (
-            f"mode={self.mode.value} setup={self.setup} check={self.check} auth={_quoted(self.auth)} status={self.status} "
-            f"dry_run={self.dry_run} no_llm={self.no_llm}"
-        )
+    def _migrate_form_url(self, readiness: Readiness) -> Readiness:
+        """Ссылка на форму из сейфа — один раз в livecraft.json (§14 решение 15); перенесено — готовность заново.
 
+        Фильтр секретов уже стоит на всех значениях сейфа и повторно не ставится: перечитанный сейф — подмножество.
+        """
+        migration: FormUrlMigration | None = FormUrlMigration.plan(self.paths, readiness)
+        if migration is None:
+            return readiness
+        result: FormUrlMigrationResult = migration.run()
+        self.console.say(result.console_line)
+        name: LaunchEvent = LaunchEvent.FORM_URL_MIGRATED if result.moved else LaunchEvent.FORM_URL_NOT_MIGRATED
+        event: LogEvent = LogEvent.of(name, outcome=result.outcome, source=result.source, value=result.label)
+        level: int = logging.INFO if result.moved else logging.WARNING
+        event.extended(local_cleared=result.local_cleared).emit(LOGGER, level)
+        return Readiness.check(self.paths) if result.moved else readiness
 
-def build_parser() -> argparse.ArgumentParser:
-    parser: argparse.ArgumentParser = argparse.ArgumentParser(
-        prog=APP_NAME, description=msg.CLI_DESCRIPTION
-    )
-    parser.add_argument("--dry-run", action="store_true", help=msg.HELP_DRY_RUN)
-    parser.add_argument("--no-llm", action="store_true", help=msg.HELP_NO_LLM)
-    parser.add_argument("--debug", action="store_true", help=msg.HELP_DEBUG)
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=msg.VERSION_TEXT.format(version=APP_VERSION),
-        help=msg.HELP_VERSION,
-    )
-    modes: argparse._MutuallyExclusiveGroup = parser.add_mutually_exclusive_group()
-    modes.add_argument("--announce", action="store_true", help=msg.HELP_ANNOUNCE)
-    modes.add_argument("--broadcast", action="store_true", help=msg.HELP_BROADCAST)
-    modes.add_argument("--from-package", action="store_true", help=msg.HELP_FROM_PACKAGE)
-    modes.add_argument("--setup", action="store_true", help=msg.HELP_SETUP)
-    modes.add_argument("--check", action="store_true", help=msg.HELP_CHECK)
-    modes.add_argument("--auth", metavar=msg.CLI_METAVAR_HANDLE, help=msg.HELP_AUTH)
-    modes.add_argument("--status", action="store_true", help=msg.HELP_STATUS)
-    return parser
+    def _setup(self) -> RunOutcome:
+        """Окно настройщика (§8). tkinter тянется только сюда: обычный запуск окна не знает.
+
+        TclError при создании окна — нет Tk или рабочего стола: строка в консоль и в лог, ошибка.
+        """
+        from tkinter import TclError
+
+        from app.setup.app import SetupApp
+
+        try:
+            SetupApp(self.paths).run()
+        except TclError as error:
+            LogEvent.of(LaunchEvent.SETUP_WINDOW_FAILED, error=error).emit(LOGGER, logging.ERROR)
+            self.console.say(msg.SETUP_WINDOW_FAILED.format(error=error))
+            return RunOutcome.FAILED
+        return RunOutcome.DONE
 
 
 def run_cli(argv: Sequence[str] | None = None) -> int:
-    # Консоль настраивается до разбора флагов: --help, --version и ошибку разбора печатает сам argparse,
-    # и в консоли с кодировкой cp1251 «→» из CLI_DESCRIPTION иначе роняет запуск вместо вывода справки.
-    _configure_console()
-    request: RunRequest = RunRequest.from_args(build_parser().parse_args(argv))
-    paths: LivecraftPaths = build_paths(resolve_root())
-    ensure_dirs(paths)
-    # Настройки ещё не прочитаны: часы замка, startup.log, лога и шапки идут в поясе поставочного шаблона.
+    """Консоль, ключи, корень и папки, замок до логов, лог запуска, шаги запуска; замок и лог — снимаются всегда.
+
+    Консоль настраивается до разбора ключей: справку и ошибку разбора печатает сам argparse. Настройки ещё не
+    прочитаны: часы замка, startup.log, лога и шапки идут в поясе поставочного шаблона. Замок — после папок и до
+    лога (CLAUDE.md §6, инвариант 12); сбой файловой системы здесь не перехватывается: лога для причины ещё нет.
+    """
+    console: Console = Console.system()
+    console.configure()
+    request: RunRequest = RunRequest.from_argv(argv)
+    paths: LivecraftPaths = LivecraftPaths.locate()
+    paths.ensure_dirs()
     clock: Clock = SHIPPED_SETTINGS.clock
-    # Замок — до настройки логов и после ensure_dirs: без state\ и logs\ ему некуда лечь
-    # (CLAUDE.md §6, инвариант 12). Сбой файловой системы здесь не перехватывается: лога,
-    # в который пишется причина падения, ещё нет.
     lock: InstanceLock = InstanceLock(path=paths.lock_file, startup_log=paths.startup_log_file, clock=clock)
     try:
         lock.acquire()
     except AnotherInstanceRunning as conflict:
-        _say_error(str(conflict))
+        console.say_error(conflict.human)
         return int(ExitCode.ERRORS)
     try:
         started: datetime = clock.now()
-        log_path: Path = setup_logging(paths.logs_dir, debug=request.debug, started=started)
-        LOGGER.info("run_started version=%s root=%s %s log=%s", APP_VERSION, paths.root, request.log_line, log_path)
-        _say_title(started)
-        exit_code: int = _run_guarded(request, paths, log_path)
-        LOGGER.info("run_finished exit_code=%d", exit_code)
-        return exit_code
+        log: RunLog = RunLog.open(paths.logs_dir, debug=request.debug, started=started)
+        try:
+            return int(Launch(request, paths, console, log).run(started))
+        finally:
+            log.close()
     finally:
-        close_logging()
         lock.release()
-
-
-def _run_guarded(request: RunRequest, paths: LivecraftPaths, log_path: Path) -> int:
-    """Обрыв и падение не пропадают без следа: причина — в лог, короткая строка — в консоль, код 1."""
-    try:
-        return _run(request, paths)
-    except KeyboardInterrupt:
-        LOGGER.warning("run_interrupted")
-        _say(msg.RUN_INTERRUPTED)
-    # Единственный перехват Exception в livecraft (CLAUDE.md §11): всё, что не обработано ниже, —
-    # ошибка программы. Без него трассировка ушла бы только в окно консоли, которое оператор закроет,
-    # а лог остался бы оборванным на последней строке.
-    except Exception:
-        LOGGER.exception("run_crashed log=%s", log_path)
-        _say(msg.RUN_CRASHED.format(log=log_path))
-    return int(ExitCode.ERRORS)
-
-
-def _run(request: RunRequest, paths: LivecraftPaths) -> int:
-    """Готовность решает Readiness; здесь — только печать и выбор кода (§8.2, §10)."""
-    _install_settings(paths)
-    readiness: Readiness = Readiness.check(paths)
-    if readiness.vault is not None:
-        install_secret_filter(readiness.vault)      # сразу после чтения сейфа, до любых строк лога (§7.4)
-    readiness = _migrate_form_url(paths, readiness)
-    _log_readiness(readiness)
-    _say_lines(readiness.warnings)
-    if request.setup:
-        return _run_setup(paths)
-    if request.is_service_run:
-        return _run_service(readiness)
-    return _run_mode(request, paths, readiness)
-
-
-def _run_service(readiness: Readiness) -> int:
-    """--check, --auth, --status: нужны и каналы, и все ключи — без полной настройки не начинаются."""
-    if not readiness.is_ready:
-        _say_lines(readiness.problems)
-        _say(msg.SETUP_REQUIRED)
-        return int(ExitCode.CONFIG)
-    _say_lines(readiness.summary_lines)
-    return int(ExitCode.OK)
-
-
-def _run_mode(request: RunRequest, paths: LivecraftPaths, readiness: Readiness) -> int:
-    """Режим по частям (§10): не готово ничего — окно настройки и код 2; не готова часть — строка и код 1.
-
-    Повреждён файл ключей и ссылок, пришедший с программой, — окно его не починит: только строки и код 2.
-    Повреждён свой файл — окно настройщика (первое сохранение заменит файл) и код 2.
-    Готова таблица плана — прогон контура A; код запуска — сведённый код готовности и прогона.
-    """
-    mode: ModeReadiness = readiness.for_mode(request.mode, no_llm=request.no_llm)
-    LOGGER.info("mode_readiness %s", mode.log_line)
-    if mode.is_nothing_ready and not mode.is_fixable_in_setup:
-        _say_lines(readiness.problems)
-        return int(ExitCode.CONFIG)
-    if mode.is_nothing_ready:
-        _say_lines(mode.lines)
-        _say(msg.SETUP_OPENING)
-        _run_setup(paths)
-        return int(ExitCode.CONFIG)
-    _say_lines(readiness.summary_lines)
-    _say_lines(mode.lines)
-    code: ExitCode = ExitCode.ERRORS if mode.blocked else ExitCode.OK
-    if not mode.is_part_ready(RunPart.PLAN):
-        return int(code)
-    result: IntakeResult | None = _run_intake(paths, readiness)
-    if result is None:
-        return int(code)
-    _say_lines(result.console_lines)
-    return int(code.combined(result.exit_code))
-
-
-def _run_intake(paths: LivecraftPaths, readiness: Readiness) -> IntakeResult | None:
-    """Прогон контура A: «сейчас» — в зоне программы, id пакета — новый на каждый запуск.
-
-    Готовая таблица плана значит, что настройки и сейф прочитаны; без них прогона нет (None).
-    Первый вход оператора открывает браузер — перед этим строка в консоль.
-    """
-    if readiness.settings is None or readiness.vault is None:
-        return None
-    request: IntakeRequest = IntakeRequest(
-        paths=paths,
-        settings=readiness.settings,
-        vault=readiness.vault,
-        now=Clock(readiness.settings.zone).now(),
-        package_id=uuid4().hex,
-    )
-    return PlanIntake.of(request, on_login=lambda: _say(msg.SHEETS_LOGIN_BROWSER)).run()
-
-
-def _install_settings(paths: LivecraftPaths) -> None:
-    """livecraft.json в git нет (§5): нет файла — программа кладёт поставочный вид сама, человеку делать нечего."""
-    if not SHIPPED_SETTINGS.install(paths.config_file):
-        return
-    LOGGER.info("settings_file_created path=%s", paths.config_file)
-    _say(msg.SETTINGS_FILE_CREATED.format(path=paths.config_file))
-
-
-def _migrate_form_url(paths: LivecraftPaths, readiness: Readiness) -> Readiness:
-    """Ссылка на форму из сейфа — один раз в livecraft.json (§14 решение 15); перенесено — готовность заново.
-
-    Фильтр секретов уже стоит на всех значениях сейфа и повторно не ставится: перечитанный сейф — подмножество.
-    """
-    migration: FormUrlMigration | None = FormUrlMigration.plan(paths, readiness)
-    if migration is None:
-        return readiness
-    result: FormUrlMigrationResult = migration.run()
-    _say(result.console_line)
-    if not result.moved:
-        LOGGER.warning("form_url_not_migrated %s", result.log_line)
-        return readiness
-    LOGGER.info("form_url_migrated %s", result.log_line)
-    return Readiness.check(paths)
-
-
-def _run_setup(paths: LivecraftPaths) -> int:
-    """Окно настройщика (§8). tkinter тянется только сюда: обычный запуск окна не знает.
-
-    TclError при создании окна — нет Tk или рабочего стола: строка в консоль и в лог, код 1.
-    """
-    from tkinter import TclError
-
-    from app.setup.app import SetupApp
-
-    try:
-        SetupApp(paths).run()
-    except TclError as error:
-        LOGGER.error("setup_window_failed error=%s", error)
-        _say(msg.SETUP_WINDOW_FAILED.format(error=error))
-        return int(ExitCode.ERRORS)
-    return int(ExitCode.OK)
-
-
-def _log_readiness(readiness: Readiness) -> None:
-    """Строка готовности и причины отказа — в лог; значений сейфа здесь нет ни в одной строке."""
-    LOGGER.info("readiness %s ready=%s", readiness.log_line, readiness.is_ready)
-    for error in readiness.config_errors:
-        if error.kind is ConfigProblem.FILE_MISSING:        # нет файла — ещё не настроено, а не сломано
-            LOGGER.info("config_missing path=%s", error.config_path)
-            continue
-        LOGGER.error(
-            "config_error path=%s key=%s kind=%s problem=%s",
-            error.config_path,
-            error.key_path,
-            error.kind.value,
-            error.problem,
-        )
-    for line in readiness.template_lines:          # шаблон сломанного файла — только в лог, в консоль не идёт
-        LOGGER.debug("config_template %s", line)
-    if readiness.vault_error is not None:
-        LOGGER.error("vault_error %s", readiness.vault_error.log_line)
-    if readiness.vault_load is not None and readiness.vault_load.is_local_unreadable:
-        LOGGER.warning("vault_local_unreadable working_on=supplied")
-
-
-def _configure_console() -> None:
-    """Символы, которых нет в кодировке консоли, — заменой, а не падением."""
-    for stream in (sys.stdout, sys.stderr):
-        if isinstance(stream, io.TextIOWrapper):
-            stream.reconfigure(errors="replace")
-
-
-def _say(text: str) -> None:
-    """flush — чтобы строка была видна сразу и в собранном exe, а не в конце запуска."""
-    print(text, flush=True)
-
-
-def _say_lines(lines: tuple[str, ...]) -> None:
-    for line in lines:
-        _say(line)
-
-
-def _say_error(text: str) -> None:
-    """Отказ запуска — в stderr: в stdout идут только тексты работающего запуска."""
-    print(text, file=sys.stderr, flush=True)
-
-
-def _say_title(now: datetime) -> None:
-    """Шапка — первая строка любого запуска; время — по часам программы, как в отчёте этого запуска."""
-    _say(msg.CONSOLE_TITLE.format(version=APP_VERSION, generated_at=format_datetime_text(now)))
-
-
-def _quoted(value: str | None) -> str:
-    """Ник канала в логе — в кавычках (CLAUDE.md §11); не задан — прочерк без кавычек."""
-    return "-" if value is None else f'"{value}"'
 
 
 if __name__ == "__main__":

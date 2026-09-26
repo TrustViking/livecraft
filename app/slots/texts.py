@@ -1,7 +1,7 @@
 """Тексты слота: название и описание эфира и их подгонка под правила YouTube (CLAUDE.md §3 шаг 2.5, §4).
 
-`SlotTexts` — окончательные тексты одного слота. Без LLM они берутся из источников (`from_sources`), merge
-позже подставит свои через тот же объект. Контур B тексты не редактирует (§4), поэтому правила площадки
+`SlotTexts` — окончательные тексты одного слота. Без нейросети они собираются из текстов источников (`SourceText`,
+`from_sources`), merge даёт свои через тот же объект. Контур B тексты не редактирует (§4), поэтому правила площадки
 применяет сам объект (`for_youtube`): YouTube Data API v3 (videos.snippet) принимает название не длиннее
 100 символов, описание не длиннее 5000 байт и не принимает символы < и > ни там, ни там.
 Обрезка — всегда по границе `safe_trim_right`, а не посреди слова.
@@ -11,17 +11,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar, Final
 
 from app.core.safe_trim import SafeTrimResult, safe_trim_right
 from app.core.text_format import PARAGRAPH_BREAK, TEXT_ENCODING
-from app.observability.log_event import LogArea, LogValue, get_logger
+from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.ui import messages_ru as msg
 
-if TYPE_CHECKING:      # только для аннотаций: тексты берут у источника название и описание
-    from app.sources.video import SourceVideo
-
 LOGGER = get_logger(LogArea.SLOTS)
+
+SIZE_CHANGE_TEMPLATE: Final[str] = "{before}->{after}"     # размер до и после подгонки в одном поле лога
 
 
 class SlotTextOrigin(str, Enum):
@@ -30,6 +29,20 @@ class SlotTextOrigin(str, Enum):
     SOURCE_SINGLE = "source_single"          # один источник: его название и описание как есть
     SOURCE_COMPOSED = "source_composed"      # несколько источников: название первого, описания подряд
     MERGED = "merged"                        # одно название и одно описание от модели на весь слот (merge)
+
+
+class SlotTextsEvent(str, Enum):
+    """События текстов слота в логе."""
+
+    FITTED = "slot_texts_fitted"
+
+
+@dataclass(frozen=True)
+class SourceText:
+    """Название и описание одного источника слота; у видео без данных — пустые строки."""
+
+    title: str
+    description: str
 
 
 @dataclass(frozen=True)
@@ -45,23 +58,14 @@ class SlotTexts:
     origin: SlotTextOrigin
 
     @classmethod
-    def from_sources(cls, videos: Sequence[SourceVideo]) -> SlotTexts:
-        """Тексты без LLM: один источник — как есть; несколько — название первого по номеру ряда,
-        непустые описания через пустую строку в порядке рядов. Без источников слота не бывает — ValueError.
+    def from_sources(cls, sources: Sequence[SourceText]) -> SlotTexts:
+        """Тексты без нейросети в порядке источников слота: один источник — как есть; несколько — название первого,
+        непустые описания через пустую строку.
         """
-        if not videos:
-            raise ValueError("slot texts need at least one source video")
-        ordered: list[SourceVideo] = sorted(videos, key=lambda video: video.row.row_number)
-        titles: list[str] = [video.metadata.title if video.metadata is not None else "" for video in ordered]
-        descriptions: list[str] = [
-            video.metadata.description for video in ordered if video.metadata is not None
-        ]
-        origin: SlotTextOrigin = (
-            SlotTextOrigin.SOURCE_SINGLE if len(ordered) == 1 else SlotTextOrigin.SOURCE_COMPOSED
-        )
+        origin: SlotTextOrigin = SlotTextOrigin.SOURCE_SINGLE if len(sources) == 1 else SlotTextOrigin.SOURCE_COMPOSED
         return cls(
-            title=titles[0],
-            description=PARAGRAPH_BREAK.join(text for text in descriptions if text),
+            title=sources[0].title,
+            description=PARAGRAPH_BREAK.join(source.description for source in sources if source.description),
             origin=origin,
         )
 
@@ -75,11 +79,9 @@ class SlotTexts:
         description: SafeTrimResult = self._fit_description(self._replace_forbidden(self.description))
         fitted: SlotTexts = SlotTexts(title=title.text, description=description.text, origin=self.origin)
         if replacements or title.trimmed or description.trimmed:
-            LOGGER.info(
-                "slot_texts_fitted slot=%s replaced=%d title_reason=%s description_reason=%s %s",
-                slot_id or LogValue.EMPTY.value, replacements, title.reason, description.reason,
-                self._sizes_line(fitted),
-            )
+            event: LogEvent = LogEvent.of(SlotTextsEvent.FITTED, slot=slot_id, replaced=replacements)
+            event = event.extended(title_reason=title.reason, description_reason=description.reason)
+            event.extended(**self._size_changes(fitted)).emit(LOGGER)
         return fitted
 
     @property
@@ -115,12 +117,13 @@ class SlotTexts:
             excess = len(result.text.encode(TEXT_ENCODING)) - self.DESCRIPTION_MAX_BYTES
         return result
 
-    def _sizes_line(self, fitted: SlotTexts) -> str:
+    def _size_changes(self, fitted: SlotTexts) -> dict[str, str]:
         """Длины до и после подгонки: символы названия, символы и байты описания."""
-        return (
-            f"title_chars={self.title_chars}->{fitted.title_chars} "
-            f"description_chars={self.description_chars}->{fitted.description_chars} "
-            f"description_bytes={self.description_bytes}->{fitted.description_bytes}"
+        change: str = SIZE_CHANGE_TEMPLATE
+        return dict(
+            title_chars=change.format(before=self.title_chars, after=fitted.title_chars),
+            description_chars=change.format(before=self.description_chars, after=fitted.description_chars),
+            description_bytes=change.format(before=self.description_bytes, after=fitted.description_bytes),
         )
 
     @classmethod

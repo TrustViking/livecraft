@@ -6,7 +6,7 @@
 - язык служебной строки и абзаца — `detect_service_language`, `detect_paragraph_language`, `_detect_text_language`
   (подсказки донора — ресурс `merge_service_language_hints.json` без правки значений), `is_wrong_service_language`,
   `is_short_service_line`. Последний шаг — langdetect `core\\language.py::detect_language_from_text` донора, здесь —
-  `app\\sources\\language.py::TextLanguageDetector` (та же чистка и тот же сид); «не решил» — `unknown`, как у донора.
+  `app\\texts\\language_detector.py::TextLanguageDetector` (та же чистка и тот же сид); «не решил» — `unknown`, как у донора.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from typing import Any, Final
 
 from app.core.alphabet import RUSSIAN_LETTER_PATTERN, UKRAINIAN_LETTER_PATTERN, CoreLanguage
 from app.resources.loader import TextResource
-from app.sources.language import TextLanguageDetector
+from app.texts.language_detector import TextLanguageDetector
 from app.texts.hashtags import HASHTAG_AFTER_SPACE_PATTERN
 from app.texts.paragraphs import collapse_spaces
 

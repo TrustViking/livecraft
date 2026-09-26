@@ -17,7 +17,7 @@
 
 Отличия от донора (решения Коворка к 3.13): виновата настройка модели — merge останавливается до конца запуска, слот
 получает тексты источников (у донора исключение роняло весь прогон); предел абзацев тела и пределы пунктов в подсказке
-повтора — из контракта промта этой попытки. Порядок источников в промте — порядок рядов группы: все источники слота имеют
+повтора — из контракта промта этой попытки. Порядок источников в промте — порядок рядов слота: все источники слота имеют
 одно время, поэтому ключ донора (время слота, номер ряда) даёт тот же порядок.
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.texts.paragraphs import normalize_multiline_text
 
 if TYPE_CHECKING:
-    from app.slots.builder import SlotGroup
+    from app.slots.slot import SlotKey
     from app.sources.video import SourceVideo
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)
@@ -230,22 +230,20 @@ class MergeOutcome:
 
 @dataclass(frozen=True)
 class MergeJob:
-    """Merge одного слота: группа источников и merge запуска (нейросеть, модель, настройки, правила, счётчики)."""
+    """Merge одного слота: ключ слота, его источники в порядке рядов и merge запуска (нейросеть, модель, настройки,
+    правила, счётчики)."""
 
-    group: SlotGroup
+    key: SlotKey
+    videos: tuple[SourceVideo, ...]
     merge_run: MergeRun = field(repr=False)
 
     @property
-    def videos(self) -> tuple[SourceVideo, ...]:
-        return self.group.videos
-
-    @property
     def language(self) -> str:
-        return self.group.key.language
+        return self.key.language
 
     @property
     def slot_id(self) -> str:
-        return self.group.key.slot_id
+        return self.key.slot_id
 
     @property
     def rules(self) -> MergeRules:
@@ -371,7 +369,7 @@ class MergeJob:
                 "has_publish_stage_opener_cta=%s fallback=nomerge",
                 self.context, _flag(publication.has_duplicate), _flag(publication.has_opener_cta),
             )
-            texts = SlotTexts.from_sources(self.videos)
+            texts = SlotTexts.from_sources([video.text for video in self.videos])
         return self._result(texts, history, recoveries, accepted=True, blocked=publication.is_blocked)
 
     def _failed(self, history: AttemptHistory) -> MergeOutcome:
@@ -392,7 +390,7 @@ class MergeJob:
         )
         if run.stop_reason is not None:
             LOGGER.error("%s %s", MergeSkipReason.of_stop(run.stop_reason).aborted_event, self.context)
-        return self._result(SlotTexts.from_sources(self.videos), history)
+        return self._result(SlotTexts.from_sources([video.text for video in self.videos]), history)
 
     def _skipped(self, reason: MergeSkipReason) -> MergeOutcome:
         """Модель не спрашивается: тексты источников; причина — строкой лога."""
@@ -404,10 +402,10 @@ class MergeJob:
             LOGGER.error("%s %s", reason.aborted_event, self.context)
         return MergeOutcome(
             slot_id=self.slot_id,
-            date=self.group.key.date_text,
+            date=self.key.date_text,
             language=self.language,
             source_count=len(self.videos),
-            texts=SlotTexts.from_sources(self.videos),
+            texts=SlotTexts.from_sources([video.text for video in self.videos]),
             reject_codes=(reason.value,) if reason is not MergeSkipReason.INSUFFICIENT_DESCRIPTIONS else (),
             skipped_reason=reason,
         )
@@ -423,7 +421,7 @@ class MergeJob:
         last: MergeAttemptResult | None = history.last
         return MergeOutcome(
             slot_id=self.slot_id,
-            date=self.group.key.date_text,
+            date=self.key.date_text,
             language=self.language,
             source_count=len(self.videos),
             texts=texts,

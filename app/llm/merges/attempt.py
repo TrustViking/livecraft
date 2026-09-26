@@ -39,7 +39,7 @@ from app.texts.composer import PublishHeadings
 if TYPE_CHECKING:
     from app.config.loader import LlmSettings
     from app.llm.merges.check import MergeDiagnostics
-    from app.sources.language import TextLanguageDetector
+    from app.texts.language_detector import TextLanguageDetector
     from app.sources.video import SourceVideo
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)

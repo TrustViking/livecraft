@@ -2,46 +2,43 @@
 
 Таблица плана → ряды → источники (yt-dlp, язык, обложки) → слоты → пакет plan_*.bcast в bcast\\.
 Каждый шаг делает свой объект (`SheetsReader`, `SheetPlan`, `SourceCatalog`, `SlotBuilder`, `SlotPackage`);
-`PlanIntake` только ведёт их по порядку и останавливается там, где дальше идти не с чем. Итог — `IntakeResult`:
-что получилось на каждом шаге, где остановился прогон, код выхода по §10 и строки для оператора.
+`PlanIntake` только ведёт их по порядку, выбирает тексты слотов и останавливается там, где дальше идти не с чем.
+Итог — `IntakeResult`: что получилось на каждом шаге, где остановился прогон, исход (`RunOutcome`) и строки для
+оператора. Код выхода по исходу решает app\\run.
 
-Нейросети пока нет: тексты слотов — из источников (`SlotTexts.from_sources`, этап 3.5).
-Сбой чтения таблицы — не исключение наружу, а итог с причиной: его печатает main. Сбой записи пакета на диск
-(OSError) — ошибка программы, её ловит main.run_cli.
+Нейросети в прогоне пока нет: тексты слотов — из источников (`SlotGroup.source_texts`, этап 3.15 подключит merge).
+Сбой чтения таблицы — не исключение наружу, а итог с причиной. Сбой записи пакета на диск (OSError) — ошибка
+программы, её ловит запуск.
 
 В строках консоли нет ни значений сейфа, ни ссылки на форму, ни названий и описаний видео (§7.4): только
 счётчики и причины человеческим текстом.
 """
 from __future__ import annotations
 
+import logging
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Final
 
 from app.config.loader import LivecraftSettings
 from app.core.dates import require_aware
 from app.google.auth import GoogleLogin
-from app.observability.log_event import LogArea, LogValue, get_logger
+from app.intake.builder import SlotBuild, SlotBuilder, SlotGroup
+from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.packages.package import PackageResult, SlotPackage
 from app.paths import LivecraftPaths
+from app.run.exit_code import RunOutcome
 from app.secretsafe.vault import Vault
-from app.setup.run_mode import ExitCode
-from app.sheets.client import SheetsReader, SheetsReadError, SheetsReadReason
+from app.sheets.client import SheetsReader, SheetsReadError
 from app.sheets.plan import SheetPlan
 from app.sheets.rows import PlanRow, RowSkipReason
-from app.slots.builder import SlotBuild, SlotBuilder
+from app.slots.texts import SlotTexts
 from app.sources.video import SourceCatalog, SourceTally, SourceVideo
 from app.ui import messages_ru as msg
 
 LOGGER = get_logger(LogArea.INTAKE)
-
-# Сбой таблицы, который лечится настройкой или входом, — ошибка конфигурации или авторизации (§10, код 2).
-CONFIG_SHEETS_REASONS: Final[frozenset[SheetsReadReason]] = frozenset(
-    {SheetsReadReason.NOT_CONFIGURED, SheetsReadReason.AUTH}
-)
 
 
 class IntakeStage(str, Enum):
@@ -51,6 +48,13 @@ class IntakeStage(str, Enum):
     SOURCES = "sources"    # годных источников нет
     SLOTS = "slots"        # годных слотов нет
     PACKAGE = "package"    # пакет не записан
+
+
+class IntakeEvent(str, Enum):
+    """События прогона контура A в логе."""
+
+    TABLE_FAILED = "intake_table_failed"
+    FINISHED = "intake_finished"
 
 
 @dataclass(frozen=True)
@@ -98,7 +102,7 @@ class RowTally:
 
 @dataclass(frozen=True)
 class IntakeResult:
-    """Итог прогона: ряды, источники, слоты, пакет и причина остановки — и правила кода выхода и строк."""
+    """Итог прогона: ряды, источники, слоты, пакет и причина остановки — и правила исхода и строк."""
 
     rows: tuple[PlanRow, ...]
     videos: tuple[SourceVideo, ...]
@@ -142,7 +146,7 @@ class IntakeResult:
 
     @property
     def has_errors(self) -> bool:
-        """Отказ источника, слот с проблемой или незаписанный пакет — ошибка запуска (§10, код 1)."""
+        """Отказ источника, слот с проблемой или незаписанный пакет — ошибка запуска (§10)."""
         if SourceTally(self.videos).failures:
             return True
         if self.build is not None and self.build.refused:
@@ -150,21 +154,21 @@ class IntakeResult:
         return self.package is not None and not self.package.is_written
 
     @property
-    def exit_code(self) -> ExitCode:
-        """Код по §10: таблица — 2 на настройке и входе, 1 на прочем сбое и шапке; будущих рядов нет — 3;
-        ошибки источников, слотов и пакета — 1; иначе 0. Слотов нет из-за отказов — это ошибки, а не «нет рядов».
+    def outcome(self) -> RunOutcome:
+        """Исход по §10: сбой таблицы по настройке или входу — не настроено, прочий сбой и шапка — ошибка; будущих
+        рядов нет — нечего делать; ошибки источников, слотов и пакета — ошибка; слотов нет без отказов — нечего делать.
         """
         if self.sheets_error is not None:
-            return ExitCode.CONFIG if self.sheets_error.reason in CONFIG_SHEETS_REASONS else ExitCode.ERRORS
+            return RunOutcome.NOT_CONFIGURED if self.sheets_error.reason.is_configuration else RunOutcome.FAILED
         if self.plan_problem is not None:
-            return ExitCode.ERRORS
+            return RunOutcome.FAILED
         if not self.has_future_rows:
-            return ExitCode.NO_FUTURE_SLOTS
+            return RunOutcome.NOTHING_PLANNED
         if self.has_errors:
-            return ExitCode.ERRORS
+            return RunOutcome.FAILED
         if self.build is None or not self.build.slots:
-            return ExitCode.NO_FUTURE_SLOTS
-        return ExitCode.OK
+            return RunOutcome.NOTHING_PLANNED
+        return RunOutcome.DONE
 
     @property
     def console_lines(self) -> tuple[str, ...]:
@@ -186,19 +190,20 @@ class IntakeResult:
         return tuple(lines)
 
     @property
-    def log_line(self) -> str:
-        """Счётчики и причина остановки key=value; без значений сейфа, ссылки формы и текстов видео."""
-        rows: RowTally = RowTally(self.rows)
-        sources: SourceTally = SourceTally(self.videos)
-        slots: str = LogValue.EMPTY.value if self.build is None else str(len(self.build.slots))
-        refused: str = LogValue.EMPTY.value if self.build is None else str(len(self.build.refused))
-        package: str = LogValue.EMPTY.value if self.package is None else self.package.log_line
-        sheets: str = LogValue.EMPTY.value if self.sheets_error is None else self.sheets_error.reason.value
-        stopped: str = LogValue.EMPTY.value if self.stopped_at is None else self.stopped_at.value
-        return (
-            f"stopped_at={stopped} sheets_error={sheets} plan_problem={self.plan_problem is not None} "
-            f"rows={len(self.rows)} admitted={rows.admitted} sources={len(self.videos)} ready={sources.ready} "
-            f"slots={slots} refused={refused} package=[{package}] exit_code={int(self.exit_code)}"
+    def log_fields(self) -> Mapping[str, object]:
+        """Счётчики, причина остановки и исход; без значений сейфа, ссылки формы и текстов видео."""
+        return dict(
+            stopped_at=self.stopped_at,
+            sheets_error=None if self.sheets_error is None else self.sheets_error.reason,
+            plan_problem=self.plan_problem is not None,
+            rows=len(self.rows),
+            admitted=RowTally(self.rows).admitted,
+            sources=len(self.videos),
+            ready=SourceTally(self.videos).ready,
+            slots=None if self.build is None else len(self.build.slots),
+            refused=None if self.build is None else len(self.build.refused),
+            package=None if self.package is None else self.package.log_line,
+            outcome=self.outcome,
         )
 
     @property
@@ -263,7 +268,7 @@ class PlanIntake:
         videos: tuple[SourceVideo, ...] = self.catalog.prepare(rows)
         if not SourceTally(videos).ready:
             return self._finish(IntakeResult.stopped(rows, IntakeStage.SOURCES, videos))
-        build: SlotBuild = self.builder.build(videos)
+        build: SlotBuild = SlotBuild.of([group.slot(self._texts(group)) for group in self.builder.groups(videos)])
         if not build.slots:
             return self._finish(IntakeResult.stopped(rows, IntakeStage.SLOTS, videos, build))
         package: PackageResult = self._package(build).write(self.request.paths.bcast_dir)
@@ -275,12 +280,18 @@ class PlanIntake:
             )
         )
 
+    def _texts(self, group: SlotGroup) -> SlotTexts:
+        """Окончательные тексты слота. Нейросети в прогоне пока нет: тексты источников по правилам YouTube."""
+        return group.source_texts
+
     def _package(self, build: SlotBuild) -> SlotPackage:
         return SlotPackage.of(build.slots, self.request.settings, self.request.now, self.request.package_id)
 
     def _finish(self, result: IntakeResult) -> IntakeResult:
-        """Итог — строкой в лог; сбой таблицы — её ярлыком и причиной (SheetsReadError.log_line)."""
-        if result.sheets_error is not None:
-            LOGGER.error("intake_table_failed package_id=%s %s", self.request.package_id, result.sheets_error.log_line)
-        LOGGER.info("intake_finished package_id=%s %s", self.request.package_id, result.log_line)
+        """Итог — строкой в лог; сбой таблицы — её ярлыком, причиной и кодом ответа."""
+        error: SheetsReadError | None = result.sheets_error
+        if error is not None:
+            failed: LogEvent = LogEvent.of(IntakeEvent.TABLE_FAILED, package_id=self.request.package_id)
+            failed.extended(reason=error.reason, sheet=error.label, status=error.status).emit(LOGGER, logging.ERROR)
+        LogEvent.of(IntakeEvent.FINISHED, package_id=self.request.package_id, **result.log_fields).emit(LOGGER)
         return result

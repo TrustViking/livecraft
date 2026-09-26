@@ -1,35 +1,30 @@
-"""Логи livecraft: файл logs\\{дата}_{время}_livecraft.log (DEBUG); маскирование ключей потока.
+"""Лог одного запуска: файл logs\\{дата}_{время}_livecraft.log (DEBUG); маскирование ключей потока.
 
 Ключ потока попадает в лог только через mask_stream_key (CLAUDE.md §6, инвариант 6): полностью он есть
 только в keystreams\\keys.txt.
 
-Терминал — только тексты для оператора (messages_ru, печатает main.py): сырой лог идёт в терминал
+Терминал — только тексты для оператора (messages_ru, печатает app\\ui\\console.py): сырой лог идёт в терминал
 только с --debug. Сторонние библиотеки (корневой логгер Python: googleapiclient, google_auth_oauthlib,
 openai, urllib3…) и предупреждения warnings пишутся от WARNING в тот же файл; без --debug в терминал
 не попадают: у корневого логгера есть свой обработчик, поэтому logging.lastResort не срабатывает.
 
-SecretScrubber вычёркивает известные секреты из **готовой** строки записи (§7.4) — последний рубеж на
-случай чужой библиотеки: googleapiclient, openai и urllib3 пишут полные URL в DEBUG, и наш код на это
-никак не влияет. Это страховка, а не разрешение писать секреты: свой код обязан писать ярлык и отпечаток
-(`SecretValue.log_label`) и без фильтра. Фильтр вешается после setup_logging, когда сейф уже открыт.
+`RunLog.protect` вешает на обработчики запуска фильтр, который вычёркивает секреты из готовой строки записи
+(§7.4). Какой фильтр, решает сейф (`Vault.log_filter`): наблюдаемость о сейфе не знает.
 """
 from __future__ import annotations
 
 import logging
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 from app.core.clock import Clock
 from app.core.dates import FILE_STAMP_FORMAT, require_aware
 from app.core.text_format import TEXT_ENCODING
-from app.observability.log_event import LogValue
+from app.observability.log_event import LOGGER_NAME_TEMPLATE, LogValue
 from app.version import APP_NAME
-
-if TYPE_CHECKING:      # только для аннотаций: в рантайме наблюдаемость о сейфе не знает и кольца нет
-    from app.secretsafe.value import SecretValue
-    from app.secretsafe.vault import Vault
 
 LOG_FORMAT: Final[str] = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 LOG_FILE_TEMPLATE: Final[str] = "{stamp}_livecraft.log"
@@ -37,49 +32,7 @@ MASK_PREFIX: Final[str] = "****-"
 MASK_HIDDEN: Final[str] = "****"
 MASK_VISIBLE_CHARS: Final[int] = 4
 THIRD_PARTY_LEVEL: Final[int] = logging.WARNING   # сторонние логгеры — в файл от этого уровня
-
-_THIRD_PARTY_HANDLERS: list[logging.Handler] = []   # свои обработчики на корневом логгере Python
-
-
-def setup_logging(logs_dir: Path, debug: bool, started: datetime) -> Path:
-    """Файл — всегда DEBUG (сторонние — от WARNING); терминал — только с --debug (DEBUG в stderr).
-
-    `started` — момент начала запуска по часам программы: он даёт имя файлу, а его пояс — время каждой записи.
-    """
-    close_logging()
-    formatter: logging.Formatter = logging.Formatter(LOG_FORMAT)
-    formatter.converter = Clock(require_aware(started).tzinfo).local_time
-    log_path: Path = logs_dir / LOG_FILE_TEMPLATE.format(stamp=started.strftime(FILE_STAMP_FORMAT))
-    file_handler: logging.FileHandler = logging.FileHandler(log_path, encoding=TEXT_ENCODING)
-    handlers: list[logging.Handler] = [file_handler]
-    if debug:
-        handlers.append(logging.StreamHandler(sys.stderr))
-    livecraft_logger: logging.Logger = logging.getLogger(APP_NAME)
-    livecraft_logger.setLevel(logging.DEBUG)
-    livecraft_logger.propagate = False
-    for handler in handlers:
-        handler.setLevel(logging.DEBUG)
-        handler.setFormatter(formatter)
-        handler.addFilter(_ThirdPartyFilter())
-        livecraft_logger.addHandler(handler)
-    _attach_third_party(handlers)
-    return log_path
-
-
-def close_logging() -> None:
-    """Снять и закрыть обработчики (на Windows открытый файл лога не даёт удалить папку).
-
-    С корневого логгера Python снимаются только свои обработчики: чужие (pytest caplog) остаются.
-    """
-    python_root: logging.Logger = logging.getLogger()
-    for handler in _THIRD_PARTY_HANDLERS:
-        python_root.removeHandler(handler)
-    _THIRD_PARTY_HANDLERS.clear()
-    livecraft_logger: logging.Logger = logging.getLogger(APP_NAME)
-    for handler in list(livecraft_logger.handlers):
-        livecraft_logger.removeHandler(handler)
-        handler.close()
-    logging.captureWarnings(False)
+OWN_LOGGER_PREFIX: Final[str] = LOGGER_NAME_TEMPLATE.format(root=APP_NAME, area="")   # «livecraft.»
 
 
 def mask_stream_key(value: str | None) -> str:
@@ -91,91 +44,57 @@ def mask_stream_key(value: str | None) -> str:
     return MASK_PREFIX + value[-MASK_VISIBLE_CHARS:]
 
 
-class SecretScrubber(logging.Filter):
-    """Вычёркивает известные секреты из готовой строки записи. Записей не выбрасывает — только чистит.
+@dataclass(frozen=True)
+class RunLog:
+    """Лог одного запуска: путь файла и свои обработчики — на логгере livecraft и на корневом логгере Python.
 
-    Страховка, а не разрешение писать секреты (§7.4): свой код пишет ярлык и отпечаток и без фильтра.
-    Чистится именно готовый текст: секрет может прийти и шаблоном (`LOGGER.info(url)`), и аргументом
-    (`LOGGER.info("url=%s", url)`), а составить значение целиком можно только после подстановки.
-    Что именно вычёркивать, фильтр не знает: вычёркивает сам секрет (`SecretValue.scrub`).
+    Обработчики одни и те же на обоих логгерах: файл — всегда DEBUG (сторонние — от WARNING), терминал (stderr) —
+    только с --debug. `close` снимает и закрывает только свои обработчики: чужие (pytest caplog) остаются.
     """
 
-    def __init__(self, secrets: tuple[SecretValue, ...]) -> None:
-        super().__init__()
-        self.secrets: tuple[SecretValue, ...] = secrets
+    path: Path
+    handlers: tuple[logging.Handler, ...]
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        self._clean(record)
-        return True
+    @classmethod
+    def open(cls, log_dir: Path, debug: bool, started: datetime) -> RunLog:
+        """`started` — момент начала запуска по часам программы: он даёт имя файлу, а его пояс — время каждой записи."""
+        livecraft_logger: logging.Logger = logging.getLogger(APP_NAME)
+        formatter: logging.Formatter = logging.Formatter(LOG_FORMAT)
+        formatter.converter = Clock(require_aware(started).tzinfo).local_time
+        path: Path = log_dir / LOG_FILE_TEMPLATE.format(stamp=started.strftime(FILE_STAMP_FORMAT))
+        handlers: list[logging.Handler] = [logging.FileHandler(path, encoding=TEXT_ENCODING)]
+        if debug:
+            handlers.append(logging.StreamHandler(sys.stderr))
+        livecraft_logger.setLevel(logging.DEBUG)
+        livecraft_logger.propagate = False
+        python_root: logging.Logger = logging.getLogger()
+        for handler in handlers:
+            handler.setLevel(logging.DEBUG)
+            handler.setFormatter(formatter)
+            handler.addFilter(_ThirdPartyFilter())
+            livecraft_logger.addHandler(handler)
+            python_root.addHandler(handler)
+        logging.captureWarnings(True)       # warnings.warn — через логгер py.warnings в те же обработчики
+        return cls(path=path, handlers=tuple(handlers))
 
-    def _clean(self, record: logging.LogRecord) -> None:
-        """Готовый текст — на место шаблона, аргументы больше не нужны."""
-        try:
-            text: str = record.getMessage()
-        except (TypeError, ValueError, KeyError):
-            # Шаблон и аргументы не сходятся: запись всё равно не отформатируется, а её msg и args
-            # logging напечатает в stderr через handleError — поэтому чистим их по отдельности.
-            self._clean_parts(record)
-            return
-        cleaned: str = self._scrub(text)
-        if cleaned == text:
-            return
-        record.msg = cleaned
-        record.args = ()
+    def protect(self, log_filter: logging.Filter) -> None:
+        """Фильтр на каждый обработчик запуска; ставится сразу после чтения сейфа, до первого обращения к сети."""
+        for handler in self.handlers:
+            handler.addFilter(log_filter)
 
-    def _clean_parts(self, record: logging.LogRecord) -> None:
-        if isinstance(record.msg, str):
-            record.msg = self._scrub(record.msg)
-        if isinstance(record.args, tuple):
-            record.args = tuple(self._scrub_value(item) for item in record.args)
-        elif isinstance(record.args, dict):
-            record.args = {key: self._scrub_value(item) for key, item in record.args.items()}
-
-    def _scrub_value(self, item: object) -> object:
-        return self._scrub(item) if isinstance(item, str) else item
-
-    def _scrub(self, text: str) -> str:
-        for secret in self.secrets:
-            text = secret.scrub(text)
-        return text
+    def close(self) -> None:
+        """Снять свои обработчики с обоих логгеров и закрыть: открытый файл лога не даёт удалить папку (Windows)."""
+        for handler in self.handlers:
+            logging.getLogger(APP_NAME).removeHandler(handler)
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+        logging.captureWarnings(False)
 
 
 class _ThirdPartyFilter(logging.Filter):
     """Записи livecraft проходят с любым уровнем, чужие — от THIRD_PARTY_LEVEL."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if record.name == APP_NAME or record.name.startswith(APP_NAME + "."):
+        if record.name == APP_NAME or record.name.startswith(OWN_LOGGER_PREFIX):
             return True
         return record.levelno >= THIRD_PARTY_LEVEL
-
-
-def install_secret_filter(vault: Vault) -> None:
-    """Повесить SecretScrubber на все обработчики этого запуска; пустой сейф — вешать нечего.
-
-    Зовётся после setup_logging, когда сейф открыт. close_logging снимает обработчики вместе с фильтром,
-    поэтому после каждого нового setup_logging фильтр ставится заново.
-    """
-    secrets: tuple[SecretValue, ...] = vault.secrets()
-    if not secrets:
-        return
-    scrubber: SecretScrubber = SecretScrubber(secrets)
-    for handler in _own_handlers():
-        handler.addFilter(scrubber)
-
-
-def _own_handlers() -> list[logging.Handler]:
-    """Обработчики логгера livecraft и свои обработчики на корневом логгере Python, каждый по одному разу."""
-    handlers: list[logging.Handler] = list(logging.getLogger(APP_NAME).handlers)
-    for handler in _THIRD_PARTY_HANDLERS:
-        if not any(handler is known for known in handlers):
-            handlers.append(handler)
-    return handlers
-
-
-def _attach_third_party(handlers: list[logging.Handler]) -> None:
-    """Корневой логгер Python получает те же обработчики; warnings.warn — через логгер py.warnings."""
-    python_root: logging.Logger = logging.getLogger()
-    for handler in handlers:
-        python_root.addHandler(handler)
-        _THIRD_PARTY_HANDLERS.append(handler)
-    logging.captureWarnings(True)

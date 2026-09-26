@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import atexit
-import dataclasses
 import logging
 import shutil
 import subprocess
@@ -18,24 +17,16 @@ import httpx2
 import openai
 import pytest
 
-from app.config.loader import (
-    LivecraftSettings,
-    LlmSettings,
-    ReasoningEffort,
-    ServiceTier,
-    ShippedSettings,
-    load_settings,
-    save_settings_file,
-)
+from app.config.loader import LlmSettings, ReasoningEffort, ServiceTier, ShippedSettings
 from app.core.text_format import TEXT_ENCODING
 from app.observability.log_event import LogArea
-from app.paths import LivecraftPaths, build_paths, ensure_dirs
+from app.paths import LivecraftPaths
 from app.secretsafe.crypto import FORMAT_VERSION, VAULT_KEY_BYTES, EncryptedField, VaultCrypto, VaultFile
 from app.secretsafe.value import SecretField
 from app.sheets.rows import PlanRow
 from app.sources.language import LanguageProfile
+from app.slots.preview import Preview
 from app.sources.metadata import SourceMetadata
-from app.sources.preview import Preview
 from app.sources.video import SourceVideo
 from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
@@ -130,8 +121,8 @@ def slot_log() -> Iterator[LogCapture]:
 @pytest.fixture
 def livecraft_paths(tmp_path: Path) -> LivecraftPaths:
     """Корень запуска во временной папке: папки созданы, файлов в них нет — как после установки."""
-    paths: LivecraftPaths = build_paths(tmp_path / "root")
-    ensure_dirs(paths)
+    paths: LivecraftPaths = LivecraftPaths(tmp_path / "root")
+    paths.ensure_dirs()
     return paths
 
 
@@ -181,12 +172,6 @@ def ready_paths(livecraft_paths: LivecraftPaths) -> LivecraftPaths:
     write_supplied_vault(livecraft_paths, SUPPLIED_VALUES)
     livecraft_paths.client_secret_file.write_text(CLIENT_SECRET_STUB, encoding="utf-8")
     return livecraft_paths
-
-
-def set_form_url(paths: LivecraftPaths, url: str) -> None:
-    """Ссылка на форму в livecraft.json — тем же загрузчиком, что пишет настройщик."""
-    settings: LivecraftSettings = load_settings(paths.config_file)
-    save_settings_file(paths.config_file, dataclasses.replace(settings, form=dataclasses.replace(settings.form, url=url)))
 
 
 # --- нейросеть без сети: подделка SDK openai (app\llm\backends\openai.py), ответы и отказы OpenAI

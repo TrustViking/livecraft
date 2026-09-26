@@ -55,7 +55,7 @@ from app.texts.paragraphs import normalize_newlines
 from app.texts.phrase_lexicon import ServiceHints
 
 if TYPE_CHECKING:
-    from app.sources.language import TextLanguageDetector
+    from app.texts.language_detector import TextLanguageDetector
     from app.sources.video import SourceVideo
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)

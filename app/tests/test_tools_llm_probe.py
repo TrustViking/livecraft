@@ -9,11 +9,12 @@ from app.config.loader import LivecraftSettings, load_settings
 from app.llm.errors import LlmErrorKind
 from app.llm.selection import ChoiceReason
 from app.llm.usage import RequestUsage, RunUsage
-from app.paths import LivecraftPaths, ROOT_ENV_VAR
+from app.paths import ROOT_ENV_VAR, LivecraftPaths
+from app.run.exit_code import ExitCode
 from app.secretsafe.value import SecretField
-from app.setup.run_mode import ExitCode
 from app.tests.conftest import SUPPLIED_VALUES, FakeLlmSdk, api_error, llm_answer, write_supplied_vault
 from app.tests.fixtures.clock import StoppedClock
+from app.tests.fixtures.probe import ProbeRun
 from app.tools import llm_probe
 from app.tools.llm_probe import ANSWER_MAX_CHARS, LlmProbe, LlmProbeReport, StartupPing
 from app.ui import messages_ru as msg
@@ -23,9 +24,9 @@ PING_ANSWER: str = json.dumps({"status": "ok", "provider": "openai", "model": "g
 
 
 def run_probe(paths: LivecraftPaths, sdk: FakeLlmSdk) -> tuple[int, list[str]]:
-    lines: list[str] = []
-    code: int = LlmProbe(paths=paths, say=lines.append, sdk=sdk, clock=StoppedClock.at(MOMENT)).run()
-    return code, lines
+    with ProbeRun.open(paths, MOMENT) as run:
+        code: int = LlmProbe(session=run.session, sdk=sdk, clock=StoppedClock.at(MOMENT)).run()
+    return code, run.lines
 
 
 def assert_no_vault_values(lines: list[str]) -> None:

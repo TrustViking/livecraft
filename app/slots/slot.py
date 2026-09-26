@@ -2,27 +2,39 @@
 
 `SlotKey` — чем слот отличается от другого: момент старта в зоне программы и язык; отсюда `slot_id`
 `{DD-MM-YYYY}_{HHMM}_{язык}` — правило самого ключа — и порядок слотов (`sort_key`).
-`StreamSlot` несёт ровно поля схемы §4 плюс происхождение текстов и сам строит свою запись схемы
-(restreamer `_build_package_slot`), которую читает planers `_ManifestParser._slot`.
+`StreamSlot` несёт ровно поля схемы §4 плюс происхождение текстов и сам строит свою запись схемы — ту, что читает
+пакет plan_*.bcast (`SlotRecordKey` — ключи записи в порядке схемы).
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, ClassVar, Final
-from zoneinfo import ZoneInfo
+from enum import Enum
+from typing import ClassVar, Final
 
 from app.core.dates import ISO_TIMESPEC, SLOT_TIME_FORMAT, format_date, format_time
-from app.core.youtube_video import YouTubeVideoId
-from app.slots.texts import TEXT_ENCODING, SlotTextOrigin, SlotTexts
+from app.core.text_format import SPACE, TEXT_ENCODING
+from app.observability.log_event import LogField
+from app.slots.preview import Preview
+from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.ui import messages_ru as msg
 
-if TYPE_CHECKING:      # только для аннотаций: слот берёт у источника ряд, ссылку, язык и обложку
-    from app.sources.preview import Preview
-    from app.sources.video import SourceVideo
-
 SLOT_ID_TEMPLATE: Final[str] = "{date}_{time}_{language}"
+
+
+class SlotRecordKey(str, Enum):
+    """Ключи записи слота схемы §4 в порядке схемы."""
+
+    SLOT_ID = "slot_id"
+    DATE = "date"
+    TIME = "time"
+    START = "start"
+    LANGUAGE = "language"
+    TITLE = "title"
+    DESCRIPTION = "description"
+    PREVIEWS = "previews"
+    SOURCES = "sources"
 
 
 @dataclass(frozen=True)
@@ -34,15 +46,6 @@ class SlotKey:
 
     start: datetime
     language: str
-
-    @classmethod
-    def of(cls, video: SourceVideo, zone: ZoneInfo) -> SlotKey:
-        """Ключ годного источника; у негодного нет момента или языка — ValueError."""
-        start: datetime | None = video.row.start
-        language: str | None = video.language_code
-        if start is None or not language:
-            raise ValueError(f"source row {video.row.row_number} has no start or language")
-        return cls(start=start.astimezone(zone), language=language)
 
     @property
     def date_text(self) -> str:
@@ -84,9 +87,10 @@ class StreamSlot:
     text_origin: SlotTextOrigin
 
     @classmethod
-    def of(cls, key: SlotKey, texts: SlotTexts, videos: Sequence[SourceVideo]) -> StreamSlot:
-        """Слот из ключа, окончательных текстов и источников; порядок источников — порядок рядов."""
-        ordered: list[SourceVideo] = sorted(videos, key=lambda video: video.row.row_number)
+    def of(
+        cls, key: SlotKey, texts: SlotTexts, previews: tuple[Preview, ...], sources: tuple[str, ...]
+    ) -> StreamSlot:
+        """Слот из ключа, окончательных текстов, обложек и ссылок источников — в том порядке, в каком их дали."""
         return cls(
             slot_id=key.slot_id,
             date=key.date_text,
@@ -95,8 +99,8 @@ class StreamSlot:
             language=key.language,
             title=texts.title,
             description=texts.description,
-            previews=tuple(video.preview for video in ordered if video.preview is not None),
-            sources=tuple(YouTubeVideoId.watch_url_of(video.link) or video.link for video in ordered),
+            previews=previews,
+            sources=sources,
             text_origin=texts.origin,
         )
 
@@ -108,32 +112,38 @@ class StreamSlot:
         return None
 
     def to_record(self, preview_names: tuple[str, ...]) -> dict[str, object]:
-        """Запись слота схемы §4: `start` — ISO-8601 с секундами, `previews` — имена файлов обложек
-        по одному на каждую обложку слота в том же порядке. Происхождение текстов в запись не входит.
+        """Запись слота схемы §4: `start` — ISO-8601 с секундами, `previews` — имена файлов обложек слота
+        в том же порядке, что и обложки. Происхождение текстов в запись не входит.
         """
-        if len(preview_names) != len(self.previews):
-            raise ValueError(
-                f"slot {self.slot_id}: {len(preview_names)} preview names for {len(self.previews)} previews"
-            )
-        return {
-            "slot_id": self.slot_id,
-            "date": self.date,
-            "time": self.time,
-            "start": self.start.isoformat(timespec=ISO_TIMESPEC),
-            "language": self.language,
-            "title": self.title,
-            "description": self.description,
-            "previews": list(preview_names),
-            "sources": list(self.sources),
-        }
+        values: tuple[object, ...] = (
+            self.slot_id,
+            self.date,
+            self.time,
+            self.start.isoformat(timespec=ISO_TIMESPEC),
+            self.language,
+            self.title,
+            self.description,
+            list(preview_names),
+            list(self.sources),
+        )
+        return {key.value: value for key, value in zip(SlotRecordKey, values, strict=True)}
+
+    @property
+    def log_fields(self) -> Mapping[str, object]:
+        """Поля строки лога без названия и описания: они длинные, в строке — только их длины."""
+        return dict(
+            slot=self.slot_id,
+            start=self.start.isoformat(timespec=ISO_TIMESPEC),
+            language=self.language,
+            sources=len(self.sources),
+            previews=len(self.previews),
+            texts=self.text_origin,
+            title_chars=len(self.title),
+            description_chars=len(self.description),
+            description_bytes=len(self.description.encode(TEXT_ENCODING)),
+        )
 
     @property
     def log_line(self) -> str:
-        """Сводка key=value без названия и описания: они длинные, в строке — только их длины."""
-        return (
-            f"slot={self.slot_id} start={self.start.isoformat(timespec=ISO_TIMESPEC)} "
-            f"language={self.language} sources={len(self.sources)} previews={len(self.previews)} "
-            f"texts={self.text_origin.value} title_chars={len(self.title)} "
-            f"description_chars={len(self.description)} "
-            f"description_bytes={len(self.description.encode(TEXT_ENCODING))}"
-        )
+        """Сводка key=value для строк лога других объектов о слоте."""
+        return SPACE.join(LogField(name, value).text for name, value in self.log_fields.items())

@@ -19,7 +19,7 @@ from app.google.auth import (
     AuthErrorReason,
     GoogleLogin,
 )
-from app.paths import LivecraftPaths, write_text_atomically
+from app.paths import DataDir, LivecraftPaths, write_text_atomically
 from app.tools.code_standard.source import SourceKey, SourceTree
 from app.ui import messages_ru as msg
 
@@ -78,7 +78,7 @@ def channel_login(operator: GoogleLogin, livecraft_paths: LivecraftPaths) -> Goo
     """Вход, который сам нового токена не пишет (так будет у канала на этапе 4)."""
     return GoogleLogin(
         client_secret_file=operator.client_secret_file,
-        token_file=livecraft_paths.secrets_dir / "@Osvald.X.token.json",
+        token_file=livecraft_paths.dir(DataDir.SECRETS) / "@Osvald.X.token.json",
         scopes=(YOUTUBE_SCOPE,),
         login_hint=LOGIN_HINT,
         saves_new_login=False,
@@ -137,7 +137,7 @@ def test_missing_client_secret_is_reported(livecraft_paths: LivecraftPaths, flow
         GoogleLogin.operator(livecraft_paths).credentials()
     assert raised.value.reason is AuthErrorReason.CLIENT_SECRET_MISSING
     assert raised.value.detail == "client_secret.json"
-    assert str(livecraft_paths.secrets_dir) not in str(raised.value)
+    assert str(livecraft_paths.dir(DataDir.SECRETS)) not in str(raised.value)
     assert flow.last_kwargs == {}
 
 

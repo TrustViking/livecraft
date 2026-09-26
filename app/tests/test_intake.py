@@ -1,4 +1,4 @@
-"""Прогон контура A (app\\slots\\intake.py): таблица → ряды → источники → слоты → пакет, коды выхода §10.
+"""Прогон контура A (app\\intake\\intake.py): таблица → ряды → источники → слоты → пакет, исход по §10.
 
 Сеть подменена целиком: читатель таблицы отдаёт `SheetPlan.from_values` из фиксированных значений, yt-dlp —
 сохранённый ответ, загрузчик обложек — картинку из памяти; «сейчас» фиксировано.
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -20,19 +21,23 @@ from PIL import Image
 
 from app.config.loader import LivecraftSettings, load_settings
 from app.core.retry import RetryPolicy
+from app.intake.builder import SlotBuilder
+from app.intake.intake import IntakeRequest, IntakeResult, IntakeStage, PlanIntake
+from app.observability.log_event import LogArea
 from app.paths import LivecraftPaths
+from app.run.exit_code import RunOutcome
 from app.secretsafe.vault import Vault
-from app.setup.run_mode import ExitCode
 from app.sheets.client import SheetsReadError, SheetsReadReason
 from app.sheets.plan import SheetPlan
-from app.slots.builder import SlotBuilder
-from app.slots.intake import IntakeRequest, IntakeResult, IntakeStage, PlanIntake
+from app.sheets.rows import RowSkipReason
 from app.sources.fetcher import SourceFailureReason, SourceFetch
 from app.sources.language import LanguageResolver
 from app.sources.metadata import SourceMetadata
 from app.sources.preview import PreviewDownloader
 from app.sources.video import SourceCatalog
-from app.tests.conftest import FORM_URL, SHIPPED_SETTINGS, set_form_url
+from app.tests.conftest import FORM_URL, SHIPPED_SETTINGS
+from app.tests.fixtures.logs import LogCapture
+from app.tests.fixtures.settings import set_form_url
 from app.ui import messages_ru as msg
 
 DATA_DIR: Path = Path(__file__).resolve().parent / "data" / "ytdlp"
@@ -151,7 +156,7 @@ def _no_private_text(lines: tuple[str, ...]) -> None:
 def test_a_full_run_writes_a_package_that_zipfile_reads(livecraft_paths: LivecraftPaths) -> None:
     reader: _Reader = _Reader(values=[HEADER, FUTURE_ROW, OTHER_ROW])
     result: IntakeResult = _intake(livecraft_paths, reader).run()
-    assert result.exit_code is ExitCode.OK
+    assert result.outcome is RunOutcome.DONE
     assert result.stopped_at is None
     assert result.package is not None and result.package.is_written
     [package] = _packages(livecraft_paths)
@@ -165,7 +170,8 @@ def test_a_full_run_writes_a_package_that_zipfile_reads(livecraft_paths: Livecra
 
 
 def test_the_console_lines_go_one_per_step_without_titles_or_the_form(livecraft_paths: LivecraftPaths) -> None:
-    result: IntakeResult = _intake(livecraft_paths, _Reader(values=[HEADER, FUTURE_ROW, OTHER_ROW])).run()
+    with LogCapture.on(LogArea.INTAKE) as intake_log:
+        result: IntakeResult = _intake(livecraft_paths, _Reader(values=[HEADER, FUTURE_ROW, OTHER_ROW])).run()
     lines: tuple[str, ...] = result.console_lines
     assert lines == (
         msg.INTAKE_TABLE_LINE.format(rows=2, admitted=2, skipped=0, reasons=""),
@@ -176,13 +182,13 @@ def test_the_console_lines_go_one_per_step_without_titles_or_the_form(livecraft_
         result.package.console_line if result.package is not None else "",
     )
     _no_private_text(lines)
-    _no_private_text((result.log_line,))
+    _no_private_text(tuple(intake_log.messages()))
 
 
 def test_past_rows_and_repeats_are_named_in_the_table_line(livecraft_paths: LivecraftPaths) -> None:
     reader: _Reader = _Reader(values=[HEADER, FUTURE_ROW, PAST_ROW, FUTURE_ROW])
     result: IntakeResult = _intake(livecraft_paths, reader).run()
-    assert result.exit_code is ExitCode.OK
+    assert result.outcome is RunOutcome.DONE
     table: str = result.console_lines[0]
     assert "рядов 3, допущено 1, отсеяно 2" in table
     assert msg.INTAKE_COUNT_ITEM.format(name=msg.SHEET_ROW_SKIP_REASONS["in_past"], count=1) in table
@@ -193,7 +199,7 @@ def test_one_link_in_two_rows_is_one_fetch(livecraft_paths: LivecraftPaths) -> N
     fetcher: _Fetcher = _Fetcher()
     rows: list[list[str]] = [HEADER, FUTURE_ROW, [LINK, "17.10.2026", "20:00"]]
     result: IntakeResult = _intake(livecraft_paths, _Reader(values=rows), fetcher).run()
-    assert result.exit_code is ExitCode.OK
+    assert result.outcome is RunOutcome.DONE
     assert fetcher.calls == [LINK]
 
 
@@ -203,7 +209,7 @@ def test_one_link_in_two_rows_is_one_fetch(livecraft_paths: LivecraftPaths) -> N
 def test_a_refused_source_is_code_1_and_the_reason_is_in_the_sources_line(livecraft_paths: LivecraftPaths) -> None:
     fetcher: _Fetcher = _Fetcher({BROKEN_LINK: SourceFailureReason.UNAVAILABLE})
     result: IntakeResult = _intake(livecraft_paths, _Reader(values=[HEADER, FUTURE_ROW, BROKEN_ROW]), fetcher).run()
-    assert result.exit_code is ExitCode.ERRORS
+    assert result.outcome is RunOutcome.FAILED
     assert result.package is not None and result.package.is_written      # годный слот всё равно в пакете
     sources: str = result.console_lines[1]
     assert "годных 1 из 2" in sources
@@ -214,7 +220,7 @@ def test_every_source_refused_is_code_1_without_a_package(livecraft_paths: Livec
     """Слотов нет из-за отказов — это ошибка (1), а не «нет будущих рядов» (3)."""
     fetcher: _Fetcher = _Fetcher({LINK: SourceFailureReason.TOOL_MISSING})
     result: IntakeResult = _intake(livecraft_paths, _Reader(values=[HEADER, FUTURE_ROW]), fetcher).run()
-    assert result.exit_code is ExitCode.ERRORS
+    assert result.outcome is RunOutcome.FAILED
     assert result.stopped_at is IntakeStage.SOURCES
     assert result.build is None and result.package is None
     assert result.console_lines[-1] == msg.INTAKE_NO_SLOTS
@@ -224,7 +230,7 @@ def test_every_source_refused_is_code_1_without_a_package(livecraft_paths: Livec
 def test_all_rows_in_the_past_is_code_3_without_sources_and_package(livecraft_paths: LivecraftPaths) -> None:
     fetcher: _Fetcher = _Fetcher()
     result: IntakeResult = _intake(livecraft_paths, _Reader(values=[HEADER, PAST_ROW]), fetcher).run()
-    assert result.exit_code is ExitCode.NO_FUTURE_SLOTS
+    assert result.outcome is RunOutcome.NOTHING_PLANNED
     assert result.stopped_at is IntakeStage.TABLE
     assert fetcher.calls == []
     assert result.console_lines[-1] == msg.INTAKE_NO_FUTURE_ROWS
@@ -232,21 +238,21 @@ def test_all_rows_in_the_past_is_code_3_without_sources_and_package(livecraft_pa
 
 
 @pytest.mark.parametrize(
-    ("reason", "code"),
+    ("reason", "outcome"),
     [
-        (SheetsReadReason.AUTH, ExitCode.CONFIG),
-        (SheetsReadReason.NOT_CONFIGURED, ExitCode.CONFIG),
-        (SheetsReadReason.NO_ACCESS, ExitCode.ERRORS),
-        (SheetsReadReason.UNAVAILABLE, ExitCode.ERRORS),
+        (SheetsReadReason.AUTH, RunOutcome.NOT_CONFIGURED),
+        (SheetsReadReason.NOT_CONFIGURED, RunOutcome.NOT_CONFIGURED),
+        (SheetsReadReason.NO_ACCESS, RunOutcome.FAILED),
+        (SheetsReadReason.UNAVAILABLE, RunOutcome.FAILED),
     ],
 )
 def test_a_table_that_does_not_read_is_a_result_not_an_exception(
-    livecraft_paths: LivecraftPaths, reason: SheetsReadReason, code: ExitCode
+    livecraft_paths: LivecraftPaths, reason: SheetsReadReason, outcome: RunOutcome
 ) -> None:
     error: SheetsReadError = SheetsReadError(reason, "plan(9c2b)", status=403 if reason is SheetsReadReason.NO_ACCESS else None)
     fetcher: _Fetcher = _Fetcher()
     result: IntakeResult = _intake(livecraft_paths, _Reader(error=error), fetcher).run()
-    assert result.exit_code is code
+    assert result.outcome is outcome
     assert result.sheets_error is error and result.stopped_at is IntakeStage.TABLE
     assert result.console_lines == (error.human,)
     assert fetcher.calls == [] and _packages(livecraft_paths) == []
@@ -254,14 +260,14 @@ def test_a_table_that_does_not_read_is_a_result_not_an_exception(
 
 def test_an_unknown_header_is_code_1(livecraft_paths: LivecraftPaths) -> None:
     result: IntakeResult = _intake(livecraft_paths, _Reader(values=[["Что-то", "Ещё"], FUTURE_ROW])).run()
-    assert result.exit_code is ExitCode.ERRORS
+    assert result.outcome is RunOutcome.FAILED
     assert result.plan_problem is not None and result.console_lines == (result.plan_problem,)
     assert _packages(livecraft_paths) == []
 
 
 def test_without_the_form_the_package_is_not_written_and_the_code_is_1(livecraft_paths: LivecraftPaths) -> None:
     result: IntakeResult = _intake(livecraft_paths, _Reader(values=[HEADER, FUTURE_ROW]), form_url=None).run()
-    assert result.exit_code is ExitCode.ERRORS
+    assert result.outcome is RunOutcome.FAILED
     assert result.stopped_at is IntakeStage.PACKAGE
     assert result.package is not None and not result.package.is_written
     assert result.console_lines[-1] == result.package.console_line
@@ -289,3 +295,37 @@ def test_of_wires_the_battle_dependencies_without_touching_google(livecraft_path
     assert intake.request is request
     assert intake.builder.zone == settings.zone
     assert not livecraft_paths.sheets_token_file.exists()
+
+
+# --- строки лога и повтор ссылки
+
+
+def test_the_finished_line_names_the_outcome_instead_of_a_code(livecraft_paths: LivecraftPaths) -> None:
+    """Строка `intake_finished` пишет исход прогона; число кода решает запуск (app\\run)."""
+    with LogCapture.on(LogArea.INTAKE) as intake_log:
+        _intake(livecraft_paths, _Reader(values=[HEADER, PAST_ROW])).run()
+    [finished] = [line for line in intake_log.messages(logging.INFO) if line.startswith("intake_finished ")]
+    assert finished.startswith(f"intake_finished package_id={PACKAGE_ID} stopped_at=table ")
+    assert finished.endswith(" outcome=nothing_planned")
+    assert "exit_code" not in finished
+
+
+def test_a_failed_table_is_logged_with_its_label_reason_and_status(livecraft_paths: LivecraftPaths) -> None:
+    error: SheetsReadError = SheetsReadError(SheetsReadReason.NO_ACCESS, "plan(9c2b)", status=403)
+    with LogCapture.on(LogArea.INTAKE) as intake_log:
+        _intake(livecraft_paths, _Reader(error=error)).run()
+    assert intake_log.messages(logging.ERROR) == [
+        f"intake_table_failed package_id={PACKAGE_ID} reason=no_access sheet=plan(9c2b) status=403"
+    ]
+
+
+def test_the_same_link_at_the_same_moment_twice_is_one_source_of_the_slot(livecraft_paths: LivecraftPaths) -> None:
+    """Повтор ссылки в тот же момент снимают ряды таблицы (причина — «повтор»): в слоте один источник."""
+    fetcher: _Fetcher = _Fetcher()
+    result: IntakeResult = _intake(livecraft_paths, _Reader(values=[HEADER, FUTURE_ROW, FUTURE_ROW]), fetcher).run()
+    assert result.outcome is RunOutcome.DONE
+    assert [row.skip for row in result.rows] == [None, RowSkipReason.DUPLICATE]
+    assert fetcher.calls == [LINK]
+    assert result.build is not None
+    (slot,) = result.build.slots
+    assert slot.sources == ("https://www.youtube.com/watch?v=dQw4w9WgXcQ",)

@@ -74,6 +74,11 @@ class SheetsReadReason(str, Enum):
     def human(self) -> str:
         return msg.SHEETS_READ_REASON_TEXT[self.value]
 
+    @property
+    def is_configuration(self) -> bool:
+        """Сбой лечится настройкой или входом, а не повтором: это ошибка конфигурации или авторизации (§10, код 2)."""
+        return self in (SheetsReadReason.NOT_CONFIGURED, SheetsReadReason.AUTH)
+
 
 _STATUS_REASONS: Final[dict[int, SheetsReadReason]] = {
     HTTPStatus.BAD_REQUEST: SheetsReadReason.BAD_RANGE,

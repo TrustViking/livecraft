@@ -15,7 +15,7 @@ from app.llm.merges.prompt import MergePrompt
 from app.llm.merges.retry import RetryFacts, RetryProfile, RetrySignal
 from app.llm.merges.run import MergeRun, MergeStopReason, MergeTally
 from app.observability.log_event import LogArea
-from app.slots.builder import SlotGroup
+from app.intake.builder import SlotGroup
 from app.slots.slot import SlotKey
 from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.sources.video import SourceVideo
@@ -47,7 +47,12 @@ def group_of(pairs: tuple[tuple[str, str], ...] = EXPANDED_SOURCES, start: datet
     videos: tuple[SourceVideo, ...] = tuple(
         merge_video(index + 2, title, body) for index, (title, body) in enumerate(pairs)
     )
-    return SlotGroup.of(SlotKey(start=start, language="en"), videos)
+    return SlotGroup(SlotKey(start=start, language="en"), videos)
+
+
+def job_of(group: SlotGroup, merge_run: MergeRun) -> MergeJob:
+    """Merge слота группы: её ключ и источники в порядке рядов."""
+    return MergeJob(group.key, group.videos, merge_run)
 
 
 def run_with(*replies: object) -> tuple[MergeRun, QueueBackend]:
@@ -77,7 +82,7 @@ def lines_starting(log: LogCapture, event: str) -> list[str]:
 def test_a_first_attempt_success_gives_merged_texts(llm_log: LogCapture) -> None:
     merge_run, backend = run_with(answer(STRONG_ANSWER))
     group: SlotGroup = group_of()
-    outcome: MergeOutcome = MergeJob(group, merge_run).run()
+    outcome: MergeOutcome = job_of(group, merge_run).run()
     assert outcome.merged and outcome.texts.origin is SlotTextOrigin.MERGED
     assert outcome.texts.title == TITLE and outcome.texts.description.startswith(STRONG_HOOK)
     assert outcome.attempts == 1 and outcome.retries == 0 and outcome.rejected_attempts == 0
@@ -102,7 +107,7 @@ def test_a_first_attempt_success_gives_merged_texts(llm_log: LogCapture) -> None
 def test_the_input_summary_counts_sources_without_their_text(llm_log: LogCapture) -> None:
     merge_run, _ = run_with(answer(STRONG_ANSWER))
     group: SlotGroup = group_of()
-    MergeJob(group, merge_run).run()
+    job_of(group, merge_run).run()
     total: int = sum(len(body) for _, body in EXPANDED_SOURCES)
     assert lines_starting(llm_log, "merge_input_summary") == [
         f"merge_input_summary slot={group.key.slot_id} language=en source_count=3 non_empty_descriptions=3 "
@@ -130,7 +135,7 @@ def test_a_rejected_attempt_is_retried_with_its_targeted_profile(
 ) -> None:
     merge_run, backend = run_with(answer(bad_answer), answer(STRONG_ANSWER))
     group: SlotGroup = group_of()
-    outcome: MergeOutcome = MergeJob(group, merge_run).run()
+    outcome: MergeOutcome = job_of(group, merge_run).run()
     assert outcome.merged and outcome.attempts == 2 and outcome.rejected_attempts == 1 and outcome.retries == 1
     prompt: MergePrompt = first_prompt(group)
     expected_facts: RetryFacts = RetryFacts(
@@ -158,7 +163,7 @@ def test_a_rejected_attempt_is_retried_with_its_targeted_profile(
 def test_the_insufficient_bullet_retry_names_the_real_bullet_count() -> None:
     """Донор подставлял 0 (диагностика не передавалась); здесь — пункты отвергнутой попытки."""
     merge_run, backend = run_with(answer(THIN_ANSWER), answer(STRONG_ANSWER))
-    MergeJob(group_of(), merge_run).run()
+    job_of(group_of(), merge_run).run()
     retry_block: str = backend.prompts[1].rsplit("RETRY INSTRUCTION:", 1)[1]
     assert "3" in retry_block and "5" in retry_block
 
@@ -166,7 +171,7 @@ def test_the_insufficient_bullet_retry_names_the_real_bullet_count() -> None:
 def test_four_sources_name_the_structured_retry(llm_log: LogCapture) -> None:
     four: tuple[tuple[str, str], ...] = (*EXPANDED_SOURCES, ("Lviv grid repair logistics", "In Lviv, crews repair grids."))
     merge_run, _ = run_with(answer(UNDERFLOW_ANSWER), NOT_JSON, NOT_JSON)
-    MergeJob(group_of(four), merge_run).run()
+    job_of(group_of(four), merge_run).run()
     assert "retry_structure=four_plus_structured retry_source_count=4" in lines_starting(llm_log, "merge_llm_retry")[0]
 
 
@@ -175,16 +180,16 @@ def test_four_sources_name_the_structured_retry(llm_log: LogCapture) -> None:
 
 def test_two_attempts_when_no_reject_is_recoverable() -> None:
     merge_run, backend = run_with(NOT_JSON, NOT_JSON, answer(STRONG_ANSWER))
-    outcome: MergeOutcome = MergeJob(group_of(), merge_run).run()
+    outcome: MergeOutcome = job_of(group_of(), merge_run).run()
     assert not outcome.merged and outcome.attempts == 2 and len(backend.requests) == 2
     assert outcome.reject_codes == ("not_json_object",) and outcome.is_final_failure
-    assert outcome.texts == SlotTexts.from_sources(group_of().videos)
+    assert outcome.texts == SlotTexts.from_sources([video.text for video in group_of().videos])
     assert backend.prompts[1] == backend.prompts[0]          # обычный повтор без инструкции
 
 
 def test_a_recoverable_reject_opens_the_third_attempt() -> None:
     merge_run, backend = run_with(answer(UNDERFLOW_ANSWER), NOT_JSON, answer(STRONG_ANSWER))
-    outcome: MergeOutcome = MergeJob(group_of(), merge_run).run()
+    outcome: MergeOutcome = job_of(group_of(), merge_run).run()
     assert outcome.merged and outcome.attempts == 3 and outcome.rejected_attempts == 2
     assert backend.requests[2].label == "merge_en_primary_3"
 
@@ -194,7 +199,7 @@ def test_three_attempts_at_most(llm_log: LogCapture) -> None:
         answer(UNDERFLOW_ANSWER), answer(UNDERFLOW_ANSWER), answer(UNDERFLOW_ANSWER), answer(STRONG_ANSWER)
     )
     group: SlotGroup = group_of()
-    outcome: MergeOutcome = MergeJob(group, merge_run).run()
+    outcome: MergeOutcome = job_of(group, merge_run).run()
     assert not outcome.merged and outcome.attempts == 3 and len(backend.replies) == 1
     assert outcome.reject_codes == ("paragraph_underflow",)
     final: list[str] = [record.getMessage() for record in llm_log.records if record.levelno == logging.WARNING]
@@ -211,9 +216,9 @@ def test_three_attempts_at_most(llm_log: LogCapture) -> None:
 
 def test_quota_stops_the_slot_and_every_later_slot_goes_without_a_request(llm_log: LogCapture) -> None:
     merge_run, backend = run_with(error(LlmErrorKind.QUOTA), answer(STRONG_ANSWER))
-    first: MergeOutcome = MergeJob(group_of(), merge_run).run()
+    first: MergeOutcome = job_of(group_of(), merge_run).run()
     later_group: SlotGroup = group_of(start=START + timedelta(hours=1))
-    later: MergeOutcome = MergeJob(later_group, merge_run).run()
+    later: MergeOutcome = job_of(later_group, merge_run).run()
     assert merge_run.stop_reason is MergeStopReason.QUOTA and len(backend.requests) == 1
     assert first.attempts == 1 and first.reject_codes == ("quota_exhausted",) and first.is_final_failure
     assert later.attempts == 0 and later.skipped_reason is MergeSkipReason.QUOTA_EXHAUSTED
@@ -230,8 +235,8 @@ def test_quota_stops_the_slot_and_every_later_slot_goes_without_a_request(llm_lo
 
 def test_a_model_configuration_error_stops_merge_until_the_end_of_the_run(llm_log: LogCapture) -> None:
     merge_run, backend = run_with(error(LlmErrorKind.AUTH), answer(STRONG_ANSWER))
-    first: MergeOutcome = MergeJob(group_of(), merge_run).run()
-    later: MergeOutcome = MergeJob(group_of(start=START + timedelta(hours=1)), merge_run).run()
+    first: MergeOutcome = job_of(group_of(), merge_run).run()
+    later: MergeOutcome = job_of(group_of(start=START + timedelta(hours=1)), merge_run).run()
     assert merge_run.stop_reason is MergeStopReason.MODEL and len(backend.requests) == 1
     assert first.reject_codes == ("authentication_failed",) and first.texts.origin is SlotTextOrigin.SOURCE_COMPOSED
     assert later.skipped_reason is MergeSkipReason.MODEL_CONFIGURATION and later.attempts == 0
@@ -242,7 +247,7 @@ def test_a_model_configuration_error_stops_merge_until_the_end_of_the_run(llm_lo
 
 def test_another_error_is_unexpected_and_retried_without_an_instruction(llm_log: LogCapture) -> None:
     merge_run, backend = run_with(error(LlmErrorKind.TIMEOUT), answer(STRONG_ANSWER))
-    outcome: MergeOutcome = MergeJob(group_of(), merge_run).run()
+    outcome: MergeOutcome = job_of(group_of(), merge_run).run()
     assert outcome.merged and outcome.attempts == 2 and outcome.rejected_attempts == 0
     assert backend.prompts[1] == backend.prompts[0] and merge_run.stop_reason is None
     assert "code=unexpected_error raw_response_received=no" in lines_starting(llm_log, "merge_llm_response_invalid")[0]
@@ -257,9 +262,9 @@ def test_fewer_than_two_described_sources_skip_the_model(llm_log: LogCapture) ->
     merge_run, backend = run_with(answer(STRONG_ANSWER))
     pairs: tuple[tuple[str, str], ...] = (EXPANDED_SOURCES[0], ("Kharkiv rail and drone update", "  "))
     group: SlotGroup = group_of(pairs)
-    outcome: MergeOutcome = MergeJob(group, merge_run).run()
+    outcome: MergeOutcome = job_of(group, merge_run).run()
     assert outcome.skipped_reason is MergeSkipReason.INSUFFICIENT_DESCRIPTIONS and backend.requests == []
-    assert outcome.texts == SlotTexts.from_sources(group.videos) and outcome.reject_codes == ()
+    assert outcome.texts == SlotTexts.from_sources([video.text for video in group.videos]) and outcome.reject_codes == ()
     assert not outcome.is_candidate and not outcome.is_final_failure
     assert lines_starting(llm_log, "merge_skipped") == [
         f"merge_skipped slot={group.key.slot_id} language=en non_empty_descriptions=1 reason=insufficient_descriptions"
@@ -270,7 +275,7 @@ def test_fewer_than_two_described_sources_skip_the_model(llm_log: LogCapture) ->
 
 def test_a_single_source_slot_is_never_merged_nor_enforced(llm_log: LogCapture) -> None:
     merge_run, backend = run_with(answer(STRONG_ANSWER))
-    outcome: MergeOutcome = MergeJob(group_of(EXPANDED_SOURCES[:1]), merge_run).run()
+    outcome: MergeOutcome = job_of(group_of(EXPANDED_SOURCES[:1]), merge_run).run()
     assert outcome.texts.origin is SlotTextOrigin.SOURCE_SINGLE and backend.requests == []
     assert lines_starting(llm_log, "merge_post_enforcement") == []
 
@@ -306,7 +311,7 @@ def test_enforcement_of_an_empty_description_changes_nothing() -> None:
 def test_the_outcome_line_has_counts_and_no_texts() -> None:
     merge_run, _ = run_with(NOT_JSON, answer(STRONG_ANSWER))
     group: SlotGroup = group_of()
-    outcome: MergeOutcome = MergeJob(group, merge_run).run()
+    outcome: MergeOutcome = job_of(group, merge_run).run()
     assert outcome.log_line == (
         f"merge_attempt_outcome slot={group.key.slot_id} language=en source_count=3 success=yes merge_success=1 "
         "validation_rejected=1 retry_used=1 final_failure=0 publish_blocked=no texts=merged reject_codes=- "
@@ -316,8 +321,8 @@ def test_the_outcome_line_has_counts_and_no_texts() -> None:
 
 def test_no_model_answer_or_source_text_reaches_the_log(llm_log: LogCapture) -> None:
     merge_run, _ = run_with(answer(THIN_ANSWER), NOT_JSON, answer(OVERFLOW_ANSWER), answer(STRONG_ANSWER))
-    MergeJob(group_of(), merge_run).run()
-    MergeJob(group_of(start=START + timedelta(hours=1)), merge_run).run()
+    job_of(group_of(), merge_run).run()
+    job_of(group_of(start=START + timedelta(hours=1)), merge_run).run()
     joined: str = "\n".join(llm_log.messages())
     fragments: list[str] = [STRONG_HOOK[:40], STRONG_BULLETS[0], STRONG_CLOSE[:40], NOT_JSON, "Paragraph number", TITLE]
     fragments.extend(body[:40] for _, body in EXPANDED_SOURCES)
@@ -351,12 +356,12 @@ def uk_group(pairs: tuple[tuple[str, str], ...]) -> SlotGroup:
     videos: tuple[SourceVideo, ...] = tuple(
         merge_video(index + 2, title, body, "uk") for index, (title, body) in enumerate(pairs)
     )
-    return SlotGroup.of(SlotKey(start=START, language="uk"), videos)
+    return SlotGroup(SlotKey(start=START, language="uk"), videos)
 
 
 def test_an_accepted_answer_is_sanitized_before_it_becomes_the_slot_texts(llm_log: LogCapture) -> None:
     merge_run, _ = run_with(answer(STRONG_ANSWER))
-    outcome: MergeOutcome = MergeJob(group_of(), merge_run).run()
+    outcome: MergeOutcome = job_of(group_of(), merge_run).run()
     assert outcome.merged and outcome.answer_accepted and not outcome.publish_blocked
     applied: list[str] = lines_starting(llm_log, "publish_sanitation_applied=yes")
     assert len(applied) == 1 and "lang=en source=primary_success " in applied[0]
@@ -366,9 +371,9 @@ def test_an_accepted_answer_is_sanitized_before_it_becomes_the_slot_texts(llm_lo
 def test_a_blocked_publication_gives_source_texts_and_still_counts_as_a_merge_success(llm_log: LogCapture) -> None:
     merge_run, backend = run_with(answer(BLOCKED_ANSWER, BLOCKED_TITLE))
     group: SlotGroup = uk_group(BLOCKED_SOURCES)
-    outcome: MergeOutcome = MergeJob(group, merge_run).run()
+    outcome: MergeOutcome = job_of(group, merge_run).run()
     assert outcome.answer_accepted and outcome.publish_blocked and not outcome.merged and len(backend.requests) == 1
-    assert outcome.texts == SlotTexts.from_sources(group.videos) and not outcome.is_final_failure
+    assert outcome.texts == SlotTexts.from_sources([video.text for video in group.videos]) and not outcome.is_final_failure
     assert lines_starting(llm_log, "merge_publish_gate_blocked") == [
         f"merge_publish_gate_blocked target=package slot={group.key.slot_id} language=uk "
         "has_publish_stage_duplicate=yes has_publish_stage_opener_cta=no fallback=nomerge"

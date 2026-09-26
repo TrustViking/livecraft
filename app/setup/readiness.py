@@ -3,7 +3,9 @@
 Сейф, livecraft.json и channels.json читаются независимо: нет каналов — настройки всё равно прочитаны, и
 части режима, которым каналы не нужны, готовы. Этот объект держит результаты чтения и сам отвечает на
 вопросы о себе: готово ли всё (окно настройщика), готова ли каждая часть режима и что сделать, если нет,
-что сказать громко. Печатает и выбирает код выхода только main.
+что сказать громко и что писать в лог (`Readiness.log`). Готовность режима по частям — объекты `PartReadiness`
+и `ModeReadiness` (app\\run\\mode.py): что делает запуск режима, решает `ModeReadiness.step`. Печатает запуск
+(app\\main.py::Launch).
 
 Правило готовности каждой части — в одном месте, `Readiness.part`. Не готовая часть называется одной
 строкой с точным действием: что задать и где. Шаблоны файлов в консоль не идут — только в лог при
@@ -14,7 +16,9 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from enum import Enum
 from typing import Final
 
 from app.config.loader import (
@@ -29,104 +33,31 @@ from app.config.loader import (
     load_channels,
     load_settings,
 )
-from app.observability.log_event import LogValue
+from app.observability.log_event import LogEvent, LogValue
 from app.paths import LivecraftPaths
+from app.run.mode import ModeReadiness, PartReadiness, RunMode, RunPart
 from app.secretsafe.crypto import VaultFormatError
 from app.secretsafe.store import VaultLoad, VaultStore
 from app.secretsafe.value import SecretField
 from app.secretsafe.vault import Vault, VaultOrigin
-from app.setup.run_mode import RunMode, RunPart
 from app.ui import messages_ru as msg
 
 LOG_VAULT_BROKEN: Final[str] = "broken"
 LOG_CONFIG_ERROR: Final[str] = "error"
-LOG_LINE_TEMPLATE: Final[str] = "settings={settings} channels={channels} local={local} vault={vault}"
-MODE_LOG_LINE_TEMPLATE: Final[str] = "mode={mode} ready={ready} blocked={blocked} not_built={not_built}"
 # Что нужно каждой реализованной части из сейфа (§7.5): таблица — id и диапазон, merge — ключ OpenAI.
 PLAN_VAULT_FIELDS: Final[tuple[SecretField, ...]] = (SecretField.SHEETS_ID, SecretField.SHEETS_RANGE)
 MERGE_VAULT_FIELDS: Final[tuple[SecretField, ...]] = (SecretField.OPENAI_API_KEY,)
 
 
-@dataclass(frozen=True)
-class PartReadiness:
-    """Готовность одной части режима: готова ли, реализована ли в этой версии и что сделать, если нет.
+class ReadinessEvent(str, Enum):
+    """События готовности в логе."""
 
-    `action` — одна строка для оператора: у не готовой части — что задать и где, у нереализованной — когда
-    появится; у готовой — None. Ни значений, ни путей к файлам ключей в строке нет (§7.4).
-    """
-
-    part: RunPart
-    is_ready: bool
-    is_built: bool
-    action: str | None
-
-    @property
-    def is_blocked(self) -> bool:
-        """Часть есть в этой версии, но не настроена."""
-        return self.is_built and not self.is_ready
-
-
-@dataclass(frozen=True)
-class ModeReadiness:
-    """Готовность выбранного режима по частям — в порядке работы режима.
-
-    Первая часть режима — его основа: в режиме А из таблицы берутся все слоты, и без чтения таблицы не
-    делается ничего. Поэтому не готовая основа — это «не готово ничего», даже если у остальных частей
-    всё настроено. `is_fixable_in_setup` — ложь, когда повреждён файл ключей и ссылок, пришедший с программой:
-    его заменяет только установка, и окно открывать незачем. Повреждённый личный файл окно заменяет первым
-    сохранением — тогда истина.
-    """
-
-    mode: RunMode
-    parts: tuple[PartReadiness, ...]
-    is_fixable_in_setup: bool
-
-    @property
-    def ready(self) -> tuple[PartReadiness, ...]:
-        return tuple(part for part in self.parts if part.is_built and part.is_ready)
-
-    @property
-    def blocked(self) -> tuple[PartReadiness, ...]:
-        return tuple(part for part in self.parts if part.is_blocked)
-
-    @property
-    def not_built(self) -> tuple[PartReadiness, ...]:
-        return tuple(part for part in self.parts if not part.is_built)
-
-    @property
-    def is_nothing_ready(self) -> bool:
-        """Есть реализованные части, и ни одна не готова, либо не готова основа режима.
-
-        Режим, в котором реализованных частей ещё нет (режим Б этой версии), настройкой не лечится: окно
-        для него не открывается, строки «пока нет» говорят сами за себя.
-        """
-        base: PartReadiness | None = self.parts[0] if self.parts else None
-        if base is not None and base.is_blocked:
-            return True
-        has_built: bool = any(part.is_built for part in self.parts)
-        return has_built and not self.ready
-
-    def is_part_ready(self, part: RunPart) -> bool:
-        """Часть есть в режиме, реализована и готова."""
-        return any(ready.part is part for ready in self.ready)
-
-    @property
-    def lines(self) -> tuple[str, ...]:
-        """Строки для консоли: по одной на каждую не готовую и каждую нереализованную часть, по порядку работы."""
-        return tuple(part.action for part in self.parts if part.action is not None)
-
-    @property
-    def log_line(self) -> str:
-        return MODE_LOG_LINE_TEMPLATE.format(
-            mode=self.mode.value,
-            ready=self._log_ids(self.ready),
-            blocked=self._log_ids(self.blocked),
-            not_built=self._log_ids(self.not_built),
-        )
-
-    def _log_ids(self, parts: tuple[PartReadiness, ...]) -> str:
-        """Идентификаторы частей через запятую; пусто — прочерк."""
-        return LogValue.LIST_SEPARATOR.join(part.part.value for part in parts) or LogValue.EMPTY.value
+    READINESS = "readiness"
+    CONFIG_MISSING = "config_missing"
+    CONFIG_ERROR = "config_error"
+    CONFIG_TEMPLATE = "config_template"
+    VAULT_ERROR = "vault_error"
+    VAULT_LOCAL_UNREADABLE = "vault_local_unreadable"
 
 
 @dataclass(frozen=True)
@@ -134,7 +65,8 @@ class Readiness:
     """Результат чтения сейфа и конфигов одного запуска и правила «готово ли, и что сказать».
 
     Перехватываются только ConfigError и VaultFormatError: всё остальное — ошибка программы, и её ловит
-    main.run_cli. `has_client_secret` — снимок на момент проверки: без client_secret.json к Google не ходим (§9).
+    запуск (app\\main.py::Launch.run). `has_client_secret` — снимок на момент проверки: без client_secret.json
+    к Google не ходим (§9).
     """
 
     paths: LivecraftPaths
@@ -255,20 +187,45 @@ class Readiness:
         return (msg.READINESS_SUMMARY_TITLE, *self._field_lines, *self._form_lines, self._channels_line)
 
     @property
-    def log_line(self) -> str:
+    def event(self) -> LogEvent:
         """То же для лога: состояние файлов, ярлыки с отпечатками, число каналов; ни одного значения."""
-        return LOG_LINE_TEMPLATE.format(
-            settings=LogValue.OK.value if self.settings is not None else LOG_CONFIG_ERROR,
-            channels=len(self.channels) if self.channels is not None else LogValue.EMPTY.value,
-            local=self.vault_load.local_state.value if self.vault_load is not None else LogValue.EMPTY.value,
+        return LogEvent.of(
+            ReadinessEvent.READINESS,
+            settings=LogValue.OK if self.settings is not None else LOG_CONFIG_ERROR,
+            channels=len(self.channels) if self.channels is not None else None,
+            local=self.vault_load.local_state if self.vault_load is not None else None,
             vault=self.vault.log_line if self.vault is not None else LOG_VAULT_BROKEN,
+            ready=self.is_ready,
         )
+
+    def log(self, logger: logging.Logger) -> None:
+        """Готовность, ошибки конфигов, шаблоны сломанных файлов (DEBUG) и сейф — в лог; значений сейфа нет нигде."""
+        self.event.emit(logger)
+        for error in self.config_errors:
+            if error.kind is ConfigProblem.FILE_MISSING:        # нет файла — ещё не настроено, а не сломано
+                LogEvent.of(ReadinessEvent.CONFIG_MISSING, path=error.config_path).emit(logger)
+                continue
+            failed: LogEvent = LogEvent.of(ReadinessEvent.CONFIG_ERROR, path=error.config_path, key=error.key_path)
+            failed.extended(kind=error.kind, problem=error.problem).emit(logger, logging.ERROR)
+        for line in self.template_lines:          # шаблон сломанного файла — только в лог, в консоль не идёт
+            LogEvent.of(ReadinessEvent.CONFIG_TEMPLATE, template=line).emit(logger, logging.DEBUG)
+        vault: VaultFormatError | None = self.vault_error
+        if vault is not None:
+            broken: LogEvent = LogEvent.of(ReadinessEvent.VAULT_ERROR, file=vault.file_name, source=vault.source)
+            broken.extended(reason=vault.reason, detail=vault.detail).emit(logger, logging.ERROR)
+        if self.vault_load is not None and self.vault_load.is_local_unreadable:
+            unreadable: LogEvent = LogEvent.of(ReadinessEvent.VAULT_LOCAL_UNREADABLE, working_on=VaultOrigin.SUPPLIED)
+            unreadable.emit(logger, logging.WARNING)
 
     # --- что не хватает части: по строке «что задать — где»
 
     def _gaps(self, part: RunPart) -> tuple[str, ...]:
         if part is RunPart.PLAN:
-            return (*self._vault_gaps(PLAN_VAULT_FIELDS), *self._settings_gaps, *self._client_secret_gaps)
+            # client_secret.json в настройщике не задаётся: действие — положить файл (§9).
+            client_secret: tuple[str, ...] = () if self.has_client_secret else (
+                msg.READINESS_GAP_CLIENT_SECRET.format(path=self.paths.client_secret_file),
+            )
+            return (*self._vault_gaps(PLAN_VAULT_FIELDS), *self._settings_gaps, *client_secret)
         if part is RunPart.MERGE:
             return self._vault_gaps(MERGE_VAULT_FIELDS)
         if part is RunPart.PACKAGE:
@@ -314,13 +271,6 @@ class Readiness:
             else msg.READINESS_GAP_CHANNELS.format(key=error.key_path, problem=error.problem)
         )
         return (msg.READINESS_GAP_IN_SETUP.format(what=what, tab=msg.SETUP_TAB_CHANNELS),)
-
-    @property
-    def _client_secret_gaps(self) -> tuple[str, ...]:
-        """client_secret.json в настройщике не задаётся: действие — положить файл (§9)."""
-        if self.has_client_secret:
-            return ()
-        return (msg.READINESS_GAP_CLIENT_SECRET.format(path=self.paths.client_secret_file),)
 
     # --- строки полной проверки и сводки
 

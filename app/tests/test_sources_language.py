@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
-from langdetect import DetectorFactory
 
 from app.observability.log_event import LogArea
 from app.sources.language import (
@@ -15,18 +13,16 @@ from app.sources.language import (
     LanguageResolver,
     LanguageSignal,
     LanguageSource,
-    TextLanguageDetector,
-    normalize_language,
 )
-from app.texts.phrase_lexicon import PhraseLexicon, ServiceHints
 from app.sources.metadata import SourceMetadata
+from app.texts.language_detector import TextLanguageDetector
 from app.tests.fixtures.logs import LogCapture
 
 LINK: str = "https://youtu.be/aaaaaaaaaaa"
 UKRAINIAN: str = "Сьогодні ввечері говоримо про новини економіки та політики України"
 RUSSIAN: str = "Сегодня вечером говорим о новостях экономики и политики в нашей стране"
 ENGLISH: str = "Tonight we talk about the latest news on the economy and politics"
-DETECT_TARGET: str = "app.sources.language.detect"
+DETECT_TARGET: str = "app.texts.language_detector.detect"
 
 
 @pytest.fixture(scope="module")
@@ -68,58 +64,6 @@ def metadata(
 def log() -> Iterator[LogCapture]:
     with LogCapture.on(LogArea.SOURCES, logging.DEBUG) as capture:
         yield capture
-
-
-# --- normalize_language: набор сверен с донором (restreamer app\core\language.py::normalize_language)
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("", None), (None, None), ("   ", None),
-        ("ua", "uk"), ("UK", "uk"), ("ukr", "uk"), ("uk-UA", "uk"), ("ukrainian", "uk"),
-        ("en_US", "en"), ("eng", "en"), (" En ", "en"), ("english", "en"),
-        ("rus", "ru"), ("ru-RU", "ru"), ("Russian", "ru"),
-        ("fr", "fr"), ("de-DE", "de"), ("pt-BR", "pt"), ("iw", "iw"), ("uk-orig", "uk"),
-        ("zh-Hans", None), ("es-419", None), ("a", None), ("abcd", None), ("x1", None),
-    ],
-)
-def test_normalize_language_follows_the_donor(raw: str | None, expected: str | None) -> None:
-    assert normalize_language(raw) == expected
-
-
-# --- TextLanguageDetector: настоящий langdetect
-
-
-@pytest.mark.parametrize(("text", "expected"), [(UKRAINIAN, "uk"), (RUSSIAN, "ru"), (ENGLISH, "en")])
-def test_detector_names_the_language_of_a_long_text(
-    detector: TextLanguageDetector, text: str, expected: str
-) -> None:
-    assert detector.detect(text) == expected
-
-
-def test_detector_answers_the_same_every_time(detector: TextLanguageDetector) -> None:
-    assert {detector.detect(UKRAINIAN) for _ in range(5)} == {"uk"}
-    assert DetectorFactory.seed == 0
-
-
-@pytest.mark.parametrize("text", ["", "Коротко о главном", "https://a.example/x #тег #tag https://b.example"])
-def test_short_or_empty_after_cleaning_is_none(detector: TextLanguageDetector, text: str) -> None:
-    assert detector.detect(text) is None
-
-
-def test_links_and_hashtags_do_not_count_toward_the_length(detector: TextLanguageDetector) -> None:
-    assert detector.detect("Новини дня https://example.org/very/long/path/to/page #новини #economy") is None
-
-
-def test_threshold_is_a_field(detector: TextLanguageDetector) -> None:
-    assert detector.min_length == 20
-    assert replace(detector, min_length=5).detect("Hello there") is not None
-
-
-def test_langdetect_refusal_is_none() -> None:
-    text: str = "12345 67890 12345 67890 12345"             # цифры: langdetect не находит признаков
-    assert TextLanguageDetector(service_hints=ServiceHints(PhraseLexicon(()))).detect(text) is None
 
 
 # --- LanguageProfile.of

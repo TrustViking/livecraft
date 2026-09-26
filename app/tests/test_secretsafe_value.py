@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import traceback
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,7 +10,7 @@ import pytest
 
 from app.core.clock import Clock
 from app.observability.log_event import LogArea, get_logger
-from app.observability.logging_setup import close_logging, setup_logging
+from app.observability.logging_setup import RunLog
 from app.secretsafe.crypto import (
     SALT_BYTES,
     VAULT_KEY_BYTES,
@@ -46,12 +45,6 @@ class _Owner:
 
     name: str
     secret: SecretValue
-
-
-@pytest.fixture(autouse=True)
-def _closed_logging() -> Iterator[None]:
-    yield
-    close_logging()
 
 
 @pytest.fixture(params=sorted(SECRETS, key=lambda item: item.value))
@@ -91,11 +84,11 @@ def test_repr_of_the_owning_object_shows_the_mask(secret: SecretValue) -> None:
 
 def test_logging_writes_the_mask_and_not_the_value(secret: SecretValue, tmp_path: Path) -> None:
     """logging.info("%s", secret) зовёт __str__ при форматировании записи — в файле должна быть маска."""
-    log_path: Path = setup_logging(tmp_path, debug=False, started=Clock.utc().now())
+    log: RunLog = RunLog.open(tmp_path, debug=False, started=Clock.utc().now())
     get_logger(LogArea.VAULT).warning("vault_field_loaded %s", secret)
     get_logger(LogArea.VAULT).warning("vault_field_labelled %s", secret.log_label)
-    close_logging()
-    text: str = log_path.read_text(encoding="utf-8")
+    log.close()
+    text: str = log.path.read_text(encoding="utf-8")
     assert secret.reveal() not in text
     assert secret.masked in text
     assert secret.log_label in text
@@ -236,10 +229,10 @@ def test_the_secret_object_is_frozen(secret: SecretValue) -> None:
 
 def test_percent_style_logging_of_the_owner_also_masks(secret: SecretValue, tmp_path: Path) -> None:
     """Чужая библиотека может записать в лог объект-владелец целиком — и там маска."""
-    log_path: Path = setup_logging(tmp_path, debug=False, started=Clock.utc().now())
+    log: RunLog = RunLog.open(tmp_path, debug=False, started=Clock.utc().now())
     logging.getLogger("googleapiclient.discovery").warning("%r", _Owner(name="x", secret=secret))
-    close_logging()
-    assert secret.reveal() not in log_path.read_text(encoding="utf-8")
+    log.close()
+    assert secret.reveal() not in log.path.read_text(encoding="utf-8")
 
 
 # --- scrub: вычёркивание значения из готовой строки (§7.4, страховка фильтра логов)

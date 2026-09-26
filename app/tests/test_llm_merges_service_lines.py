@@ -9,7 +9,7 @@ from app.llm.merges.service_lines import (
     ServiceLineKey,
 )
 from app.resources.loader import TextResource
-from app.sources.language import TextLanguageDetector
+from app.texts.language_detector import TextLanguageDetector
 from app.texts.phrase_lexicon import PhraseLexicon, ServiceHints
 
 CATALOG: ServiceLineCatalog = ServiceLineCatalog.load()

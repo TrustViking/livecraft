@@ -26,11 +26,11 @@ from app.packages.package import (
 from app.paths import LivecraftPaths
 from app.sheets.plan import SheetPlan
 from app.sheets.rows import PlanRow
-from app.slots.builder import SlotBuilder
+from app.slots.preview import Preview
 from app.slots.slot import StreamSlot
-from app.sources.preview import Preview
 from app.sources.video import SourceVideo
 from app.tests.conftest import SHIPPED_SETTINGS, ready_source
+from app.tests.fixtures import slots as slot_fixtures
 from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
@@ -80,7 +80,7 @@ def build_slots() -> tuple[StreamSlot, ...]:
         ready_source(third, "Stream three", "Description three", "en"),
         ready_source(fourth, "Эфир четыре", "", "uk", PREVIEW_C),
     )
-    return SlotBuilder(zone=KYIV).build(videos).slots
+    return slot_fixtures.build_slots(videos, KYIV).slots
 
 
 def make_package(slots: tuple[StreamSlot, ...] | None = None, url: str = FORM_URL) -> SlotPackage:

@@ -4,10 +4,9 @@ import base64
 import io
 import json
 import logging
-import shutil
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,34 +14,28 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app import main as main_module
 from app.config.loader import load_settings
-from app.core.text_format import TEXT_ENCODING
-from app.main import ExitCode, RunRequest, build_parser, run_cli
-from app.observability.logging_setup import close_logging
-from app.paths import ROOT_ENV_VAR, LivecraftPaths, build_paths, ensure_dirs
 from app.core.clock import Clock
+from app.core.text_format import TEXT_ENCODING
+from app.intake.intake import IntakeRequest, IntakeResult, IntakeStage, PlanIntake
+from app.main import run_cli
+from app.paths import ROOT_ENV_VAR, LivecraftPaths
+from app.run.exit_code import ExitCode
+from app.run.mode import RunPart
 from app.runtime.single_instance import InstanceLock, LockEvent, LockOwner
 from app.secretsafe.crypto import KEY_WRAPPED
 from app.secretsafe.store import VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
 from app.packages.package import PackageResult
-from app.setup.run_mode import RunMode, RunPart
 from app.sheets.plan import SheetRow
 from app.sheets.rows import PlanRow
-from app.slots.builder import SlotBuild, SlotBuilder
-from app.slots.intake import IntakeRequest, IntakeResult, IntakeStage, PlanIntake
 from app.sources.video import SourceVideo
-from app.tests.conftest import (
-    FORM_URL,
-    REPO_ROOT,
-    SUPPLIED_VALUES,
-    ready_source,
-    set_form_url,
-    write_supplied_vault,
-)
+from app.tests.conftest import FORM_URL, REPO_ROOT, SUPPLIED_VALUES, ready_source, write_supplied_vault
+from app.tests.fixtures.settings import set_form_url
+from app.tests.fixtures.slots import build_slots
 from app.ui import messages_ru as msg
+from app.ui.console import Console
 from app.version import APP_VERSION
 
 LOG_GLOB: str = "*_livecraft.log"
@@ -55,12 +48,12 @@ def _ok_intake_result() -> IntakeResult:
     """Итог прогона «всё сделано»: один ряд, годный источник, один слот, записанный пакет."""
     row: PlanRow = PlanRow.admitted(SheetRow(2, INTAKE_LINK, "16.10.2026", "19:00"), INTAKE_START, INTAKE_LINK)
     video: SourceVideo = ready_source(row, INTAKE_TITLE, "Описание видео", "uk")
-    build: SlotBuild = SlotBuilder(ZoneInfo("Europe/Kyiv")).build((video,))
     package: PackageResult = PackageResult(
         path=Path("bcast") / "plan.bcast", problem=None, slots=1, previews=0, size_bytes=1
     )
     return IntakeResult(
-        rows=(row,), videos=(video,), build=build, package=package, sheets_error=None, plan_problem=None,
+        rows=(row,), videos=(video,), build=build_slots((video,), ZoneInfo("Europe/Kyiv")), package=package,
+        sheets_error=None, plan_problem=None,
         stopped_at=None,
     )
 
@@ -84,13 +77,6 @@ def intake(monkeypatch: pytest.MonkeyPatch) -> _IntakeStub:
 
     monkeypatch.setattr(PlanIntake, "run", _run)
     return stub
-
-
-@pytest.fixture(autouse=True)
-def _closed_logging() -> Iterator[None]:
-    """Лог запуска закрывается и в тестах: иначе Windows не отдаст tmp_path."""
-    yield
-    close_logging()
 
 
 @pytest.fixture(autouse=True)
@@ -188,7 +174,7 @@ def test_without_setup_a_mode_opens_the_setup_window(
     assert msg.SETUP_OPENING in out
     assert msg.CONFIG_CHANNELS_TEMPLATE not in out and msg.CONFIG_SETTINGS_TEMPLATE not in out
     assert msg.SETUP_REQUIRED not in out
-    assert window_calls == [build_paths(livecraft_root)]
+    assert window_calls == [LivecraftPaths(livecraft_root)]
 
 
 def test_the_title_is_the_first_line_of_any_run(
@@ -216,87 +202,19 @@ def test_the_root_comes_from_the_environment_variable(livecraft_root: Path) -> N
 
 def test_run_started_and_run_finished_land_in_the_log(livecraft_root: Path) -> None:
     assert run_cli(["--dry-run"]) == int(ExitCode.CONFIG)
-    close_logging()
     [log_file] = list((livecraft_root / "logs").glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
     assert f"run_started version={APP_VERSION} " in text
     assert f"root={livecraft_root}" in text
-    assert "dry_run=True" in text
+    assert "mode=all auth=- dry_run=yes no_llm=no debug=no log=" in text
     assert f"run_finished exit_code={int(ExitCode.CONFIG)}" in text
 
 
 def test_the_log_quotes_the_channel_handle(livecraft_root: Path) -> None:
     """Имя канала в логе — в кавычках (CLAUDE.md §11)."""
     assert run_cli(["--auth", "@Osvald.X"]) == int(ExitCode.CONFIG)
-    close_logging()
     [log_file] = list((livecraft_root / "logs").glob(LOG_GLOB))
     assert 'auth="@Osvald.X"' in log_file.read_text(encoding="utf-8")
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["--setup", "--check"],
-        ["--setup", "--status"],
-        ["--check", "--status"],
-        ["--check", "--auth", "all"],
-        ["--status", "--auth", "all"],
-        ["--setup", "--auth", "all"],
-        ["--announce", "--setup"],
-        ["--broadcast", "--setup"],
-        ["--from-package", "--setup"],
-        ["--announce", "--broadcast"],
-        ["--broadcast", "--from-package"],
-        ["--announce", "--check"],
-        ["--from-package", "--status"],
-    ],
-)
-def test_two_modes_at_once_are_a_parse_error(argv: list[str]) -> None:
-    """Режимы и --setup / --check / --auth / --status взаимоисключающие (CLAUDE.md §10)."""
-    with pytest.raises(SystemExit) as raised:
-        build_parser().parse_args(argv)
-    assert raised.value.code == 2
-
-
-def test_unknown_flag_is_a_parse_error() -> None:
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["--publish-announcements"])
-
-
-def test_every_flag_of_section_ten_is_understood() -> None:
-    request: RunRequest = RunRequest.from_args(
-        build_parser().parse_args(["--dry-run", "--no-llm", "--debug"])
-    )
-    assert request.dry_run and request.no_llm and request.debug
-    assert not request.setup and not request.check and not request.status and request.auth is None
-    assert request.mode is RunMode.ALL and not request.is_service_run
-
-
-@pytest.mark.parametrize(
-    ("argv", "mode"),
-    [
-        (["--announce"], RunMode.ANNOUNCE),
-        (["--broadcast"], RunMode.BROADCAST),
-        (["--from-package"], RunMode.FROM_PACKAGE),
-        ([], RunMode.ALL),
-    ],
-)
-def test_mode_flags_choose_the_mode(argv: list[str], mode: RunMode) -> None:
-    request: RunRequest = RunRequest.from_args(build_parser().parse_args(argv))
-    assert request.mode is mode
-    assert f"mode={mode.value} " in request.log_line
-
-
-@pytest.mark.parametrize("argv", [["--setup"], ["--check"], ["--status"], ["--auth", "all"]])
-def test_service_flags_are_service_runs(argv: list[str]) -> None:
-    assert RunRequest.from_args(build_parser().parse_args(argv)).is_service_run
-
-
-def test_help_lists_the_mode_flags(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["--help"])
-    out: str = capsys.readouterr().out
-    assert "--announce" in out and "--broadcast" in out and "--from-package" in out
 
 
 def test_help_survives_a_console_that_cannot_encode_russian(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -309,26 +227,6 @@ def test_help_survives_a_console_that_cannot_encode_russian(monkeypatch: pytest.
     assert raised.value.code == 0
     console.flush()
     assert b"usage: livecraft" in buffer.getvalue()
-
-
-@pytest.mark.parametrize("argv", [["--export-slots"], ["--export-slots", "slots.json"]])
-def test_export_slots_is_gone(argv: list[str]) -> None:
-    """Выгрузка слотов — это пакет plan_*.bcast (§14 решение 13): ключа больше нет, argparse отвечает кодом 2."""
-    with pytest.raises(SystemExit) as raised:
-        build_parser().parse_args(argv)
-    assert raised.value.code == 2
-
-
-def test_request_without_flags_is_the_full_cycle() -> None:
-    request: RunRequest = RunRequest.from_args(build_parser().parse_args([]))
-    assert not any(
-        (request.setup, request.check, request.status, request.dry_run, request.no_llm, request.debug)
-    )
-    assert request.auth is None
-
-
-def test_exit_codes_are_the_ones_section_ten_names() -> None:
-    assert (ExitCode.OK, ExitCode.ERRORS, ExitCode.CONFIG, ExitCode.NO_FUTURE_SLOTS) == (0, 1, 2, 3)
 
 
 def test_debug_puts_the_log_into_the_terminal(
@@ -344,13 +242,13 @@ def test_debug_puts_the_log_into_the_terminal(
 def test_a_run_leaves_no_lock_behind(livecraft_root: Path) -> None:
     """Замок снимается на любом исходе: следующий запуск не должен спотыкаться о прошлый."""
     assert run_cli([]) == int(ExitCode.CONFIG)
-    assert not build_paths(livecraft_root).lock_file.exists()
+    assert not LivecraftPaths(livecraft_root).lock_file.exists()
 
 
 def test_the_run_writes_acquire_and_release_into_the_startup_log(livecraft_root: Path) -> None:
     """Замок берётся до настройки логов, поэтому его след — logs\\startup.log (инвариант 12)."""
     assert run_cli([]) == int(ExitCode.CONFIG)
-    text: str = build_paths(livecraft_root).startup_log_file.read_text(encoding="utf-8")
+    text: str = LivecraftPaths(livecraft_root).startup_log_file.read_text(encoding="utf-8")
     assert LockEvent.ACQUIRED.value in text and LockEvent.RELEASED.value in text
 
 
@@ -360,8 +258,8 @@ def test_a_live_lock_stops_the_run(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Второй экземпляр: русская строка в stderr, код 1, файла лога этого запуска нет (инвариант 12)."""
-    paths: LivecraftPaths = build_paths(livecraft_root)
-    ensure_dirs(paths)
+    paths: LivecraftPaths = LivecraftPaths(livecraft_root)
+    paths.ensure_dirs()
     InstanceLock(
         path=paths.lock_file, startup_log=paths.startup_log_file, clock=Clock.utc(), pid=live_foreign_process.pid
     ).acquire()
@@ -379,8 +277,8 @@ def test_a_live_lock_stops_the_run(
 
 def test_a_stale_lock_does_not_stop_the_run(livecraft_root: Path, dead_pid: int) -> None:
     """Замок мёртвого процесса — застарелый: запуск идёт своим ходом и снимает его за собой."""
-    paths: LivecraftPaths = build_paths(livecraft_root)
-    ensure_dirs(paths)
+    paths: LivecraftPaths = LivecraftPaths(livecraft_root)
+    paths.ensure_dirs()
     InstanceLock(path=paths.lock_file, startup_log=paths.startup_log_file, clock=Clock.utc(), pid=dead_pid).acquire()
     assert run_cli([]) == int(ExitCode.CONFIG)
     assert not paths.lock_file.exists()
@@ -407,7 +305,7 @@ def test_setup_opens_the_window_once_and_exits_0(
     calls: list[LivecraftPaths] = []
     monkeypatch.setattr(SetupApp, "run", lambda self: calls.append(self.paths))
     assert run_cli(["--setup"]) == int(ExitCode.OK)
-    assert calls == [build_paths(livecraft_root)]
+    assert calls == [LivecraftPaths(livecraft_root)]
     out: str = capsys.readouterr().out
     assert msg.SETUP_REQUIRED not in out
     assert msg.CONFIG_CHANNELS_TEMPLATE not in out      # что не так, показывает окно, а не консоль
@@ -429,7 +327,6 @@ def test_a_window_that_cannot_open_gives_code_1(
     monkeypatch.setattr(SetupApp, "run", _fail)
     assert run_cli(["--setup"]) == int(ExitCode.ERRORS)
     assert msg.SETUP_WINDOW_FAILED.format(error="no display name") in capsys.readouterr().out
-    close_logging()
     [log_file] = list((livecraft_root / "logs").glob(LOG_GLOB))
     assert "setup_window_failed error=no display name" in log_file.read_text(encoding="utf-8")
 
@@ -454,7 +351,6 @@ def test_a_missing_settings_file_is_created_from_the_template(
     assert msg.SETTINGS_FILE_CREATED.format(path=config_file) in out
     assert config_file.read_text(encoding="utf-8") == msg.CONFIG_SETTINGS_TEMPLATE + "\n"
     assert msg.CONFIG_SETTINGS_TEMPLATE not in out                  # шаблон не печатается: файл уже есть
-    close_logging()
     [log_file] = list((livecraft_root / "logs").glob(LOG_GLOB))
     assert "settings_file_created path=" in log_file.read_text(encoding="utf-8")
 
@@ -489,7 +385,6 @@ def test_a_settings_file_missing_a_field_names_it_and_logs_its_template(
     assert msg.CONFIG_SETTINGS_TEMPLATE not in out
     assert "keep_days" in out and msg.SETUP_TAB_SETTINGS in out
     assert window_calls == [ready_root]
-    close_logging()
     [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
     assert "config_template " in log_file.read_text(encoding="utf-8")
 
@@ -519,7 +414,6 @@ def test_the_ready_run_prints_no_value_and_no_mask(
 
 def test_config_errors_land_in_the_log(livecraft_root: Path) -> None:
     assert run_cli([]) == int(ExitCode.CONFIG)
-    close_logging()
     [log_file] = list((livecraft_root / "logs").glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
     assert "config_missing path=" in text                   # нет файла — не ошибка, а «ещё не настроено»
@@ -601,21 +495,23 @@ def test_the_secret_filter_works_during_a_normal_run(
 ) -> None:
     """Чужая библиотека пишет в лог URL с id таблицы посреди запуска — в файл уходит ярлык, а не значение.
 
-    Подмены логики нет: к боевой печати сводки добавлена запись от имени googleapiclient, как это случится
-    на этапе 3, когда клиент Sheets начнёт ходить в сеть. Чистит её боевой фильтр, поставленный самим main.
+    Подмены логики нет: консоль запуска поддельная — к боевой печати строк добавлена запись от имени googleapiclient,
+    как это бывает, когда клиент Sheets ходит в сеть. Чистит её боевой фильтр, поставленный самим запуском.
     """
     sheets_id: str = SUPPLIED_VALUES[SecretField.SHEETS_ID]
-    say_lines = main_module._say_lines
 
-    def _say_lines_with_library_noise(lines: tuple[str, ...]) -> None:
-        logging.getLogger("googleapiclient.discovery").warning(
-            "URL being requested: GET https://sheets.googleapis.com/v4/spreadsheets/%s/values/A:F", sheets_id
-        )
-        say_lines(lines)
+    @dataclass(frozen=True)
+    class _NoisyConsole(Console):
+        """Консоль запуска, посреди печати которой чужая библиотека пишет в лог URL с id таблицы."""
 
-    monkeypatch.setattr(main_module, "_say_lines", _say_lines_with_library_noise)
+        def say_lines(self, lines: Iterable[str]) -> None:
+            logging.getLogger("googleapiclient.discovery").warning(
+                "URL being requested: GET https://sheets.googleapis.com/v4/spreadsheets/%s/values/A:F", sheets_id
+            )
+            super().say_lines(lines)
+
+    monkeypatch.setattr(Console, "system", classmethod(lambda cls: _NoisyConsole(out=sys.stdout, err=sys.stderr)))
     assert run_cli([]) == int(ExitCode.OK)
-    close_logging()
     [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
     assert "URL being requested" in text                      # запись дошла до файла…
@@ -625,7 +521,6 @@ def test_the_secret_filter_works_during_a_normal_run(
 
 def test_the_readiness_line_in_the_log_carries_no_value(ready_root: LivecraftPaths) -> None:
     assert run_cli([]) == int(ExitCode.OK)
-    close_logging()
     [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
     assert "readiness settings=ok channels=2 local=absent vault=" in text
@@ -657,7 +552,6 @@ def test_the_form_url_moves_from_the_own_vault_to_the_settings(
     assert OWN_FORM_URL not in out
     assert load_settings(unformed_root.config_file).form.url == OWN_FORM_URL
     assert VaultStore.open(unformed_root).load().vault.get(SecretField.KEY_FORM_URL) is None
-    close_logging()
     [log_file] = list(unformed_root.logs_dir.glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
     assert "form_url_migrated outcome=moved source=own" in text
@@ -853,8 +747,46 @@ def test_without_the_table_nothing_is_ready_and_the_window_opens(
 def test_the_mode_readiness_lands_in_the_log(ready_root: LivecraftPaths) -> None:
     ready_root.channels_file.unlink()
     assert run_cli([]) == int(ExitCode.OK)
-    close_logging()
     [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
     assert "mode_readiness mode=all ready=plan,package blocked=- not_built=merge,announce,broadcast" in text
     assert "run_started version=" in text and "mode=all " in text
+
+
+# --- падение и обрыв: единственный перехват Exception (Launch.run)
+
+
+def test_a_crash_is_code_1_with_the_trace_in_the_log_and_a_line_in_the_console(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ошибка программы не пропадает: трассировка — в лог, короткая строка с путём лога — в консоль, код 1."""
+
+    def _crash(self: PlanIntake) -> IntakeResult:
+        raise RuntimeError("disk exploded")
+
+    monkeypatch.setattr(PlanIntake, "run", _crash)
+    assert run_cli([]) == int(ExitCode.ERRORS)
+    out: str = capsys.readouterr().out
+    [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
+    text: str = log_file.read_text(encoding="utf-8")
+    assert msg.RUN_CRASHED.format(log=log_file) in out
+    assert f"run_crashed log={log_file}" in text and "RuntimeError: disk exploded" in text
+    assert f"run_finished exit_code={int(ExitCode.ERRORS)}" in text
+    assert not ready_root.lock_file.exists()
+
+
+def test_an_interrupt_is_code_1_with_a_line_in_the_console(
+    ready_root: LivecraftPaths,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _interrupt(self: PlanIntake) -> IntakeResult:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(PlanIntake, "run", _interrupt)
+    assert run_cli([]) == int(ExitCode.ERRORS)
+    assert msg.RUN_INTERRUPTED in capsys.readouterr().out
+    [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
+    assert "run_interrupted" in log_file.read_text(encoding="utf-8")

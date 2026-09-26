@@ -8,13 +8,17 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from app.paths import LivecraftPaths, ROOT_ENV_VAR
-from app.setup.run_mode import ExitCode
+from app.paths import ROOT_ENV_VAR, LivecraftPaths
+from app.run.exit_code import ExitCode
 from app.sources.fetcher import SourceFailureReason, SourceFetch
 from app.sources.language import LanguageResolver
 from app.sources.metadata import SourceMetadata
 from app.sources.preview import PreviewDownloader, PreviewProblem
+from app.tests.conftest import FIXED_NOW
+from app.tests.fixtures.console import ConsoleRecord
+from app.tests.fixtures.probe import ProbeRun
 from app.tools import source_probe
+from app.tools.probe import ProbeConsole
 from app.tools.source_probe import SourceProbe
 from app.ui import messages_ru as msg
 
@@ -66,10 +70,13 @@ def ok_fetch(link: str, name: str = "video_full.json") -> SourceFetch:
 
 
 def run_probe(fetcher: _FakeFetcher, get: _FakeGet, links: list[str]) -> tuple[int, list[str]]:
-    lines: list[str] = []
+    record: ConsoleRecord = ConsoleRecord()
     downloader: PreviewDownloader = PreviewDownloader(session_get=get, sleep=lambda _: None)
-    code: int = SourceProbe(fetcher=fetcher, downloader=downloader, resolver=RESOLVER, say=lines.append).run(links)
-    return code, lines
+    probe: SourceProbe = SourceProbe(
+        fetcher=fetcher, downloader=downloader, resolver=RESOLVER, console=ProbeConsole(record.console)
+    )
+    code: int = probe.run(links)
+    return code, record.lines
 
 
 def test_probe_prints_the_fields_and_the_preview() -> None:
@@ -175,10 +182,11 @@ def test_no_links_is_code_2() -> None:
 
 
 def test_without_ytdlp_exe_is_code_2(livecraft_paths: LivecraftPaths) -> None:
-    lines: list[str] = []
-    probe: SourceProbe = SourceProbe.from_paths(livecraft_paths, say=lines.append)
-    assert probe.resolver.detector.service_hints == RESOLVER.detector.service_hints
-    code: int = probe.run([LINK, OTHER_LINK])
+    with ProbeRun.open(livecraft_paths, FIXED_NOW) as run:
+        probe: SourceProbe = SourceProbe.of(run.session)
+        assert probe.resolver.detector.service_hints == RESOLVER.detector.service_hints
+        code: int = probe.run([LINK, OTHER_LINK])
+    lines: list[str] = run.lines
     assert code == ExitCode.CONFIG
     assert msg.SOURCE_PROBE_FAILED.format(reason=SourceFailureReason.TOOL_MISSING.human) in lines
     assert msg.SOURCE_PROBE_SOURCE.format(link=OTHER_LINK) not in lines   # дальше не идём

@@ -30,7 +30,7 @@ PROGRAM_CLOCK: StoppedClock = StoppedClock.at(
 
 @pytest.fixture
 def lock(livecraft_paths: LivecraftPaths) -> InstanceLock:
-    """Замок в корне из tmp_path: папки state\\ и logs\\ создал ensure_dirs, как в боевом запуске."""
+    """Замок в корне из tmp_path: папки state\\ и logs\\ создал LivecraftPaths.ensure_dirs, как в боевом запуске."""
     return InstanceLock(path=livecraft_paths.lock_file, startup_log=livecraft_paths.startup_log_file, clock=CLOCK)
 
 

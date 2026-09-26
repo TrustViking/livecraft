@@ -1,33 +1,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
-import pytest
-
-from app.sheets.plan import SheetRow
-from app.sheets.rows import PlanRow
-from app.slots.texts import SlotTextOrigin, SlotTexts
-from app.sources.video import SourceVideo
-from app.tests.conftest import ready_source
+from app.slots.texts import SlotTextOrigin, SlotTexts, SourceText
 from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
 
-KYIV: ZoneInfo = ZoneInfo("Europe/Kyiv")
-START: datetime = datetime(2026, 10, 16, 19, 0, tzinfo=KYIV)
 MAX_BYTES: int = SlotTexts.DESCRIPTION_MAX_BYTES
-LINKS: tuple[str, ...] = (
-    "https://youtu.be/dQw4w9WgXcQ",
-    "https://youtu.be/aB3_-xYz012",
-    "https://youtu.be/Zx9_8yW7v6U",
-)
-
-
-def source(row_number: int, title: str, description: str) -> SourceVideo:
-    link: str = LINKS[row_number - 2]
-    row: SheetRow = SheetRow(row_number=row_number, link=link, date_raw="16.10.2026", time_raw="19:00")
-    return ready_source(PlanRow.admitted(row, START, link), title, description, "uk")
 
 
 def texts(title: str, description: str = "") -> SlotTexts:
@@ -49,25 +28,27 @@ def assert_cut_on_boundary(original: str, fitted: str) -> None:
 
 
 def test_one_source_gives_its_texts_as_they_are() -> None:
-    result: SlotTexts = SlotTexts.from_sources((source(2, "Вечерний эфир", "Опис\n\nдругий абзац"),))
+    result: SlotTexts = SlotTexts.from_sources((SourceText("Вечерний эфир", "Опис\n\nдругий абзац"),))
     assert result == SlotTexts(
         title="Вечерний эфир", description="Опис\n\nдругий абзац", origin=SlotTextOrigin.SOURCE_SINGLE
     )
 
 
-def test_several_sources_take_the_first_row_title_and_all_descriptions_in_row_order() -> None:
-    videos: tuple[SourceVideo, ...] = (
-        source(4, "Третий", "опис 4"),
-        source(2, "Первый", "опис 2"),
-        source(3, "Второй", ""),
+def test_several_sources_take_the_first_title_and_the_filled_descriptions_in_their_order() -> None:
+    """Порядок источников даёт группа слота (порядок рядов); тексты его не меняют."""
+    sources: tuple[SourceText, ...] = (
+        SourceText("Первый", "опис 2"),
+        SourceText("Второй", ""),
+        SourceText("Третий", "опис 4"),
     )
-    result: SlotTexts = SlotTexts.from_sources(videos)
+    result: SlotTexts = SlotTexts.from_sources(sources)
     assert result == SlotTexts(title="Первый", description="опис 2\n\nопис 4", origin=SlotTextOrigin.SOURCE_COMPOSED)
 
 
-def test_no_sources_is_a_programming_error() -> None:
-    with pytest.raises(ValueError):
-        SlotTexts.from_sources(())
+def test_a_source_without_video_data_gives_empty_texts() -> None:
+    """Видео без данных — пустые название и описание: слот с таким названием получит проблему, а не падение."""
+    result: SlotTexts = SlotTexts.from_sources((SourceText("", ""),))
+    assert result.problem == msg.SLOT_EMPTY_TITLE and result.description == ""
 
 
 # --- правила YouTube

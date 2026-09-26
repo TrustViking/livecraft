@@ -1,0 +1,8 @@
+# Написания кода языка у yt-dlp и langdetect → код ISO 639-1: «написание код», по одному на строку.
+ua uk
+uk uk
+ukr uk
+en en
+eng en
+ru ru
+rus ru

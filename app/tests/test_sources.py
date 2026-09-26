@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 import requests
@@ -20,10 +21,13 @@ from app.observability.log_event import LogArea
 from app.paths import LivecraftPaths
 from app.sheets.plan import SheetRow
 from app.sheets.rows import PlanRow, RowSkipReason
+from app.slots.preview import Preview
+from app.slots.slot import SlotKey
+from app.slots.texts import SourceText
 from app.sources.fetcher import MetadataFetcher, SourceFailureReason, SourceFetch
 from app.sources.language import LanguageDecision, LanguageResolver, LanguageSource
 from app.sources.metadata import SourceMetadata
-from app.sources.preview import Preview, PreviewDownloader, PreviewProblem, PreviewResult
+from app.sources.preview import PreviewDownloader, PreviewNormalizer, PreviewProblem, PreviewResult
 from app.sources.video import SourceCatalog, SourceTally, SourceVideo
 from app.sources.ytdlp import DETAIL_MAX_CHARS, YTDLP_TIMEOUT_SEC, YtDlpFetcher, YtDlpResult
 from app.tests.fixtures.logs import LogCapture
@@ -367,11 +371,11 @@ def test_every_failure_reason_has_a_russian_text() -> None:
         assert problem.human == msg.PREVIEW_PROBLEMS[problem.value]
 
 
-# --- Preview
+# --- PreviewNormalizer: скачанная картинка → обложка
 
 
 def test_small_png_becomes_a_jpeg() -> None:
-    result: PreviewResult = Preview.from_image_bytes(png_bytes((64, 36)))
+    result: PreviewResult = PreviewNormalizer().normalized(png_bytes((64, 36)))
     assert result.is_ok and result.problem is None
     preview: Preview | None = result.preview
     assert preview is not None
@@ -384,7 +388,7 @@ def test_small_png_becomes_a_jpeg() -> None:
 
 @pytest.mark.parametrize("raw", [b"", b"not an image", png_bytes()[:40]])
 def test_garbage_is_not_an_image(raw: bytes) -> None:
-    result: PreviewResult = Preview.from_image_bytes(raw)
+    result: PreviewResult = PreviewNormalizer().normalized(raw)
     assert result.preview is None
     assert result.problem is PreviewProblem.NOT_IMAGE
 
@@ -396,13 +400,13 @@ def test_large_noisy_image_is_squeezed_by_lower_quality() -> None:
         at_90: io.BytesIO = io.BytesIO()
         image.convert("RGB").save(at_90, format="JPEG", quality=90)
     assert len(at_90.getvalue()) > Preview.MAX_BYTES
-    result: PreviewResult = Preview.from_image_bytes(raw)
+    result: PreviewResult = PreviewNormalizer().normalized(raw)
     assert result.preview is not None
     assert result.preview.size_bytes <= Preview.MAX_BYTES
 
 
 def test_image_too_large_even_at_the_lowest_quality_is_a_problem() -> None:
-    result: PreviewResult = Preview.from_image_bytes(noise_image(2000))
+    result: PreviewResult = PreviewNormalizer().normalized(noise_image(2000))
     assert result.preview is None
     assert result.problem is PreviewProblem.TOO_LARGE
 
@@ -652,6 +656,33 @@ def test_refusal_order_is_ytdlp_then_title_then_language() -> None:
     assert SourceVideo.of(row, no_title, None, undetected).refusal is SourceFailureReason.NO_TITLE
     assert SourceVideo.of(row, no_language_fetch(LINK), None, undetected).refusal is SourceFailureReason.NO_LANGUAGE
     assert SourceVideo.of(row, no_language_fetch(LINK), None, None).refusal is SourceFailureReason.NO_LANGUAGE
+
+
+def test_the_slot_key_of_a_fit_source_is_its_start_in_the_program_zone_and_its_language() -> None:
+    uk: LanguageDecision = RESOLVER.resolve(ok_fetch(LINK).metadata)   # type: ignore[arg-type]
+    video: SourceVideo = SourceVideo.of(admitted_row(2, LINK), ok_fetch(LINK), None, uk)
+    kyiv: ZoneInfo = ZoneInfo("Europe/Kyiv")
+    key: SlotKey | None = video.slot_key(kyiv)
+    assert key == SlotKey(start=START.astimezone(kyiv), language="uk")
+    assert key is not None and key.slot_id == "16-10-2026_1900_uk"
+
+
+def test_an_unfit_source_has_no_slot_key() -> None:
+    """Негодный источник в слот не идёт: у него нет ключа слота, а не исключение."""
+    undetected: LanguageDecision = RESOLVER.resolve(no_language_fetch(LINK).metadata)   # type: ignore[arg-type]
+    failed: SourceFetch = SourceFetch.failed(LINK, SourceFailureReason.TIMEOUT)
+    row: PlanRow = admitted_row(2, LINK)
+    assert SourceVideo.of(row, failed, None, None).slot_key(ZoneInfo("Europe/Kyiv")) is None
+    assert SourceVideo.of(row, no_language_fetch(LINK), None, undetected).slot_key(ZoneInfo("Europe/Kyiv")) is None
+
+
+def test_the_source_text_is_the_title_and_description_of_the_video() -> None:
+    fetched: SourceFetch = ok_fetch(LINK)
+    assert fetched.metadata is not None
+    video: SourceVideo = SourceVideo.of(admitted_row(2, LINK), fetched, None, None)
+    assert video.text == SourceText(title=fetched.metadata.title, description=fetched.metadata.description)
+    failed: SourceFetch = SourceFetch.failed(LINK, SourceFailureReason.TIMEOUT)
+    assert SourceVideo.of(admitted_row(2, LINK), failed, None, None).text == SourceText(title="", description="")
 
 
 def test_tally_counts_by_reason_and_by_language() -> None:

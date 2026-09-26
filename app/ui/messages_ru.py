@@ -37,7 +37,7 @@ HELP_STATUS: Final[str] = "сверка эфиров livecraft, keys.txt и от
 HELP_DEBUG: Final[str] = "подробный лог в терминал"
 HELP_VERSION: Final[str] = "показать номер версии и выйти"
 VERSION_TEXT: Final[str] = "Livecraft {version}"
-# Подписи значений в справке argparse: их видит человек, поэтому они здесь, а не в main.py (§11).
+# Подписи значений в справке argparse: их видит человек, поэтому они здесь, а не в app\run\request.py (§11).
 CLI_METAVAR_HANDLE: Final[str] = "НИК"
 
 # --- шапка запуска: первая строка любого запуска, время — то же, что в отчёте этого запуска
@@ -46,10 +46,10 @@ CONSOLE_TITLE: Final[str] = "Livecraft {version} — {generated_at}"
 # --- настройка программы (CLAUDE.md §8): без сейфа и конфига --check, --auth и --status не начинаются
 # Что именно не так, перечислено строками выше (сейф и конфиги называют свои причины сами) — здесь только что делать.
 SETUP_REQUIRED: Final[str] = "Запустите livecraft.bat --setup и заполните настройки."
-# Режим не может сделать ничего (app\setup\readiness.py::ModeReadiness): программа сама открывает окно настройки.
+# Режим не может сделать ничего (app\run\mode.py::ModeReadiness.step): программа сама открывает окно настройки.
 SETUP_OPENING: Final[str] = "Не хватает настроек — открываю окно настройки."
 
-# --- готовность частей режима (app\setup\run_mode.py, app\setup\readiness.py, §10): по строке на часть.
+# --- готовность частей режима (app\run\mode.py, app\setup\readiness.py, §10): по строке на часть.
 # Ключи — значения RunPart.
 RUN_PART_LABELS: Final[dict[str, str]] = {
     "plan": "чтение таблицы плана",
@@ -553,7 +553,7 @@ PACKAGE_PROBLEMS: Final[dict[str, str]] = {
 PACKAGE_WRITTEN: Final[str] = "Пакет записан: {path} (слотов: {slots}, обложек: {previews})."
 PACKAGE_NOT_WRITTEN: Final[str] = "Пакет не записан: {reason}."
 
-# --- прогон режима А (app\slots\intake.py, §3 шаги 2.3–2.6): по строке на шаг, только счётчики и причины.
+# --- прогон режима А (app\intake\intake.py, §3 шаги 2.3–2.6): по строке на шаг, только счётчики и причины.
 # Ни значений сейфа, ни ссылки на форму, ни названий и описаний видео (§7.4).
 INTAKE_TABLE_LINE: Final[str] = "Таблица плана: рядов {rows}, допущено {admitted}, отсеяно {skipped}{reasons}."
 INTAKE_TABLE_REASONS: Final[str] = " — {items}"
@@ -666,7 +666,7 @@ LLM_PROBE_TIER_ENTRY: Final[str] = "{label} — {tier}"
 LLM_PROBE_COST: Final[str] = "Стоимость: ${cost}."
 LLM_PROBE_COST_UNKNOWN: Final[str] = "Стоимость: не меньше ${cost} — цены части моделей ({models}) в программе нет."
 
-# --- обрыв и падение запуска (app\main.py::run_cli)
+# --- обрыв и падение запуска (app\main.py::Launch.run)
 RUN_INTERRUPTED: Final[str] = (
     "Запуск прерван. Что уже сделано на YouTube, найдёт и учтёт следующий запуск."
 )

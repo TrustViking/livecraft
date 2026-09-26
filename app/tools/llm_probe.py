@@ -13,38 +13,45 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Final
+from enum import Enum
+from typing import Final
 
 import openai
 
-from app.config.loader import LivecraftSettings, LlmSettings, ShippedSettings
+from app.config.loader import LivecraftSettings, LlmSettings
 from app.core.clock import Clock
 from app.core.dates import ISO_TIMESPEC
+from app.core.text_format import SPACE
 from app.llm.backend import LlmBackend, LlmRequest, LlmResponse
 from app.llm.backends.openai import OpenAiClient
 from app.llm.errors import LlmRequestError
 from app.llm.selection import ModelChoice
 from app.llm.usage import COST_FORMAT, RunUsage
-from app.observability.log_event import LogArea, get_logger
-from app.observability.logging_setup import close_logging, install_secret_filter, setup_logging
-from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
+from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.resources.loader import TextResource
+from app.run.exit_code import ExitCode
 from app.secretsafe.vault import Vault
 from app.setup.readiness import Readiness
-from app.setup.run_mode import ExitCode
+from app.tools.probe import ProbeConsole, ProbeLauncher, ProbeSession
 from app.ui import messages_ru as msg
 
 LOGGER = get_logger(LogArea.LLM_PROBE)
-SHIPPED_SETTINGS: ShippedSettings = ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE)
 
 PROG: Final[str] = "python -m app.tools.llm_probe"
 PING_RESOURCE: Final[str] = "prompt_startup_ping.txt"
 PING_LABEL: Final[str] = "startup_ping"
 ANSWER_MAX_CHARS: Final[int] = 200
+
+
+class LlmProbeEvent(str, Enum):
+    """События пробника нейросети в логе."""
+
+    FAILED = "llm_probe_failed"
 
 
 @dataclass(frozen=True)
@@ -70,9 +77,8 @@ class LlmProbeReport:
         answer: tuple[str, ...] = (self._answer_line(self.response),) if self.response is not None else ()
         return (*answer, self._tokens_line, self._requests_line, self._cost_line)
 
-    @staticmethod
-    def _answer_line(response: LlmResponse) -> str:
-        text: str = " ".join(response.text.split())
+    def _answer_line(self, response: LlmResponse) -> str:
+        text: str = SPACE.join(response.text.split())
         if len(text) > ANSWER_MAX_CHARS:
             text = msg.LLM_PROBE_ANSWER_CUT.format(text=text[:ANSWER_MAX_CHARS].rstrip())
         return msg.LLM_PROBE_ANSWER.format(text=text)
@@ -110,36 +116,38 @@ class LlmProbeReport:
 
 @dataclass(frozen=True)
 class LlmProbe:
-    """Один прогон пробника на корне `paths`; вывод `say`, фабрика SDK и «сейчас» — параметрами."""
+    """Один прогон пробника в сессии запуска; фабрика SDK и «сейчас» — полями, в тестах свои."""
 
-    paths: LivecraftPaths
-    say: Callable[[str], None]
-    sdk: Callable[..., Any] = openai.OpenAI
+    session: ProbeSession
+    sdk: Callable[..., object] = openai.OpenAI
     clock: Clock = field(default_factory=Clock.utc)
     ping: StartupPing = StartupPing()
 
+    @property
+    def console(self) -> ProbeConsole:
+        return self.session.console
+
     def run(self) -> int:
-        self.say(msg.LLM_PROBE_TITLE)
-        readiness: Readiness = Readiness.check(self.paths)
+        self.console.say(msg.LLM_PROBE_TITLE)
+        readiness: Readiness = Readiness.check(self.session.paths)
         if readiness.vault_error is not None:
-            return self._refuse(readiness.vault_error.human)
+            return self.console.refuse(readiness.vault_error.human)
         vault: Vault = readiness.vault if readiness.vault is not None else Vault.empty()
-        install_secret_filter(vault)                 # до первого обращения к OpenAI (§7.4)
-        for warning in readiness.warnings:
-            self.say(warning)
+        self.session.log.protect(vault.log_filter())        # до первого обращения к OpenAI (§7.4)
+        self.console.say_lines(readiness.warnings)
         settings: LivecraftSettings | None = readiness.settings
         if settings is None:
-            return self._refuse(str(readiness.settings_error))
+            return self.console.refuse(str(readiness.settings_error))
         try:
             backend: LlmBackend = OpenAiClient.from_vault(vault, settings.llm, sdk=self.sdk)
         except LlmRequestError as error:
-            return self._refuse(error.human)
+            return self.console.refuse(error.human)
         return self._probe(backend, settings.llm)
 
     def _probe(self, backend: LlmBackend, llm: LlmSettings) -> int:
-        self.say(self._settings_line(llm))
+        self.console.say(self._settings_line(llm))
         choice: ModelChoice = ModelChoice.select(backend, llm.model, llm.fallback_model)
-        self.say(choice.human)
+        self.console.say(choice.human)
         if choice.chosen is None:
             return self._finish(backend.run_usage, None, ExitCode.ERRORS)
         request: LlmRequest = LlmRequest.from_settings(
@@ -148,19 +156,20 @@ class LlmProbe:
         try:
             response: LlmResponse = backend.complete(request)
         except LlmRequestError as error:
-            LOGGER.error("llm_probe_failed %s", error.log_line)
-            self.say(error.human)
+            failed: LogEvent = LogEvent.of(LlmProbeEvent.FAILED, backend=error.backend, reason_code=error.kind)
+            failed = failed.extended(status_code=error.status_code, api_error_code=error.api_error_code)
+            failed.extended(api_error_param=error.api_error_param, detail=error.detail).emit(LOGGER, logging.ERROR)
+            self.console.say(error.human)
             return self._finish(backend.run_usage, None, ExitCode.ERRORS)
         return self._finish(backend.run_usage, response, ExitCode.OK)
 
     def _finish(self, usage: RunUsage, response: LlmResponse | None, code: ExitCode) -> int:
-        for line in LlmProbeReport(usage=usage, response=response).lines:
-            self.say(line)
-        LOGGER.info("%s exit=%d", usage.log_line, int(code))
+        """Строки отчёта и строка расхода запуска (у неё своё имя события) с кодом выхода."""
+        self.console.say_lines(LlmProbeReport(usage=usage, response=response).lines)
+        LogEvent.of(usage.log_line, exit=code).emit(LOGGER)
         return int(code)
 
-    @staticmethod
-    def _settings_line(llm: LlmSettings) -> str:
+    def _settings_line(self, llm: LlmSettings) -> str:
         return msg.LLM_PROBE_SETTINGS.format(
             primary=llm.model,
             fallback=llm.fallback_model or msg.NONE_TEXT,
@@ -168,26 +177,11 @@ class LlmProbe:
             effort=llm.reasoning_effort.value,
         )
 
-    def _refuse(self, text: str) -> int:
-        self.say(text)
-        self.say(msg.SETUP_REQUIRED)
-        return int(ExitCode.CONFIG)
-
-
-def _say(text: str) -> None:
-    print(text, flush=True)
-
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Точка входа пробника: корень, папки, логи; дальше — `LlmProbe`. Ключей нет — есть только --help."""
+    """Точка входа пробника: ключей нет — есть только --help; корень, папки и лог — у `ProbeLauncher`."""
     argparse.ArgumentParser(prog=PROG).parse_args(argv)
-    paths: LivecraftPaths = build_paths(resolve_root())
-    ensure_dirs(paths)
-    setup_logging(paths.logs_dir, debug=False, started=SHIPPED_SETTINGS.clock.now())
-    try:
-        return LlmProbe(paths=paths, say=_say).run()
-    finally:
-        close_logging()
+    return ProbeLauncher.system().run(lambda session: LlmProbe(session=session).run())
 
 
 if __name__ == "__main__":

@@ -15,14 +15,17 @@ from app.secretsafe.crypto import KEY_FIELDS, KEY_SALT, KEY_VERSION, KEY_WRAPPED
 from app.secretsafe.store import LocalVaultState, VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
-from app.setup.readiness import ModeReadiness, PartReadiness, Readiness
-from app.setup.run_mode import RunMode, RunPart
+from app.observability.log_event import LogArea, get_logger
+from app.run.exit_code import RunOutcome
+from app.run.mode import ModeReadiness, ModeStep, PartReadiness, RunMode, RunPart
+from app.setup.readiness import Readiness
 from app.tests.conftest import (
     REPO_CHANNELS_EXAMPLE,
     SHIPPED_SETTINGS_FILE,
     SUPPLIED_VALUES,
     write_supplied_vault,
 )
+from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
 
 OWN_SHEETS_ID: str = "1own-B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ-own-table"
@@ -47,7 +50,7 @@ def _mode_texts(readiness: Readiness) -> tuple[str, ...]:
     for mode in RunMode:
         for no_llm in (False, True):
             mode_readiness: ModeReadiness = readiness.for_mode(mode, no_llm=no_llm)
-            texts.extend((*mode_readiness.lines, mode_readiness.log_line))
+            texts.extend((*mode_readiness.lines, mode_readiness.event.text))
     return tuple(texts)
 
 
@@ -55,7 +58,7 @@ def _every_text(readiness: Readiness) -> str:
     """Всё, что Readiness отдаёт наружу — людям и в лог."""
     return "\n".join(
         (*readiness.summary_lines, *readiness.problems, *readiness.warnings, *readiness.template_lines,
-         readiness.log_line, *_mode_texts(readiness))
+         readiness.event.text, *_mode_texts(readiness))
     )
 
 
@@ -208,7 +211,7 @@ def test_an_unreadable_own_vault_warns_and_runs_on_supplied_values(ready_paths: 
     assert readiness.is_ready                                  # запуск идёт — на поставочных значениях
     assert readiness.vault is not None
     assert all(readiness.vault.origin_of(field) is VaultOrigin.SUPPLIED for field in SecretField.current())
-    assert "local=unreadable" in readiness.log_line
+    assert "local=unreadable" in readiness.event.text
 
 
 def test_no_warning_without_an_own_vault(ready_paths: LivecraftPaths) -> None:
@@ -231,7 +234,7 @@ def test_a_vault_file_of_an_unknown_format_is_named(ready_paths: LivecraftPaths)
     assert readiness.problems[-1] == readiness.vault_error.human
     assert msg.VAULT_FILE_ADVICE_LOCAL in readiness.problems[-1]
     assert readiness.vault_error.detail not in readiness.problems[-1]
-    assert "vault=broken" in readiness.log_line
+    assert "vault=broken" in readiness.event.text
 
 
 NOT_UTF8_BYTES: bytes = b"\xff\xfe\x00vault\x80\x81"
@@ -303,9 +306,10 @@ def test_a_vault_without_the_form_url_is_ready(ready_paths: LivecraftPaths) -> N
 def test_the_log_line_carries_labels_and_state_only(ready_paths: LivecraftPaths) -> None:
     readiness: Readiness = Readiness.check(ready_paths)
     assert readiness.vault is not None
-    line: str = readiness.log_line
-    assert line.startswith("settings=ok channels=2 local=absent vault=")
+    line: str = readiness.event.text
+    assert line.startswith("readiness settings=ok channels=2 local=absent vault=")
     assert readiness.vault.log_line in line
+    assert line.endswith(" ready=yes")
     assert line.isascii()
 
 
@@ -354,7 +358,7 @@ def test_the_summary_says_the_form_is_configured_and_hides_the_link(ready_paths:
     readiness: Readiness = Readiness.check(ready_paths)
     lines: tuple[str, ...] = readiness.summary_lines
     assert msg.READINESS_FIELD_LINE.format(label=msg.FORM_URL_LABEL, origin=msg.READINESS_FORM_CONFIGURED) in lines
-    assert FORM_URL not in "\n".join(lines) + readiness.log_line
+    assert FORM_URL not in "\n".join(lines) + readiness.event.text
 
 
 @pytest.mark.parametrize("in_vault", [False, True])
@@ -478,7 +482,7 @@ def test_the_announce_mode_with_everything_set_blocks_nothing(ready_paths: Livec
     assert mode.lines == (RunPart.MERGE.not_built_line, RunPart.ANNOUNCE.not_built_line)
     assert not mode.is_nothing_ready
     assert mode.is_part_ready(RunPart.PLAN) and not mode.is_part_ready(RunPart.MERGE)
-    assert mode.log_line == "mode=announce ready=plan,package blocked=- not_built=merge,announce"
+    assert mode.event.text == "mode_readiness mode=announce ready=plan,package blocked=- not_built=merge,announce"
 
 
 def test_the_from_package_mode_needs_no_table_and_no_key(ready_paths: LivecraftPaths) -> None:
@@ -530,3 +534,55 @@ def test_a_broken_supplied_vault_file_blocks_the_table_and_is_not_fixable_in_the
     assert ready_paths.vault_file.name in mode.parts[0].action     # type: ignore[operator]
     assert readiness.problems[-1] == readiness.vault_error.human     # type: ignore[union-attr]
     assert msg.VAULT_FILE_ADVICE_SUPPLIED in readiness.problems[-1]
+
+
+# --- что делает запуск режима (ModeReadiness.step) и что уходит в лог (Readiness.log)
+
+
+def test_a_clean_root_opens_the_setup_window(livecraft_paths: LivecraftPaths) -> None:
+    mode: ModeReadiness = Readiness.check(livecraft_paths).for_mode(RunMode.ALL, no_llm=False)
+    assert mode.step is ModeStep.OPEN_SETUP
+
+
+def test_a_broken_supplied_vault_file_refuses_without_a_window(ready_paths: LivecraftPaths) -> None:
+    ready_paths.vault_file.write_bytes(NOT_UTF8_BYTES)
+    assert _configured(ready_paths).for_mode(RunMode.ALL, no_llm=False).step is ModeStep.REFUSE
+
+
+def test_a_ready_table_runs_the_plan_and_a_missing_form_fails_the_package(ready_paths: LivecraftPaths) -> None:
+    """Таблица готова — прогон; без ссылки на форму пакет не готов — исход режима «ошибка» (код 1)."""
+    unformed: ModeReadiness = Readiness.check(ready_paths).for_mode(RunMode.ALL, no_llm=False)
+    assert unformed.step is ModeStep.RUN_PLAN and unformed.outcome is RunOutcome.FAILED
+    formed: ModeReadiness = _configured(ready_paths).for_mode(RunMode.ALL, no_llm=False)
+    assert formed.step is ModeStep.RUN_PLAN and formed.outcome is RunOutcome.DONE
+
+
+def test_the_package_mode_only_reports(ready_paths: LivecraftPaths) -> None:
+    mode: ModeReadiness = _configured(ready_paths).for_mode(RunMode.FROM_PACKAGE, no_llm=False)
+    assert mode.step is ModeStep.REPORT and mode.outcome is RunOutcome.DONE
+
+
+def _logged(readiness: Readiness) -> list[str]:
+    with LogCapture.on(LogArea.MAIN) as capture:
+        readiness.log(get_logger(LogArea.MAIN))
+    return capture.messages()
+
+
+def test_the_log_names_missing_files_and_broken_fields_without_values(livecraft_paths: LivecraftPaths) -> None:
+    """Нет файла — «ещё не настроено» (INFO); сломанное поле — ключ, вид и причина (ERROR) и шаблон (DEBUG)."""
+    livecraft_paths.config_file.write_text("{}", encoding=TEXT_ENCODING)
+    readiness: Readiness = Readiness.check(livecraft_paths)
+    lines: list[str] = _logged(readiness)
+    assert lines[0] == readiness.event.text and lines[0].endswith(" ready=no")
+    assert any(line.startswith(f"config_error path={livecraft_paths.config_file} key=") for line in lines)
+    assert f"config_missing path={livecraft_paths.channels_file}" in lines
+    assert any(line.startswith("config_template template=") for line in lines)
+
+
+def test_the_log_names_a_broken_vault_file_with_its_reason(ready_paths: LivecraftPaths) -> None:
+    ready_paths.vault_file.write_text("{", encoding=TEXT_ENCODING)
+    lines: list[str] = _logged(Readiness.check(ready_paths))
+    vault_line: str = "vault_error file=vault.dat source=supplied reason=damaged detail=vault file is not valid JSON"
+    assert any(line.startswith(vault_line) for line in lines)
+    for value in SUPPLIED_VALUES.values():
+        assert value not in "\n".join(lines)

@@ -14,12 +14,14 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
 from app.core.text_format import SPACE
 from app.observability.log_event import LogValue
+from app.secretsafe.log_filter import SecretScrubber
 from app.secretsafe.value import SecretField, SecretValue
 from app.ui import messages_ru as msg
 
@@ -116,6 +118,10 @@ class Vault:
         Устаревшие поля тоже: пока значение лежит в сейфе, фильтр логов обязан его вычёркивать (§7.4).
         """
         return tuple(self.entries[field].secret for field in SecretField if field in self.entries)
+
+    def log_filter(self) -> logging.Filter:
+        """Фильтр лога, который вычёркивает значения этого сейфа из готовых строк записи (§7.4)."""
+        return SecretScrubber(self.secrets())
 
     def with_field(self, field: SecretField, secret: SecretValue, origin: VaultOrigin) -> Vault:
         """Новый сейф с этим полем; прежний не меняется."""

@@ -27,7 +27,7 @@ from app.llm.merges.service_lines import (
     ServiceLineKey,
 )
 from app.resources.loader import TextResource
-from app.sources.language import TextLanguageDetector
+from app.texts.language_detector import TextLanguageDetector
 from app.texts.description_marks import (
     ACCENT_BULLET_MARKERS,
     ALLOWED_BULLET_MARKERS,

@@ -13,14 +13,19 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from app.observability.log_event import LogArea, LogValue, get_logger
 from app.paths import LivecraftPaths
 from app.sheets.rows import PlanRow
+from app.slots.preview import Preview
+from app.slots.slot import SlotKey
+from app.slots.texts import SourceText
 from app.sources.fetcher import MetadataFetcher, SourceFailureReason, SourceFetch
 from app.sources.language import LanguageDecision, LanguageResolver
 from app.sources.metadata import SourceMetadata
-from app.sources.preview import Preview, PreviewDownloader, PreviewProblem, PreviewResult
+from app.sources.preview import PreviewDownloader, PreviewProblem, PreviewResult
 from app.sources.ytdlp import YtDlpFetcher
 
 LOGGER = get_logger(LogArea.SOURCES)
@@ -76,6 +81,21 @@ class SourceVideo:
     def language_code(self) -> str | None:
         """Код языка источника; не определился или не решался — None."""
         return self.language.language if self.language is not None else None
+
+    def slot_key(self, zone: ZoneInfo) -> SlotKey | None:
+        """Ключ слота источника: момент старта ряда в зоне программы и язык видео; у негодного источника — None."""
+        start: datetime | None = self.row.start
+        language: str | None = self.language_code
+        if not self.is_ready or start is None or language is None:
+            return None
+        return SlotKey(start=start.astimezone(zone), language=language)
+
+    @property
+    def text(self) -> SourceText:
+        """Название и описание видео для текстов слота; данных видео нет — пустые строки."""
+        if self.metadata is None:
+            return SourceText(title="", description="")
+        return SourceText(title=self.metadata.title, description=self.metadata.description)
 
     @property
     def log_line(self) -> str:
