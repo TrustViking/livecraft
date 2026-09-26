@@ -208,9 +208,10 @@ sources           кортеж ссылок источников
 app\
   main.py                 run_cli(argv) → Launch (R5); код выхода решает app\run
   version.py              APP_VERSION — единственный номер версии (patch поднимает сборка); APP_NAME
-  paths.py                LivecraftPaths (корень рядом с exe или репо, DataDir), AtomicFile, write_text_atomically, TEXT_ENCODING
+  paths.py                LivecraftPaths (корень рядом с exe или репо, DataDir), AtomicFile, write_text_atomically
   core\                   чистые значения и примитивы: dates.py, clock.py (Clock — единственное «сейчас»), retry.py (RetryPolicy, RetryLoop),
-                          errors.py, safe_trim.py, sheet_text.py, alphabet.py, web_link.py (WebLink; url_text.py — фасад), youtube_video.py, counts.py
+                          errors.py, text_format.py, language_code.py, system.py, safe_trim.py, sheet_text.py, alphabet.py, web_link.py
+                          (WebLink; url_text.py — фасад), youtube_video.py, counts.py
   observability\          logging_setup.py — LogArea, get_logger, LogEvent, RunLog; маскирование секретов и ключей потока
   resources\              loader.py (TextResource); text\ — тексты промтов, пороги-данные, лексиконы, поставочный шаблон livecraft.json
   ui\                     messages_ru.py — ВСЕ тексты для людей; console.py (Console)
@@ -468,7 +469,7 @@ tmp\                      временные файлы задачи; удаля
 
 Проверяется `app\**\*.py`, кроме `app\tests\` (E20 — только тесты, E21 — всё). Ключ нарушения — `путь::квалифицированное имя`, путь от корня репо с `\` на любой ОС. Пороги, списки модулей и карта слоёв — в `app\tools\code_standard\standard.json`, не в коде. Цель каждого правила — 0; исключение — только записью в `exceptions.json` с обоснованием.
 
-- **E1 Свободные функции.** Функция уровня модуля — нарушение, если (а) в аннотациях назван класс `app`; (б) все её пользователи — один класс того же модуля; (в) в коде `app` её никто не зовёт. Исключения: `run_cli`, `main` пробников и функции, которые называет этот файл (`safe_trim_right`, `parse_sheet_datetime`, `mask_stream_key`, `parse_iso_start`).
+- **E1 Свободные функции.** Функция уровня модуля — нарушение, если (а) в аннотациях назван класс `app`; (б) все её пользователи — один класс того же модуля; (в) в коде `app` её никто не зовёт. Исключения: `run_cli`, `main` пробников и функции, которые называет этот файл (`safe_trim_right`, `parse_sheet_datetime`, `mask_stream_key`, `parse_iso_start`, `get_logger`).
 - **E2 Статические методы.** Любой `@staticmethod` — нарушение: он становится методом экземпляра, методом объекта-значения, которому принадлежит правило, или общим примитивом.
 - **E3 Длина.** Определение от `def` до последней строки — не больше 30 строк.
 - **E4 Параметры.** Не больше 4 без `self` / `cls`; `*args` и `**kwargs` — по одному.
@@ -585,7 +586,7 @@ tmp\                      временные файлы задачи; удаля
 - ▸ D8: отметки времени в имени лога, в файле замка и `startup.log` — по поясу программы (до чтения настроек — пояс поставочного шаблона), а не машины; `startup.log` — с секундами; сбой замка до настройки логов пишется в `startup.log`, а не английской строкой в stderr; «пусто» в строках лога — одно написание (было `none` и `-`).
 
 **R4. Общие объекты II — тексты, ссылки, лексиконы.** Область: `app\core\safe_trim.py`, `url_text.py` (фасад), `sheet_text.py`, новые `alphabet.py`, `web_link.py`, `youtube_video.py`; `app\texts\paragraphs.py`, `description_marks.py`, `analysis_text.py`, новые `hashtags.py`, `similarity.py`, `source_link.py`; `app\slots\slot.py` (`SlotKey`); лексиконы и их объекты; их тесты.
-- `paragraphs.py` — единственный дом абзацев, пробелов и строк (`collapse_spaces`, `nonempty_lines`, `split_paragraphs`, `unique_in_order`); `alphabet.py` — классы букв, `CoreLanguage` (uk, en, ru), свёртка «ё → е»; `hashtags.py` (`HASHTAG_BODY`, именованные шаблоны, `is_hashtags_line`); `TextPair` (`jaccard`, `prefix_ratio`, `semantic_tokens`); `BulletLine` (`marker`, `content`, `is_bullet`, `has_marker_prefix`; у санации заголовок «🌐 …:» — пункт, у проверки ответа — нет: два именованных метода); заголовок «🌐 …:» — одно определение; `SENTENCE_END_CHARS` — в `safe_trim.py`; `safe_trim_right` через `TrimReason` и `TrimBoundary`; `CtaLexicon.starts_with_prefix` — само правило, тройная обёртка уходит.
+- `paragraphs.py` — единственный дом абзацев, пробелов и строк (`collapse_spaces`, `nonempty_lines`, `split_paragraphs`; `unique_in_order` — в `app\core`); `alphabet.py` — классы букв, `CoreLanguage` (uk, en, ru), свёртка «ё → е»; `hashtags.py` (`HASHTAG_BODY`, именованные шаблоны, `is_hashtags_line`); `TextPair` (`jaccard`, `prefix_ratio`, `semantic_tokens`); `BulletLine` (`marker`, `content`, `is_bullet`, `has_marker_prefix`; у санации заголовок «🌐 …:» — пункт, у проверки ответа — нет: два именованных метода); заголовок «🌐 …:» — одно определение; `SENTENCE_END_CHARS` — в `safe_trim.py`; `safe_trim_right` через `TrimReason` и `TrimBoundary`; `CtaLexicon.starts_with_prefix` — само правило, тройная обёртка уходит.
 - `WebLink` — значение ссылки (разбор один раз; хост, признаки, чистка трекинга, отображение, ключ, кандидат), `url_text.py` — фасад; `SourceLink` (сам пишет строку отброшенной ссылки YouTube), `LinkedText(text, changed_links)`; `YouTubeVideoId` (`of`, `short_url`, `watch_url`, хосты) — в `sheet_text.py` остаётся только разбор таблицы; `slot_id` — правило `SlotKey` (`dates.py::build_slot_id` уходит).
 - Лексиконы — ресурсами и объектами: `ServiceHints` (файл читается один раз за запуск), `PhraseLexicon(phrases)` полем лексиконов (`BadHookLexicon`, `OfficialLinkHints`, чистка текста); встроенные в код списки с кириллицей — файлами `app\resources\text\`; контрольные суммы ресурсов в тестах — страховка стартовых данных (решение 23), без имён и ссылок донора.
 - Целиком: E6, E9.
@@ -686,7 +687,7 @@ tmp\                      временные файлы задачи; удаля
 
 История до 26-09-2026 — `git show 3e399ba:CLAUDE.md`.
 
-**Где мы (26-09-2026).** Ветка `feature/livecraft`; последний принятый код — `4fb0f72` (R1.3), документы — коммит, сведший разбор и эталон этапа R в этот файл. Baseline тестов — **2568**. Реестр замка — **728**: E1 57, E2 56, E3 9, E4 7, E5 281, E6 8, E7 30, E8 37, E9 9, E10 35, E11 6, E12 7, E13 14, E14 20, E15 71, E16 13, E17 10, E18 11, E19 1, E20 46, E21 0; исключений 5. Внешние репо: restreamer `35324e5`, planers `9903b2e` (21-09-2026) — перед этапом 5 перечитать по текущему HEAD.
+**Где мы (26-09-2026).** Ветка `feature/livecraft`; последний принятый код — `766cf25` (R3). Baseline тестов — **2652**. Реестр замка — **587**: E1 56, E2 55, E3 8, E4 7, E5 256, E6 8, E7 24, E8 0, E9 9, E10 0, E11 5, E12 5, E13 14, E14 20, E15 71, E16 13, E17 0, E18 11, E19 1, E20 24, E21 0; исключений 9 (E1 4, E8 3, E13 2). planers — `9903b2e` (21-09-2026), перед этапом 5 перечитать по текущему HEAD.
 
 **Что работает.**
 - Этапы 0–2 закрыты (2.4 — в этапе 6): замок одного экземпляра, сейф (`reveal()` — `SheetsReader._request`, `OpenAiClient._api`, `KeysPanel.own_value`, временная `FormUrlMigration`), конфиги, готовность по частям режима, настройщик на трёх вкладках.
@@ -694,7 +695,7 @@ tmp\                      временные файлы задачи; удаля
 - Нейросеть и merge — код есть, в запуск не подключён (3.15): `LlmBackend`, `MergeJob` → `SlotTexts` (`merged`), санация `MergePublication`; пробник `python -m app.tools.llm_probe`.
 - Флаги `--announce`, `--broadcast`, `--from-package`, `--no-llm`, `--setup` разбираются; части MERGE, ANNOUNCE, BROADCAST, PACKAGES_IN показываются несделанными (`app\setup\run_mode.py::NOT_BUILT_PARTS`).
 
-**Этап R.** Приняты R1.1a, R1.1a-2, R1.1b (дефекты D1–D7, D9), R1.2a, R1.2b (мёртвый код), R1.3, R2.1a, R2.1b (замок). Отменены R2.2 и R2.3. **R3 — промт выдан 26-09-2026**, дальше R4 … R10 (§13).
+**Этап R.** Приняты R1.1a, R1.1a-2, R1.1b (дефекты D1–D7, D9), R1.2a, R1.2b (мёртвый код), R1.3, R2.1a, R2.1b (замок), R3 (`766cf25`). Отменены R2.2 и R2.3. **R4 — промт выдан 26-09-2026**, дальше R5 … R10 (§13).
 
 **Продукт.** После R10 — 3.14b, 3.15, затем этапы 4–8 (§13).
 
@@ -702,10 +703,10 @@ tmp\                      временные файлы задачи; удаля
 - Merge: пауза `pre_delay_sec` донора не переносится; merge идёт, только если непустых описаний у источников слота не меньше двух; предел абзацев проверки — из контракта промта попытки; принятое описание выравнивается к 4 абзацам тела (промт расширенного контракта просит 3–4); подсказка повтора берёт число пунктов из отвергнутой попытки; схема ответа — `merge_summary_v2`, температура 0.
 - Санация: блок перед публикацией (повтор абзацев, призыв или негодный тезис в начале) — пакет получает тексты источников, строка `merge_publish_gate_blocked target=package`; успех и блоки в `MergeTally` считаются по принятому ответу; до 3.14b рекомендуемые видео — строки «👉 ссылка».
 - Слоты: группа — по `slot_id`; в осенний час перевода часов две записи одного местного времени — один слот, момент — первой.
-- Запуск: все видео отказали — код 1, а не 3; вход в Google открывается в `PlanIntake.run`, строка «откроется браузер» — через `on_login`.
+- Запуск: все видео отказали — код 1, а не 3.
 - Таблица: нужны только ссылка, дата и время (`C:E`; `A:F` тоже годится); колонки `L` и `Chips` не читаются (решение 12).
-- Конфиг: `youtube_pause_seconds` в поставке 0.5; `save_channels_file` копирует прежний файл, только если он есть; поставочный `llm` — `gpt-5.6-sol` / `gpt-5.4` / `medium` / `flex` / 900 / 8000.
-- Строки лога нейросети: `backend=openai reason_code=<вид>`, `thinking_tokens=`, `tiers=`.
+- Конфиг: `youtube_pause_seconds` в поставке 0.5; `save_channels_file` копирует прежний файл, только если он есть.
+- Общие объекты R3: лог — `observability\log_event.py` (`LogArea`, `LogValue`, «пусто» = `-`, `LogEvent`); время — `Clock`, до чтения настроек — `ShippedSettings.clock`; повторы — `RetryLoop`; `TEXT_ENCODING` и знаки текста — `core\text_format.py`.
 - Живые данные у Артура (в git не входят): `secrets\client_secret.json`, `secrets\cookies.txt`, `tools\yt-dlp.exe`, `tools\deno.exe`; `secrets\channels.json` — 6 каналов из planers; ключ OpenAI и ссылка формы введены в настройщике.
 - Тесты: серии тестов с буфером обмена параллельно не запускать; `httpx2` в `conftest.py` — зависимость SDK `openai`, не новая.
 
