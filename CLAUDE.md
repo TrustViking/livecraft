@@ -614,7 +614,7 @@ tmp\                      временные файлы задачи; удаля
 - ▸ Страховки `SlotPackage.of` уходят: слот с проблемой и повтор `slot_id` на боевом пути недостижимы (в пакет идут только `SlotBuild.slots`, `slot_id` уникален по сборке). `RunRequest.is_service_run` (обёртка без пользователей в коде) уходит.
 - После приёмки — контрольный прогон режима А (Артур): пакет и консоль как до задачи.
 
-**R7. Конфиг, готовность, сейф.** Область: `app\config\`, `app\setup\readiness.py`, `migration.py`, `app\secretsafe\`, `app\google\`; их тесты; фикстура сейфа.
+**R7. Конфиг, готовность, сейф.** Область: `app\config\`, `app\setup\readiness.py`, `migration.py`, `app\secretsafe\`, `app\google\`, готовность режима в `app\run\mode.py`; их тесты; фикстура сейфа. Точечно: вызовы загрузчика в `main.py`, пробниках, панелях и вкладке каналов настройщика; строка готовности окна (`app\setup\app.py`).
 - `KeyPath`, `JsonNode` вместо `_ConfigParser`: каждый объект строит себя сам (`from_node`) в пару к `to_data`; `SettingKey`, `ChannelKey` (значение — путь JSON; кортежи ключей и `to_data` выводятся из них); `ChannelHandle` (хозяин правила ника, им же пользуется контур B), `ChannelConfig.problem`, `ConfiguredChannels` (`problem` — повтор ника, `served_languages`, `by_handle`); разрезка `loader.py` на `json_node.py`, `settings.py`, `channel.py`, `files.py` (`loader.py` — фасад).
 - `SettingsFile`, `ChannelsFile` (`load`, `parse`, `render`, `save`, `install_shipped`), `ConfigRead[T]` (значение или ошибка); поставочный шаблон `livecraft.json` — ресурс, а не текст в `messages_ru`.
 - `Need` (SHEETS_VAULT, OPENAI_VAULT, SETTINGS, FORM, CHANNELS, CLIENT_SECRET), `RunPart.needs`, `Readiness.gap(need)` — единственное место текста нужды; `PartState` (READY / BLOCKED / NOT_BUILT); `Readiness.window_line`; готовая таблица плана отдаёт прогону настройки и сейф сама — `Launch._mode` не проверяет их на None.
@@ -633,7 +633,7 @@ tmp\                      временные файлы задачи; удаля
 - `PublicationBody`, `GateVerdict`, `MergePublication(title, description, body, verdict, layout)`; `TailCollector` вместо двух накопителей; правила «строка — призыв» и «хвост-призыв» — у `CtaLexicon`, `TailReader` уходит.
 - Разъём: `LlmFailure` (значение) и `LlmRequestError(failure)`, разбор `temperature` ответа — в `backends\`; `TokenCounts`; `LlmResponse(text, structured, model)`; `ModelPair`; `openai_request.py`; один цикл flex; `ResponseSchema`; `ParsedJson`; кольцо модулей `openai*`.
 - Попытка: `MergeRun.request(prompt_text, label)`, `MergeAttempt(prompt, label, sources, run)`, `MergeAttemptResult.outcome: AcceptedMerge | RejectedMerge | LlmFailure`, `MergeOutcome` поверх `AttemptHistory`; один код вместо клона `MergeCheck.run` / `run_with_recovery`; `MergeDiagnostics`; тест проверки идёт через программу, а не повторяет её шаг (`normalized_check`).
-- ▸ Уходят метод без действия `SanitizedDescription.drop_cta`, двойная строка `publish_cta_gate_dropped` и недостижимые проверки (второй отказ `CTA_AS_FIRST_PARAGRAPH` в `check.py`, `MergePromptRefusal`).
+- ▸ Уходят метод без действия `SanitizedDescription.drop_cta`, двойная строка `publish_cta_gate_dropped` и недостижимые проверки (второй отказ `CTA_AS_FIRST_PARAGRAPH` в `check.py`, `MergePromptRefusal`, запасные ссылки «метаданных» и «ячейки таблицы» в `AuthoritativeLinks._video_url` — первой всегда идёт ссылка ряда YouTube; вслед за ними — `SourceVideo.metadata_url`, `SourceVideo.table_link`); `YouTubeVideoId.watch_url_of` без пользователей уходит.
 
 **R10. Настройщик и нулевой реестр.** Область: `app\setup\` (`app.py`, `validators.py`, `fields\`, `panels\`, `tabs\`), их тесты; затем весь `app` и `app\tests`.
 - Модели панелей с одним API (`title`, `notices`, `is_dirty`, `save`) — держит тест моделей; `PanelEdit[P]` вместо трёх классов правки; `KeysPanel.from_paths` (всегда панель, `load_problem`); `DraftField` (`key_path`, `kind`, `choices`, `width`) — что за поле, знает модель, а не вид; `LanguagePicker`, `LanguageDirectory` — выбор языка канала без Tk, тесты языка без Tk; `ChannelDraft.languages` — кортеж; языки формы вкладка каналов берёт у модели; варианты языка вне ISO 639-1 (коды формы и старого `channels.json`) помечены в списке; `SetupWindowDriver` — фикстура тестов окна.
@@ -693,7 +693,7 @@ tmp\                      временные файлы задачи; удаля
 
 История до 26-09-2026 — `git show 3e399ba:CLAUDE.md`.
 
-**Где мы (26-09-2026).** Ветка `feature/livecraft`; последний принятый код — `cbee396` (R5). Baseline тестов — **2761**. Реестр замка — **403**: E1 34, E2 44, E3 6, E4 7, E5 190, E6 0, E7 19, E8 0, E9 0, E10 0, E11 4, E12 3, E13 13, E14 19, E15 27, E16 5 (только кольца), E17 0, E18 10, E19 1, E20 21, E21 0; исключений 9 (E1 4, E8 3, E13 2). planers — `9903b2e` (21-09-2026), перед этапом 5 перечитать по текущему HEAD.
+**Где мы (26-09-2026).** Ветка `feature/livecraft`; последний принятый код — `beb0406` (R6). Baseline тестов — **2779**. Реестр замка — **352**: E1 32, E2 36, E3 6, E4 7, E5 157, E6 0, E7 19, E8 0, E9 0, E10 0, E11 4, E12 3, E13 13, E14 17, E15 26, E16 4 (кольца), E17 0, E18 9, E19 1, E20 18, E21 0; исключений 9 (E1 4, E8 3, E13 2). planers — `9903b2e` (21-09-2026), перед этапом 5 перечитать по текущему HEAD.
 
 **Что работает.**
 - Этапы 0–2 закрыты (2.4 — в этапе 6): замок одного экземпляра, сейф (`reveal()` — `SheetsReader._request`, `OpenAiClient._api`, `KeysPanel.own_value`, временная `FormUrlMigration`), конфиги, готовность по частям режима, настройщик на трёх вкладках.
@@ -701,7 +701,7 @@ tmp\                      временные файлы задачи; удаля
 - Нейросеть и merge — код есть, в запуск не подключён (3.15): `LlmBackend`, `MergeJob` → `SlotTexts` (`merged`), санация `MergePublication`; пробник `python -m app.tools.llm_probe`.
 - Флаги `--announce`, `--broadcast`, `--from-package`, `--no-llm`, `--setup` разбираются; части MERGE, ANNOUNCE, BROADCAST, PACKAGES_IN показываются несделанными (`app\run\mode.py::NOT_BUILT_PARTS`).
 
-**Этап R.** Приняты R1.1a, R1.1a-2, R1.1b (дефекты D1–D7, D9), R1.2a, R1.2b (мёртвый код), R1.3, R2.1a, R2.1b (замок), R3 (`766cf25`), R4 (`24c8af4`), R5 (`cbee396`). R2.2, R2.3 отменены. **R6 — промт выдан 26-09-2026**, дальше R7 … R10 (§13).
+**Этап R.** Приняты R1.1a, R1.1a-2, R1.1b (дефекты D1–D7, D9), R1.2a, R1.2b (мёртвый код), R1.3, R2.1a, R2.1b (замок), R3 (`766cf25`), R4 (`24c8af4`), R5 (`cbee396`), R6 (`beb0406`). R2.2, R2.3 отменены. Контрольный прогон режима А после R5–R6 — за Артуром. **R7 — промт выдан 26-09-2026**, дальше R8 … R10 (§13).
 
 **Продукт.** После R10 — 3.14b, 3.15, затем этапы 4–8 (§13).
 
@@ -713,6 +713,7 @@ tmp\                      временные файлы задачи; удаля
 - Таблица: нужны только ссылка, дата и время (`C:E`); колонки `L` и `Chips` не читаются (решение 12); шапка узнаёт и «посилання», «відео».
 - Конфиг: `youtube_pause_seconds` в поставке 0.5; `save_channels_file` копирует прежний файл, только если он есть.
 - Запуск (R5): `run_cli` → `Launch`; части запуска отдают `RunOutcome`, код — `ExitCode.combined`; что делает режим — `ModeReadiness.step` (`app\run\mode.py`: в `readiness.py` не влезал по E18); консоль — только `Console`; лог — `RunLog` (чужие обработчики не снимает); фильтр секретов строит сейф (`Vault.log_filter`); пробники — `ProbeLauncher`, `ProbeSession`, `ProbeConsole`; фасады перенесённых модулей не оставлены.
+- Контур A (R6): ряд — `AdmittedRow` или `SkippedRow`, итог — `PlannedRows`; факты о видео — `SourceFacts` (один кеш `SourceCatalog`, им же пользуется пробник); `SourceVideo(row, facts)` — единственное чтение данных видео, в том числе в merge; счётчики стадий — `app\core\counts.py::Counts`; `StreamSlot(key, texts, previews, sources)`; в пакет идут только `SlotBuild.slots`; `SourceFailureReason` — в `sources\metadata.py`.
 - Общие объекты R3: лог — `observability\log_event.py` (`LogArea`, `LogValue`, «пусто» = `-`, `LogEvent`); время — `Clock`, до чтения настроек — `ShippedSettings.clock`; повторы — `RetryLoop`; `TEXT_ENCODING` и знаки текста — `core\text_format.py`.
 - Живые данные у Артура (в git не входят): `secrets\client_secret.json`, `secrets\cookies.txt`, `tools\yt-dlp.exe`, `tools\deno.exe`; `secrets\channels.json` — 6 каналов из planers; ключ OpenAI и ссылка формы введены в настройщике.
 - Тесты: серии тестов с буфером обмена параллельно не запускать; `httpx2` в `conftest.py` — зависимость SDK `openai`, не новая.
