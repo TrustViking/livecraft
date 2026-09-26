@@ -4,9 +4,9 @@
 частей (`DescriptionParts.layout`) идёт в строки лога санации. Заголовки блоков — ресурс `publish_headings.json`.
 
 Заголовок блока — по языку описания: пустой, служебный (`unknown`, `other`, `none`, `und`, `xx`) или не двухбуквенный код
-— английский; язык, которого нет в файле, — тоже английский и строка лога `heading_fallback_en` (перевод заголовка — задача
-3.14b). Рекомендуемые материалы рисуются строками «👉 ссылка», пока название видео не получено; названия видео — задача
-3.14b.
+— английский; язык, которого нет в файле, — тоже английский и строка лога `heading_fallback_en`: каналов на других
+языках нет, заголовок переводится, когда такой канал появится. Рекомендуемое видео — запись из двух строк: «✅ название»
+и «👉 ссылка»; заголовок и записи блока — через пустую строку.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ LOGGER = get_logger(LogArea.TEXTS)
 HEADINGS_RESOURCE: Final[str] = "publish_headings.json"
 FALLBACK_LANGUAGE: Final[str] = "en"
 INVALID_LANGUAGES: Final[frozenset[str]] = frozenset({"", "unknown", "other", "none", "und", "xx"})
-RECOMMENDED_ENTRY: Final[str] = "👉 {url}"
+RECOMMENDED_ENTRY: Final[str] = "✅ {title}" + NEWLINE + "👉 {url}"
 LAYOUT_JOINER: Final[str] = "_"
 LAYOUT_EMPTY: Final[str] = "empty"
 LAYOUT_BLANK: Final[str] = "blank"
@@ -38,7 +38,6 @@ class ComposerEvent(str, Enum):
 
     INVALID_LANGUAGE = "heading_cache_invalid_language_format"
     FALLBACK_EN = "heading_fallback_en"
-    RECOMMENDED_RENDERED = "recommended_block_rendered_with_titles"
 
 
 class HeadingKind(str, Enum):
@@ -91,15 +90,28 @@ class PublishHeadings:
 
 
 @dataclass(frozen=True)
+class RecommendedEntry:
+    """Рекомендуемое видео в описании: его название и короткая ссылка `https://youtu.be/<id>`."""
+
+    title: str
+    url: str
+
+    @property
+    def text(self) -> str:
+        """Запись блока: «✅ название», следующей строкой «👉 ссылка»."""
+        return RECOMMENDED_ENTRY.format(title=self.title, url=self.url)
+
+
+@dataclass(frozen=True)
 class DescriptionParts:
-    """Части описания: тело, строка хештегов, ссылки рекомендуемых видео, официальные ссылки, призыв.
+    """Части описания: тело, строка хештегов, рекомендуемые видео, официальные ссылки, призыв.
 
     Опубликованное описание призыва не несёт (призыв не публикуется никогда); поле нужно раскладке до отбрасывания.
     """
 
     body: str
     hashtags_line: str = ""
-    recommended_urls: tuple[str, ...] = ()
+    recommended: tuple[RecommendedEntry, ...] = ()
     official_urls: tuple[str, ...] = ()
     cta: str = ""
 
@@ -108,7 +120,7 @@ class DescriptionParts:
         """Раскладка частей: `body_blank_official_links_blank_hashtags` и подобное; частей нет — `empty`."""
         parts: list[str] = [LayoutPart.BODY.value] if self.body else []
         for present, part in (
-            (bool(self.recommended_urls), LayoutPart.RECOMMENDED),
+            (bool(self.recommended), LayoutPart.RECOMMENDED),
             (bool(self.official_urls), LayoutPart.OFFICIAL),
             (bool(self.cta), LayoutPart.CTA),
             (bool(self.hashtags_line), LayoutPart.HASHTAGS),
@@ -122,7 +134,7 @@ class DescriptionParts:
         parts: list[str] = []
         if self.body:
             parts.append(self.body.strip())
-        if self.recommended_urls:
+        if self.recommended:
             parts.append(self._recommended_block(language, headings))
         if self.official_urls:
             parts.append(self._official_block(language, headings))
@@ -137,9 +149,5 @@ class DescriptionParts:
         return NEWLINE.join([headings.official_links(language), *urls]).strip()
 
     def _recommended_block(self, language: str, headings: PublishHeadings) -> str:
-        entries: list[str] = [RECOMMENDED_ENTRY.format(url=url.strip()) for url in self.recommended_urls if url.strip()]
-        if not entries:
-            return ""
-        rendered: LogEvent = LogEvent.of(ComposerEvent.RECOMMENDED_RENDERED, urls=len(entries), titles_rendered=0)
-        rendered.extended(title_fetch_failures=len(entries)).emit(LOGGER)
-        return PARAGRAPH_BREAK.join([headings.recommended_materials(language), *entries]).strip()
+        entries: list[str] = [entry.text for entry in self.recommended]
+        return PARAGRAPH_BREAK.join([headings.recommended_materials(language), *entries])

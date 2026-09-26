@@ -10,7 +10,7 @@ def blocks(text: str) -> DescriptionBlocks:
     return DescriptionBlocks.of(text, CTA)
 
 
-def test_full_description_splits_into_donor_blocks() -> None:
+def test_full_description_splits_into_hook_theses_links_and_cta() -> None:
     parsed: DescriptionBlocks = blocks(
         "Hook sentence one.\n\n"
         "In this stream you'll see:\n🔹 first\n📌 second\n\n"

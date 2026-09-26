@@ -62,6 +62,7 @@ from app.tests.fixtures.merges import (
     merge_check,
     sources_of,
 )
+from app.tests.fixtures.sources import stub_catalog
 
 RULES: MergeRules = MergeRules.load()
 NEUTRAL: str = chr(0x1F539)
@@ -89,7 +90,9 @@ def prompt_for(videos: tuple[SourceVideo, ...], language: str = "en") -> MergePr
 def attempt_with(backend: QueueBackend, videos: tuple[SourceVideo, ...] | None = None, language: str = "en") -> MergeAttempt:
     sources: tuple[SourceVideo, ...] = videos if videos is not None else three_sources()
     label: MergeAttemptLabel = MergeAttemptLabel(slot_id="16-10-2026_1900_en", language=language, model=MODEL, attempt=1)
-    merge_run: MergeRun = MergeRun(backend=backend, model=MODEL, settings=LLM_SETTINGS, rules=RULES)
+    merge_run: MergeRun = MergeRun(
+        backend=backend, model=MODEL, settings=LLM_SETTINGS, rules=RULES, catalog=stub_catalog()
+    )
     return MergeAttempt(prompt_for(sources, language), label, sources, merge_run)
 
 

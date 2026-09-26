@@ -7,9 +7,13 @@ NO_LANGUAGE. Обложка качается только источнику с 
 `SourceVideo` — допущенный ряд таблицы (`AdmittedRow`) вместе с фактами о его видео. Негодный источник не
 выбрасывается: он остаётся с причиной, пишется в лог и дальше по конвейеру не идёт (§0).
 
+`VideoCheck` — данные видео и решение его языка без обложки: так проверяется видео, на которое ссылается описание
+источника, прежде чем попасть в рекомендуемые материалы слота (`VideoCheck.fit`).
+
 `SourceCatalog` готовит источники одного запуска: на уникальную ссылку одно обращение к yt-dlp, одно решение
-языка и одно скачивание обложки (две строки таблицы с одним видео — один вызов). `PreparedSources` — итог: источники
-в порядке рядов и счётчики для лога и консоли.
+языка и одно скачивание обложки (две строки таблицы с одним видео — один вызов). Проверка видео и факты источника
+берут данные из одного кеша: видео, которое и источник, и рекомендуемое, спрашивается у yt-dlp один раз.
+`PreparedSources` — итог: источники в порядке рядов и счётчики для лога и консоли.
 """
 from __future__ import annotations
 
@@ -41,6 +45,52 @@ class SourcesEvent(str, Enum):
 
     SOURCE = "source"
     PREPARED = "sources_prepared"
+
+
+class VideoFit(str, Enum):
+    """Годится ли видео в рекомендуемые материалы слота этого языка."""
+
+    FITS = "fits"
+    NO_DATA = "no_data"                  # данных видео нет или они не годны
+    AMBIGUOUS = "ambiguous"              # язык не определился или сигналы языка спорят
+    OTHER_LANGUAGE = "other_language"
+
+
+@dataclass(frozen=True)
+class VideoCheck:
+    """Данные видео и решение его языка, без обложки. `language` — None, если данных видео нет или они не годны."""
+
+    fetch: SourceFetch
+    language: LanguageDecision | None
+
+    @property
+    def title(self) -> str:
+        """Название из годных данных видео; данных нет — пустая строка."""
+        metadata: SourceMetadata | None = self.fetch.ready_metadata
+        return metadata.title if metadata is not None else ""
+
+    @property
+    def language_code(self) -> str | None:
+        """Код языка видео; не решался или не определился — None."""
+        return self.language.language if self.language is not None else None
+
+    @property
+    def cover_url(self) -> str | None:
+        """Адрес обложки, которую стоит качать: только у видео с определённым языком — только оно станет источником."""
+        metadata: SourceMetadata | None = self.fetch.ready_metadata
+        if metadata is None or self.language_code is None:
+            return None
+        return metadata.thumbnail_url
+
+    def fit(self, language: str) -> VideoFit:
+        """Годится ли видео в рекомендуемые слота языка `language`: данные годны, язык определён без спора и тот же.
+
+        Видео, язык которого решён спором сигналов, не берётся: зрителю эфира нужен ролик на его языке наверняка."""
+        if self.language is None:
+            return VideoFit.NO_DATA
+        if self.language.language is None or self.language.is_conflict:
+            return VideoFit.AMBIGUOUS
+        return VideoFit.FITS if self.language.language == language else VideoFit.OTHER_LANGUAGE
 
 
 @dataclass(frozen=True)
@@ -214,12 +264,13 @@ class PreparedSources:
 
 @dataclass
 class SourceCatalog:
-    """Источники одного запуска. Кеш по ссылке: факты о видео — по одному разу на ссылку."""
+    """Видео одного запуска. Кеши по ссылке: проверка видео (данные и язык) и факты источника — по одному разу."""
 
     fetcher: MetadataFetcher
     downloader: PreviewDownloader
     resolver: LanguageResolver
     known: dict[str, SourceFacts] = field(default_factory=dict)
+    checked: dict[str, VideoCheck] = field(default_factory=dict)
 
     @classmethod
     def from_paths(cls, paths: LivecraftPaths) -> SourceCatalog:
@@ -229,21 +280,29 @@ class SourceCatalog:
             resolver=LanguageResolver.from_resources(),
         )
 
-    def facts(self, link: str) -> SourceFacts:
-        """Факты о видео по ссылке: из кеша или одним проходом. Язык решается только по годным данным видео,
-        обложка качается только источнику с определённым языком."""
-        cached: SourceFacts | None = self.known.get(link)
+    def check(self, link: str) -> VideoCheck:
+        """Данные видео и его язык по ссылке: из кеша или одним обращением к yt-dlp. Язык решается только по годным
+        данным видео."""
+        cached: VideoCheck | None = self.checked.get(link)
         if cached is not None:
             return cached
         fetched: SourceFetch = self.fetcher.fetch(link)
         metadata: SourceMetadata | None = fetched.ready_metadata
-        facts: SourceFacts = SourceFacts(fetch=fetched, language=None, preview=None)
-        if metadata is not None:
-            language: LanguageDecision = self.resolver.resolve(metadata)
-            preview: PreviewResult | None = None
-            if language.is_resolved:
-                preview = self.downloader.preview(metadata.thumbnail_url)
-            facts = SourceFacts(fetch=fetched, language=language, preview=preview)
+        language: LanguageDecision | None = None if metadata is None else self.resolver.resolve(metadata)
+        check: VideoCheck = VideoCheck(fetch=fetched, language=language)
+        self.checked[link] = check
+        return check
+
+    def facts(self, link: str) -> SourceFacts:
+        """Факты о видео по ссылке: из кеша или проверкой видео и обложкой. Обложка качается только источнику
+        с определённым языком."""
+        cached: SourceFacts | None = self.known.get(link)
+        if cached is not None:
+            return cached
+        check: VideoCheck = self.check(link)
+        cover_url: str | None = check.cover_url
+        preview: PreviewResult | None = None if cover_url is None else self.downloader.preview(cover_url)
+        facts: SourceFacts = SourceFacts(fetch=check.fetch, language=check.language, preview=preview)
         self.known[link] = facts
         return facts
 

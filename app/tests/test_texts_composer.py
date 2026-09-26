@@ -9,7 +9,7 @@ import pytest
 from app.observability.log_event import LogArea
 from app.resources.loader import TextResource
 from app.tests.fixtures.logs import LogCapture
-from app.texts.composer import HEADINGS_RESOURCE, DescriptionParts, HeadingKind, PublishHeadings
+from app.texts.composer import HEADINGS_RESOURCE, DescriptionParts, HeadingKind, PublishHeadings, RecommendedEntry
 
 HEADINGS: PublishHeadings = PublishHeadings.load()
 # Заголовки блоков трёх основных языков — стартовые данные ресурса.
@@ -67,7 +67,7 @@ def test_a_language_outside_the_file_gives_english_and_a_log_line(texts_log: Log
 
 def test_layout_names_the_parts_in_order() -> None:
     parts: DescriptionParts = DescriptionParts(
-        body="Body.", hashtags_line="#a", recommended_urls=("https://youtu.be/aaaaaaaaaaa",),
+        body="Body.", hashtags_line="#a", recommended=(RecommendedEntry("Talk", "https://youtu.be/aaaaaaaaaaa"),),
         official_urls=("https://example.org",), cta="Join us.",
     )
     assert parts.layout == "body_blank_recommended_materials_blank_official_links_blank_cta_blank_hashtags"
@@ -87,12 +87,21 @@ def test_compose_joins_the_blocks_with_blank_lines() -> None:
     assert parts.compose("uk", HEADINGS).count("🌐 Офіційні ресурси:") == 1
 
 
-def test_recommended_videos_are_drawn_as_links_until_titles_arrive(texts_log: LogCapture) -> None:
-    parts: DescriptionParts = DescriptionParts(body="Body.", recommended_urls=("https://youtu.be/aaaaaaaaaaa", " "))
-    assert parts.compose("ru", HEADINGS) == "Body.\n\nРекомендуемые материалы:\n\n👉 https://youtu.be/aaaaaaaaaaa"
-    assert texts_log.messages() == [
-        "recommended_block_rendered_with_titles urls=1 titles_rendered=0 title_fetch_failures=1"
-    ]
+def test_a_recommended_video_is_its_title_then_its_link(texts_log: LogCapture) -> None:
+    """Зритель видит, что за ролик, прежде чем идти по ссылке: название, под ним ссылка; записи — через пустую строку."""
+    parts: DescriptionParts = DescriptionParts(
+        body="Body.",
+        recommended=(
+            RecommendedEntry("First talk", "https://youtu.be/aaaaaaaaaaa"),
+            RecommendedEntry("Second talk", "https://youtu.be/bbbbbbbbbbb"),
+        ),
+        official_urls=("https://example.org",),
+    )
+    assert parts.compose("ru", HEADINGS) == (
+        "Body.\n\nРекомендуемые материалы:\n\n✅ First talk\n👉 https://youtu.be/aaaaaaaaaaa\n\n"
+        "✅ Second talk\n👉 https://youtu.be/bbbbbbbbbbb\n\n🌐 Официальные ссылки:\nhttps://example.org"
+    )
+    assert texts_log.messages() == []
 
 
 def test_compose_of_nothing_is_empty() -> None:

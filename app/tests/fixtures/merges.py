@@ -22,9 +22,9 @@ from app.llm.merges.quality import QualityGateStatus, QualityNormalization, Qual
 from app.llm.merges.run import MergeRun
 from app.llm.usage import RunUsage
 from app.slots.slot import SlotKey
-from app.sources.video import SourceVideo
+from app.sources.video import SourceCatalog, SourceVideo
 from app.tests.conftest import LLM_SETTINGS
-from app.tests.fixtures.sources import admitted_row, ready_source
+from app.tests.fixtures.sources import admitted_row, ready_source, stub_catalog
 
 KYIV: ZoneInfo = ZoneInfo("Europe/Kyiv")
 START: datetime = datetime(2026, 10, 16, 19, 0, tzinfo=KYIV)
@@ -165,10 +165,12 @@ def job_of(group: SlotGroup, merge_run: MergeRun) -> MergeJob:
     return MergeJob(group.key, group.videos, merge_run)
 
 
-def run_with(*replies: str | LlmRequestError) -> tuple[MergeRun, QueueBackend]:
-    """Merge запуска на нейросети с этой очередью ответов."""
+def run_with(*replies: str | LlmRequestError, catalog: SourceCatalog | None = None) -> tuple[MergeRun, QueueBackend]:
+    """Merge запуска на нейросети с этой очередью ответов; видео запуска — `catalog`, по умолчанию yt-dlp без сети
+    без единого видео."""
     backend: QueueBackend = QueueBackend(replies=list(replies))
-    return MergeRun(backend=backend, model=MODEL, settings=LLM_SETTINGS, rules=RULES), backend
+    videos: SourceCatalog = stub_catalog() if catalog is None else catalog
+    return MergeRun(backend=backend, model=MODEL, settings=LLM_SETTINGS, rules=RULES, catalog=videos), backend
 
 
 # Метка проверки в тестах: слот, язык en, модель тестов, вторая попытка.

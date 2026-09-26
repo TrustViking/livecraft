@@ -19,6 +19,7 @@ from app.llm.backend import LlmBackend, LlmRequest
 from app.llm.merges.answer import MergeAnswer
 from app.llm.merges.merge_rules import MergeRules
 from app.observability.log_event import LogArea, LogEvent, get_logger
+from app.sources.video import SourceCatalog
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
@@ -156,12 +157,14 @@ class MergeTally:
 
 @dataclass
 class MergeRun:
-    """Merge одного запуска: нейросеть, выбранная модель, настройки `llm`, правила, счётчики и причина остановки."""
+    """Merge одного запуска: нейросеть, выбранная модель, настройки `llm`, правила, видео запуска (один кеш данных
+    и языка на источники и рекомендуемые видео), счётчики и причина остановки."""
 
     backend: LlmBackend = field(repr=False)
     model: str
     settings: LlmSettings = field(repr=False)
     rules: MergeRules = field(repr=False)
+    catalog: SourceCatalog = field(repr=False)
     tally: MergeTally = field(default_factory=MergeTally)
     stop_reason: MergeStopReason | None = None
 

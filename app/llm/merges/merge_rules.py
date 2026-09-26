@@ -2,7 +2,7 @@
 
 `MergeLexicons` — все словари и подсказки merge: призывы, негодный тезис, заголовки повестки, подсказки служебных
 строк и официальных ссылок, канонические служебные строки, язык служебных строк (с определителем языка),
-допустимые латинские слова. Читаются один раз за процесс. `MergeRules` — они, тексты промта (`MergePromptTexts`),
+допустимые латинские слова, частые слова (по ним не судят о теме текста). Читаются один раз за процесс. `MergeRules` — они, тексты промта (`MergePromptTexts`),
 заголовки блоков описания (`PublishHeadings`) и проверка перед публикацией (`PublishGate`). Кто чем пользуется,
 берёт это прямо из `MergeRules`: цепочек правил внутри правил нет.
 """
@@ -22,6 +22,7 @@ from app.llm.merges.service_lines import ServiceLanguage, ServiceLineCatalog
 from app.texts.composer import PublishHeadings
 from app.texts.description_marks import CtaLexicon
 from app.texts.phrase_lexicon import ServiceHints
+from app.texts.similarity import StopWords
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class MergeLexicons:
     catalog: ServiceLineCatalog
     service: ServiceLanguage
     script_mix: ScriptMixProbe
+    stop_words: StopWords
 
     @classmethod
     @cache
@@ -50,6 +52,7 @@ class MergeLexicons:
             catalog=ServiceLineCatalog.load(),
             service=ServiceLanguage.load(),
             script_mix=ScriptMixProbe.load(),
+            stop_words=StopWords.load(),
         )
 
 

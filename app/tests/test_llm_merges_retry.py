@@ -15,7 +15,7 @@ NO_TEMPLATES: MergePromptTexts = texts_with(reinforcements={})
 
 
 def test_bullet_coverage_profile_fills_numbers_from_the_template() -> None:
-    """Донор: test_four_source_retry_logs_structured_mode_and_uses_targeted_profile (строки профиля)."""
+    """Подсказка повтора называет, сколько пунктов нужно и по скольким источникам их разложить."""
     facts: RetryFacts = RetryFacts(source_count=4, actual_bullets=3, required_bullets=5)
     profile: RetryProfile = RetryProfile.targeted(RetrySignal.INSUFFICIENT_BULLET_COVERAGE, facts, TEXTS)
     assert profile.mode is RetryMode.TARGETED
@@ -28,7 +28,7 @@ def test_bullet_coverage_profile_fills_numbers_from_the_template() -> None:
 
 
 def test_hook_echo_uses_dedicated_retry_profile() -> None:
-    """Донор: test_merge_structural_rules.py::test_hook_echo_uses_dedicated_retry_profile (без шаблона — запасные строки)."""
+    """Эхо тезиса в теле получает свой профиль повтора; без шаблона — запасные строки."""
     profile: RetryProfile = RetryProfile.targeted(RetrySignal.HOOK_ECHO_IN_BODY, RetryFacts(), NO_TEMPLATES)
     assert profile.reject_signals == ("hook_echo_in_body",)
     assert "no_hook_echo" in profile.focus_tags
@@ -83,7 +83,7 @@ def test_every_signal_has_template_and_fallback_lines(signal: RetrySignal) -> No
 
 
 def test_standard_profile_writes_no_instruction() -> None:
-    """Донор: test_compact_retry_remains_standard_even_with_structured_expanded_reason_codes (профиль)."""
+    """Обычный повтор не добавляет к промту никакой инструкции, какие бы причины отказа он ни нёс."""
     profile: RetryProfile = RetryProfile.standard(("insufficient_expanded_body", "too_few_expanded_bullets"))
     assert profile.mode is RetryMode.STANDARD
     assert profile.focus_tags == ()

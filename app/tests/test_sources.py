@@ -28,7 +28,7 @@ from app.sources.fetcher import MetadataFetcher, SourceFetch
 from app.sources.language import LanguageDecision, LanguageResolver, LanguageSource
 from app.sources.metadata import SourceFailureReason, SourceMetadata
 from app.sources.preview import PreviewDownloader, PreviewNormalizer, PreviewProblem, PreviewResult
-from app.sources.video import PreparedSources, SourceCatalog, SourceFacts, SourceVideo
+from app.sources.video import PreparedSources, SourceCatalog, SourceFacts, SourceVideo, VideoCheck, VideoFit
 from app.sources.ytdlp import DETAIL_MAX_CHARS, YTDLP_TIMEOUT_SEC, YtDlpFetcher, YtDlpRefusalMarkers, YtDlpResult
 from app.tests.fixtures.logs import LogCapture
 from app.tests.fixtures.sources import admitted_row
@@ -765,3 +765,75 @@ def test_catalog_from_paths_uses_ytdlp_and_the_resource_resolver(livecraft_paths
 def test_the_problem_of_a_preview_status_is_one_rule(status: int, problem: PreviewProblem) -> None:
     """429 и 5xx — временно недоступно (повторяется), 404 — картинки нет, прочие 4xx — отказ."""
     assert PreviewProblem.for_status(status) is problem
+
+
+# --- VideoCheck: годится ли видео в рекомендуемые материалы слота
+
+
+def check_of(fetched: SourceFetch) -> VideoCheck:
+    """Проверка видео путём программы: данные видео и решение языка по ним."""
+    return catalog_for(_FakeFetcher({fetched.url: fetched}), _FakeGet()).check(fetched.url)
+
+
+def test_a_video_in_the_slot_language_without_dispute_fits_and_gives_its_title() -> None:
+    check: VideoCheck = check_of(ok_fetch(THIRD_LINK, "video_no_description.json"))
+    assert check.language is not None and not check.language.is_conflict
+    assert check.fit("en") is VideoFit.FITS
+    assert check.title == "Эфир без описания" and check.language_code == "en"
+
+
+def test_a_video_in_another_language_does_not_fit() -> None:
+    assert check_of(ok_fetch(THIRD_LINK, "video_no_description.json")).fit("uk") is VideoFit.OTHER_LANGUAGE
+
+
+def test_a_video_whose_language_signals_dispute_is_ambiguous_even_in_the_slot_language() -> None:
+    """Язык решён спором сигналов — зритель может получить ролик не на своём языке: такое видео не берётся."""
+    check: VideoCheck = check_of(ok_fetch(LINK))
+    assert check.language is not None and check.language.is_conflict and check.language_code == "uk"
+    assert check.fit("uk") is VideoFit.AMBIGUOUS
+
+
+def test_a_video_whose_language_is_undetected_is_ambiguous() -> None:
+    check: VideoCheck = check_of(no_language_fetch(LINK))
+    assert check.language_code is None and check.fit("uk") is VideoFit.AMBIGUOUS
+
+
+def test_a_video_without_fit_data_does_not_fit_and_has_no_title() -> None:
+    info: dict[str, Any] = load_info("video_full.json") | {"title": ""}
+    no_title: SourceFetch = SourceFetch.from_metadata(LINK, SourceMetadata.from_ytdlp(LINK, info))
+    for fetched in (SourceFetch.failed(LINK, SourceFailureReason.UNAVAILABLE), no_title):
+        check: VideoCheck = check_of(fetched)
+        assert check.language is None and check.title == ""
+        assert check.fit("uk") is VideoFit.NO_DATA
+
+
+def test_a_check_downloads_no_cover_and_asks_ytdlp_once_per_link(log: LogCapture) -> None:
+    fetcher: _FakeFetcher = _FakeFetcher({LINK: ok_fetch(LINK)})
+    get: _FakeGet = _FakeGet()
+    catalog: SourceCatalog = catalog_for(fetcher, get)
+    first: VideoCheck = catalog.check(LINK)
+    assert catalog.check(LINK) is first
+    assert fetcher.calls == [LINK] and get.calls == []
+    assert len(language_decisions(log)) == 1
+
+
+def test_a_link_checked_and_then_prepared_as_a_source_is_one_ytdlp_call(log: LogCapture) -> None:
+    """Видео и рекомендуемое, и источник: одно обращение к yt-dlp и одно решение языка; итог и строки источника прежние."""
+    fetcher: _FakeFetcher = _FakeFetcher({LINK: ok_fetch(LINK)})
+    get: _FakeGet = _FakeGet(_Response(200, png_bytes()))
+    catalog: SourceCatalog = catalog_for(fetcher, get)
+    check: VideoCheck = catalog.check(LINK)
+    video: SourceVideo = catalog.prepare(rows_of(admitted(2, LINK))).videos[0]
+    assert fetcher.calls == [LINK] and len(get.calls) == 1
+    assert len(language_decisions(log)) == 1
+    assert video.is_ready and video.preview is not None
+    assert (video.facts.fetch, video.facts.language) == (check.fetch, check.language)
+    assert f"source row=2 link={LINK} result=ok preview=ok {FULL_LANGUAGE}" in log.messages(logging.INFO)
+
+
+def test_a_prepared_source_is_not_fetched_again_when_checked() -> None:
+    fetcher: _FakeFetcher = _FakeFetcher({LINK: ok_fetch(LINK)})
+    catalog: SourceCatalog = catalog_for(fetcher, _FakeGet(_Response(200, png_bytes())))
+    facts: SourceFacts = catalog.facts(LINK)
+    assert catalog.check(LINK).fetch is facts.fetch
+    assert fetcher.calls == [LINK]

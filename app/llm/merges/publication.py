@@ -4,8 +4,11 @@
 1. блоки «🌐 …:» с ссылками снимаются из текста (`OfficialLinksBlocks`);
 2. санация текста (`SanitizedDescription`): хвост в конце и внутри абзацев (ссылки, хештеги, призывы), чистка ссылок,
    сдвоенные маркеры пунктов, абзац-призыв в конце тела; строки `tail_parse`, `tail_layout`, `post_llm_sanitation`;
-3. официальные ссылки из источников и из текста (`AuthoritativeLinks`), рекомендуемые видео — задача 3.14b;
+3. официальные ссылки из источников и из текста (`AuthoritativeLinks`);
 4. повторная нормализация качества тела (без названия и без числа источников);
+4a. рекомендуемые материалы (`RecommendedMaterials`): до двух видео YouTube из описаний источников на языке слота,
+   ближайшие к теме ответа — названию и телу после нормализации; ссылки YouTube ответа модели не публикуются
+   никогда (поле `ignored_llm_youtube_urls`), и раскладка хвоста ответа их не называет;
 5. сборка описания (`PublicationBody.compose`): призыв не публикуется никогда — здесь он отбрасывается и здесь же
    пишется строка `publish_cta_gate_dropped`;
 6. проверка перед публикацией (`GateVerdict`): повтор абзацев или призыв в начале — блок не публикуется, слот получает
@@ -25,12 +28,13 @@ from app.core.sequence import unique_in_order
 from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
 from app.core.web_link import WebLink
 from app.llm.merges.description import MergedDescription
-from app.llm.merges.links import AuthoritativeLinks, TextLinks
+from app.llm.merges.links import AuthoritativeLinks, LinksBlock, TextLinks
 from app.llm.merges.merge_rules import MergeRules, PublishGate
 from app.llm.merges.quality import QualityNormalization, QualityRequest
+from app.llm.merges.recommended import RecommendedCandidates, RecommendedMaterials
 from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.slots.texts import SlotTextOrigin, SlotTexts
-from app.sources.video import SourceVideo
+from app.sources.video import SourceCatalog, SourceVideo
 from app.texts.composer import LAYOUT_EMPTY, DescriptionParts, PublishHeadings
 from app.texts.description_marks import CtaLexicon, FinalParagraph
 from app.texts.official_links import OfficialLinksBlocks
@@ -55,15 +59,6 @@ class SanitationEvent(str, Enum):
     DUPLICATE = "publish_duplicate_paragraph_detected"
     OPENER_CTA = "publish_opener_cta_detected"
     APPLIED = "publish_sanitation_applied=yes"
-
-
-class LinksBlock(str, Enum):
-    """Итог блока ссылок в строке `publish_sanitation_applied`."""
-
-    EMITTED = "emitted"
-    SUPPRESSED = "suppressed"
-    ABSENT = "absent"
-    SKIPPED = "skipped"
 
 
 @dataclass(frozen=True)
@@ -105,14 +100,14 @@ class SanitizedDescription:
         cls, language: str, linked_body: LinkedText, fragments: TailFragments, cta: CtaLexicon
     ) -> SanitizedDescription:
         """Итог санации из тела с почищенными ссылками и снятого хвоста: сдвоенные маркеры и абзац-призыв в конце
-        тела уходят; ссылки, изменённые чисткой, считаются в теле, в призыве и в хвосте."""
+        тела уходят; ссылки, изменённые чисткой, считаются в теле, в призыве и в хвосте. Раскладка хвоста
+        называет только то, что может попасть в описание: ссылки YouTube ответа не публикуются."""
         body: str = cls._without_final_cta(clean_double_bullet_markers(linked_body.text), language, cta)
         linked_cta: LinkedText = LinkedText.of(NEWLINE.join(fragments.cta_lines).strip())
         urls: tuple[str, ...] = fragments.source_urls
         parts: DescriptionParts = DescriptionParts(
             body=body,
             hashtags_line=fragments.hashtags_line,
-            recommended_urls=tuple(url for url in urls if WebLink.of(url).unwrapped.is_youtube),
             official_urls=tuple(url for url in urls if not WebLink.of(url).unwrapped.is_youtube),
             cta=linked_cta.text,
         )
@@ -182,26 +177,30 @@ class SanitizedDescription:
 
 @dataclass(frozen=True)
 class PublicationSlot:
-    """Что нужно санации о слоте: язык блока, источники в порядке рядов, правила merge."""
+    """Что нужно санации о слоте: язык блока, источники в порядке рядов, правила merge и видео запуска (данные
+    и язык рекомендуемых видео)."""
 
     language: str
     sources: tuple[SourceVideo, ...] = field(repr=False)
     rules: MergeRules = field(repr=False)
+    catalog: SourceCatalog = field(repr=False)
 
 
 @dataclass(frozen=True)
 class PublicationBody:
-    """Описание после санации, до сборки: тело, блоки «🌐 …:», санация текста, ссылки текста и официальные ссылки."""
+    """Описание после санации, до сборки: тело, блоки «🌐 …:», санация текста, официальные ссылки и рекомендуемые
+    материалы."""
 
     language: str
     text: str = field(repr=False)
     blocks: OfficialLinksBlocks = field(repr=False)
     sanitized: SanitizedDescription = field(repr=False)
     links: AuthoritativeLinks = field(repr=False)
+    recommended: RecommendedMaterials = field(repr=False)
 
     @classmethod
-    def of(cls, description: str, slot: PublicationSlot) -> PublicationBody:
-        """Шаги санации 1–4; строки лога — по ходу."""
+    def of(cls, title: str, description: str, slot: PublicationSlot) -> PublicationBody:
+        """Шаги санации 1–4a; строки лога — по ходу. Тема ответа для рекомендуемых — название и тело."""
         blocks: OfficialLinksBlocks = OfficialLinksBlocks.of(description.strip())
         sanitized: SanitizedDescription = SanitizedDescription.of(blocks.cleaned_text, slot.language, slot.rules.lexicons.cta)
         text_urls: tuple[str, ...] = unique_in_order((*blocks.source_urls, *sanitized.source_urls))
@@ -213,12 +212,21 @@ class PublicationBody:
         if slot.sources:
             request: QualityRequest = QualityRequest(language=slot.language)
             body = QualityNormalization.of(MergedDescription(body), request, slot.rules.lexicons).description.text
-        return cls(language=slot.language, text=body, blocks=blocks, sanitized=sanitized, links=links)
+        candidates: RecommendedCandidates = RecommendedCandidates.of(
+            links.description_links, slot.sources, NEWLINE.join((title, body)), slot.rules.lexicons.stop_words
+        )
+        recommended: RecommendedMaterials = RecommendedMaterials.select(candidates, slot.language, slot.catalog)
+        return cls(slot.language, body, blocks, sanitized, links, recommended)
 
     @property
     def parts(self) -> DescriptionParts:
-        """Части описания без призыва: тело, хештеги, официальные ссылки."""
-        return DescriptionParts(body=self.text, hashtags_line=self.sanitized.hashtags_line, official_urls=self.links.urls)
+        """Части описания без призыва: тело, хештеги, рекомендуемые материалы, официальные ссылки."""
+        return DescriptionParts(
+            body=self.text,
+            hashtags_line=self.sanitized.hashtags_line,
+            recommended=self.recommended.entries,
+            official_urls=self.links.urls,
+        )
 
     def compose(self, headings: PublishHeadings) -> str:
         """Описание для публикации. Призыв не публикуется никогда: он отбрасывается здесь — строкой лога."""
@@ -234,7 +242,7 @@ class PublicationBody:
         return LinksBlock.SUPPRESSED if self.blocks.empty_blocks_suppressed > 0 else LinksBlock.ABSENT
 
     def extend(self, event: LogEvent) -> LogEvent:
-        """Поля строки `publish_sanitation_applied` о хвосте, ссылках текста и официальных ссылках."""
+        """Поля строки `publish_sanitation_applied` о хвосте, ссылках текста, рекомендуемых и официальных ссылках."""
         links: AuthoritativeLinks = self.links
         text_youtube: int = links.text.youtube_count
         tail: LogEvent = event.extended(
@@ -244,14 +252,7 @@ class PublicationBody:
             tail_layout=self.parts.layout,
             recommended_materials_text_candidates_ignored=text_youtube,
         )
-        youtube: LogEvent = tail.extended(
-            raw_youtube_urls_found=links.raw_youtube_urls_found,
-            deduped_youtube_candidates=links.deduped_youtube_candidates,
-            repeated_youtube_candidates=links.repeated_youtube_candidates,
-            recommended_materials_final_count=0,
-            recommended_materials_block=LinksBlock.SKIPPED,
-        )
-        return youtube.extended(
+        return self.recommended.extend(tail).extended(
             official_links_heading_found=self.blocks.heading_found,
             official_links_text_links=len(links.text.urls) - text_youtube,
             official_links_source_links=links.emitted_source_video_urls,
@@ -309,7 +310,7 @@ class MergePublication:
     @classmethod
     def of(cls, title: str, description: str, slot: PublicationSlot) -> MergePublication:
         """Санация, сборка и проверка перед публикацией; строки лога — по ходу, итог — в конце."""
-        body: PublicationBody = PublicationBody.of(description, slot)
+        body: PublicationBody = PublicationBody.of(title, description, slot)
         final: str = body.compose(slot.rules.headings)
         publication: MergePublication = cls(
             title=collapse_spaces(title),
@@ -341,5 +342,5 @@ class MergePublication:
 
     @property
     def event(self) -> LogEvent:
-        """Строка `publish_sanitation_applied=yes`; рекомендуемых видео до 3.14b нет."""
+        """Строка `publish_sanitation_applied=yes`."""
         return self.body.extend(self.body.sanitized.event(SanitationEvent.APPLIED))

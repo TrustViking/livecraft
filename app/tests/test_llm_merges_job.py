@@ -19,7 +19,7 @@ from app.observability.log_event import LogArea, LogEvent
 from app.intake.builder import SlotGroup
 from app.slots.slot import SlotKey
 from app.slots.texts import SlotTextOrigin, SlotTexts
-from app.sources.video import SourceVideo
+from app.sources.video import SourceCatalog, SourceVideo
 from app.tests.fixtures.logs import LogCapture
 from app.tests.fixtures.merges import (
     ADJACENT_ANSWER,
@@ -45,6 +45,7 @@ from app.tests.fixtures.merges import (
     merge_video,
     run_with,
 )
+from app.tests.fixtures.sources import stub_calls, stub_catalog, video_metadata
 
 RULES: MergeRules = MergeRules.load()
 
@@ -369,3 +370,50 @@ def test_a_blocked_publication_gives_source_texts_and_still_counts_as_a_merge_su
     assert "success=yes merge_success=1 " in line and "publish_blocked=yes texts=source_composed " in line
     tally: MergeTally = merge_run.tally
     assert (tally.merge_success, tally.final_failure, tally.real_merge_blocks, tally.fallback_merge_blocks) == (1, 0, 1, 0)
+
+
+# --- рекомендуемые материалы в описании слота
+
+EN_VIDEO: str = "https://youtu.be/recommend01"
+UK_VIDEO: str = "https://youtu.be/recommend02"
+OFF_TOPIC_VIDEO: str = "https://youtu.be/recommend03"
+
+
+def test_the_slot_description_recommends_only_a_video_in_the_slot_language(llm_log: LogCapture) -> None:
+    """Слот из двух источников: в описаниях видео на английском, на украинском и не по теме. В описании — одно
+    английское видео с названием; украинское проверено и отброшено; видео не по теме не прошло порог — yt-dlp для
+    него не зван."""
+    pairs: tuple[tuple[str, str], ...] = (
+        (
+            EXPANDED_SOURCES[0][0],
+            f"{EXPANDED_SOURCES[0][1]}\nFull sanctions vote briefing from Brussels: {EN_VIDEO}\n"
+            f"Kharkiv rail report: {UK_VIDEO}\nCooking show: {OFF_TOPIC_VIDEO}",
+        ),
+        EXPANDED_SOURCES[1],
+    )
+    catalog: SourceCatalog = stub_catalog(
+        video_metadata(
+            EN_VIDEO,
+            "Brussels sanctions vote explained",
+            "A detailed English briefing on how the sanctions vote in Brussels changes customs and budget rules.",
+            "en",
+        ),
+        video_metadata(
+            UK_VIDEO,
+            "Харків: залізничний вузол після ударів",
+            "Детальний український репортаж про відновлення залізничного вузла в Харкові після атак дронів.",
+            "uk",
+        ),
+    )
+    merge_run, _ = run_with(answer(STRONG_ANSWER), catalog=catalog)
+    outcome: MergeOutcome = job_of(group_of(pairs), merge_run).run()
+    assert outcome.merged
+    description: str = outcome.texts.description
+    assert description.count("Recommended materials:") == 1
+    assert description.endswith(f"Recommended materials:\n\n✅ Brussels sanctions vote explained\n👉 {EN_VIDEO}")
+    assert UK_VIDEO not in description and OFF_TOPIC_VIDEO not in description
+    assert stub_calls(catalog) == [EN_VIDEO, UK_VIDEO]
+    assert (
+        f"recommended_candidate_language_filtered url={UK_VIDEO} target=en fit=other_language detected=uk"
+        in llm_log.messages()
+    )

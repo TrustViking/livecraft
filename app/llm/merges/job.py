@@ -232,7 +232,7 @@ class MergeJob:
             enforcement.extend(self.event(JobEvent.POST_ENFORCEMENT)).emit(LOGGER)
             description = enforcement.description
             recoveries += int(enforcement.recovery_applied)
-        slot: PublicationSlot = PublicationSlot(self.key.language, self.videos, run.rules)
+        slot: PublicationSlot = PublicationSlot(self.key.language, self.videos, run.rules, run.catalog)
         publication: MergePublication = MergePublication.of(accepted.title, description.text, slot)
         texts: SlotTexts | None = publication.slot_texts
         if texts is None:

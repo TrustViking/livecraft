@@ -9,8 +9,10 @@
 - в описании эфира после санации (`AuthoritativeLinks`): ссылки после чистки санации (`SourceLink`), контекст —
   заголовок «🌐 …:» или подсказка `lexicon_authoritative_link_hints.txt`; до трёх лучших по виду ссылки блока, затем
   все новые ссылки текста ответа (`TextLinks`) без предела. Ссылка самого видео в отбор не идёт: ссылка ряда — всегда
-  видео YouTube, а YouTube в официальные ссылки не берётся. Рекомендуемые видео — задача 3.14b; счётчики ссылок YouTube
-  в описаниях источников считаются уже здесь (сети они не требуют).
+  видео YouTube, а YouTube в официальные ссылки не берётся.
+
+Ссылки YouTube описаний источников (`SourceDescriptionLinks.youtube`) — кандидаты в рекомендуемые материалы
+(`app\\llm\\merges\\recommended.py`); итог обоих блоков в строке санации — `LinksBlock`.
 """
 from __future__ import annotations
 
@@ -44,9 +46,7 @@ LOGGER = get_logger(LogArea.LLM)
 
 OFFICIAL_LINK_HINTS_RESOURCE: Final[str] = "lexicon_official_link_hints.txt"
 PUBLISH_LINK_HINTS_RESOURCE: Final[str] = "lexicon_authoritative_link_hints.txt"
-MIN_SOURCE_HITS_REPEATED: Final[int] = 2
 UNKNOWN_DOMAIN_COUNT: Final[int] = 1        # домен, которого нет среди кандидатов, считается встреченным один раз
-URL_SOURCES_MODE: Final[str] = "authoritative_non_youtube_from_inputs_plus_script_selected_recommended_materials"
 
 
 class LinksEvent(str, Enum):
@@ -54,6 +54,14 @@ class LinksEvent(str, Enum):
 
     BUILT = "merged_source_urls_built"
     CLEANED = "merged_source_urls_cleaned"
+
+
+class LinksBlock(str, Enum):
+    """Итог блока ссылок в строке `publish_sanitation_applied`: блок в описании, снят пустым или его нет."""
+
+    EMITTED = "emitted"
+    SUPPRESSED = "suppressed"
+    ABSENT = "absent"
 
 
 @dataclass(frozen=True)
@@ -211,7 +219,7 @@ class DescriptionLink:
 
 @dataclass(frozen=True)
 class SourceDescriptionLinks:
-    """Все ссылки описаний источников слота после чистки санации и счётчики ссылок YouTube."""
+    """Все ссылки описаний источников слота после чистки санации по порядку."""
 
     links: tuple[DescriptionLink, ...]
 
@@ -236,22 +244,9 @@ class SourceDescriptionLinks:
         )
 
     @property
-    def raw_youtube_found(self) -> int:
-        return sum(1 for link in self.links if link.is_youtube)
-
-    @property
-    def youtube_sources(self) -> dict[str, set[int]]:
-        """Разные ссылки YouTube в порядке первого появления и источники, где каждая встретилась."""
-        sources: dict[str, set[int]] = {}
-        for link in self.links:
-            if link.is_youtube:
-                sources.setdefault(link.url, set()).add(link.source_index)
-        return sources
-
-    @property
-    def repeated_youtube(self) -> int:
-        """Ссылок YouTube, которые встретились хотя бы в двух источниках."""
-        return sum(1 for hits in self.youtube_sources.values() if len(hits) >= MIN_SOURCE_HITS_REPEATED)
+    def youtube(self) -> tuple[DescriptionLink, ...]:
+        """Ссылки YouTube (видео `https://youtu.be/<id>`) по порядку, с повторами."""
+        return tuple(link for link in self.links if link.is_youtube)
 
 
 @dataclass(frozen=True)
@@ -303,8 +298,8 @@ class AuthoritativeLinks:
     """Официальные ссылки описания после санации, без рекомендуемых видео.
 
     Сначала — до трёх лучших ссылок описаний источников (по одной на ключ повтора), затем — все ссылки текста ответа
-    модели, которых ещё нет (без предела). Рекомендуемые видео выбираются в задаче 3.14b: здесь их нет, но счётчики
-    ссылок YouTube в описаниях источников считаются.
+    модели, которых ещё нет (без предела). Ссылки описаний источников (`description_links`) остаются полем: из них же
+    выбираются рекомендуемые видео.
     """
 
     language: str
@@ -342,18 +337,6 @@ class AuthoritativeLinks:
         return links
 
     @property
-    def raw_youtube_urls_found(self) -> int:
-        return self.description_links.raw_youtube_found
-
-    @property
-    def deduped_youtube_candidates(self) -> int:
-        return len(self.description_links.youtube_sources)
-
-    @property
-    def repeated_youtube_candidates(self) -> int:
-        return self.description_links.repeated_youtube
-
-    @property
     def events(self) -> tuple[LogEvent, ...]:
         """Строка `merged_source_urls_built` и, если что-то отброшено, `merged_source_urls_cleaned`."""
         built: LogEvent = LogEvent.of(
@@ -361,16 +344,9 @@ class AuthoritativeLinks:
             lang=self.language,
             inspected=self.inspected,
             emitted=len(self.urls),
-            selected_youtube_urls=0,
             deduped=self.duplicate_urls_removed,
             preserved_non_youtube_tail_urls=len(self.text.preserved),
-        )
-        built = built.extended(
-            raw_youtube_urls_found=self.raw_youtube_urls_found,
-            deduped_youtube_candidates=self.deduped_youtube_candidates,
-            repeated_youtube_candidates=self.repeated_youtube_candidates,
             ignored_llm_youtube_urls=self.text.youtube_count,
-            source_urls_mode=URL_SOURCES_MODE,
         )
         if self.text.malformed_dropped <= 0:
             return (built,)

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.texts.similarity import TextPair, WordRule
+from app.texts.similarity import StopWords, TextPair, WordRule
+
+STOP_WORDS: StopWords = StopWords.load()
 
 
 def test_semantic_words_are_three_letters_or_digits_in_lower_case() -> None:
@@ -36,3 +38,16 @@ def test_rule_of_the_word_changes_the_jaccard() -> None:
 )
 def test_prefix_ratio_is_the_common_start_over_the_shorter_text(first: str, second: str, expected: float) -> None:
     assert TextPair(first, second).prefix_ratio == pytest.approx(expected)
+
+
+def test_stop_words_are_the_resource_in_lower_case_in_three_languages() -> None:
+    assert {"about", "между", "сьогодні"} <= STOP_WORDS.words
+    assert all(word == word.lower() for word in STOP_WORDS.words)
+
+
+def test_topic_words_are_semantic_words_without_stop_words() -> None:
+    """О теме текста говорят его смысловые слова; частые слова и слова короче трёх знаков не считаются."""
+    assert STOP_WORDS.topic_words("About the Kyiv budget vote, між іншим, also 2026 сьогодні") == {
+        "the", "kyiv", "budget", "vote", "між", "іншим", "2026"
+    }
+    assert "about" not in STOP_WORDS.topic_words("About") and STOP_WORDS.topic_words("") == frozenset()

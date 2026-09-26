@@ -230,7 +230,8 @@ def test_limit_four_collapses_five_body_paragraphs_without_the_preflight() -> No
 
 
 def test_preflight_runs_before_key_checks() -> None:
-    """Донор проверяет перебор на единицу раньше ключей: лишний ключ при восьми абзацах — перебор, а не лишний ключ."""
+    """Перебор абзацев проверяется раньше ключей: лишний ключ при восьми абзацах — перебор, а не лишний ключ,
+    чтобы повтор получил подсказку о числе абзацев."""
     reject: MergeReject = rejected(json.dumps({"title": "T", "description": body(8), "cta": "x"}), 7)
     assert reject.code is MergeRejectCode.PARAGRAPH_OVERFLOW
 

@@ -13,6 +13,7 @@ from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.sources.video import SourceVideo
 from app.tests.fixtures.logs import LogCapture
 from app.tests.fixtures.merges import merge_video
+from app.tests.fixtures.sources import stub_catalog
 from app.texts.description_marks import CtaLexicon
 from app.texts.paragraphs import has_duplicate_paragraphs
 
@@ -34,7 +35,7 @@ def source(description: str = "", row: int = 2) -> SourceVideo:
 
 
 def publish(description: str, sources: tuple[SourceVideo, ...] | None = None, language: str = "en") -> MergePublication:
-    slot: PublicationSlot = PublicationSlot(language, (source(),) if sources is None else sources, RULES)
+    slot: PublicationSlot = PublicationSlot(language, (source(),) if sources is None else sources, RULES, stub_catalog())
     return MergePublication.of(TITLE, description, slot)
 
 
@@ -73,11 +74,12 @@ def test_embedded_hashtags_are_split_from_the_cta(llm_log: LogCapture) -> None:
         ("Body.\n\nJoin us tonight for the full discussion.\n\n#nano #micro", "body_blank_cta_blank_hashtags"),
         ("Body.\n\n#nano #micro", "body_blank_hashtags"),
         ("Body.\n\nJoin us tonight for the full discussion.", "body_blank_cta"),
-        ("Body.\n\nhttps://example.org/?utm_source=x\nhttps://youtu.be/aaaaaaaaaaa", "body_blank_recommended_materials_blank_official_links"),
+        ("Body.\n\nhttps://example.org/?utm_source=x\nhttps://youtu.be/aaaaaaaaaaa", "body_blank_official_links"),
         ("", "empty"),
     ],
 )
 def test_tail_layout_names_what_the_tail_had(text: str, layout: str) -> None:
+    """Ссылки YouTube ответа модели не публикуются — раскладка хвоста их не называет."""
     assert sanitize(text).tail_layout == layout
 
 
@@ -147,13 +149,16 @@ def test_embedded_hashtags_are_split_in_the_publication(llm_log: LogCapture) -> 
     line: str = applied_line(llm_log)
     assert f"lang=en source={PRIMARY_SOURCE_LABEL} " in line
     assert "hashtags_split_from_cta=yes tail_layout=body_blank_hashtags " in line
-    # Призыв отбрасывается один раз — при сборке описания, и строка о нём одна: после строк санации и ссылок.
+    # Призыв отбрасывается один раз — при сборке описания, и строка о нём одна: после строк санации, ссылок
+    # и рекомендуемых материалов.
     messages: list[str] = llm_log.messages()
     assert [message for message in messages if message.startswith("publish_cta_gate_dropped")] == [
         "publish_cta_gate_dropped lang=en source=primary_success cta_chars=40"
     ]
     dropped: int = messages.index("publish_cta_gate_dropped lang=en source=primary_success cta_chars=40")
-    assert messages[dropped - 1].startswith("merged_source_urls_built ") and messages[dropped + 1] == line
+    assert messages[dropped - 1].startswith("recommended_materials_candidates_built ")
+    assert messages[dropped + 1] == line
+    assert messages.index(next(m for m in messages if m.startswith("merged_source_urls_built "))) < dropped - 1
 
 
 @pytest.mark.parametrize(
@@ -225,7 +230,7 @@ def test_youtube_links_of_the_answer_are_ignored_and_not_recommended(llm_log: Lo
     assert "youtu" not in publication.description and "Recommended materials:" not in publication.description
     line: str = applied_line(llm_log)
     for fragment in ("official_links_text_links=2", "official_links_final_count=1", "recommended_materials_final_count=0",
-                     "recommended_materials_block=skipped", "ignored_llm_youtube_urls=1", "official_links_dedup_applied=yes"):
+                     "recommended_materials_block=absent", "ignored_llm_youtube_urls=1", "official_links_dedup_applied=yes"):
         assert fragment in line
 
 
@@ -253,7 +258,8 @@ def test_the_links_heading_follows_the_language(language: str, heading: str) -> 
 
 
 def test_the_title_is_collapsed_to_single_spaces() -> None:
-    publication: MergePublication = MergePublication.of("  Title \t with\n spaces ", "Body.", PublicationSlot("en", (source(),), RULES))
+    slot: PublicationSlot = PublicationSlot("en", (source(),), RULES, stub_catalog())
+    publication: MergePublication = MergePublication.of("  Title \t with\n spaces ", "Body.", slot)
     assert publication.title == "Title with spaces"
     assert publication.slot_texts == SlotTexts(title="Title with spaces", description="Body.", origin=SlotTextOrigin.MERGED)
 

@@ -20,6 +20,7 @@ STARTING_DATA_DIGESTS: dict[str, str] = {
     "lexicon_cta_prefix_hints.txt": "308a0dec35b909bf",
     "lexicon_cta_prefixes.txt": "3c847f9aced85bf1",
     "lexicon_official_link_hints.txt": "d000eb4738f32cff",
+    "lexicon_semantic_stopwords.txt": "2ffdd0c948e5edc2",
     "merge_agenda_headings.txt": "e4a480c55af14ffd",
     "merge_prompt_source.txt": "30ebc461a47fb03d",
     "merge_service_hints.txt": "aa638ae8aadbd175",

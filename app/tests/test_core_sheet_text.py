@@ -20,12 +20,13 @@ KYIV: ZoneInfo = ZoneInfo("Europe/Kyiv")
     "date_raw",
     ["16.09.2026", "16.09.26", "16/09/2026", "16/09/26", "2026-09-16", "160926", "16092026"],
 )
-def test_every_date_format_of_the_donor_is_read(date_raw: str) -> None:
+def test_every_date_format_of_the_plan_table_is_read(date_raw: str) -> None:
     moment: datetime = parse_sheet_datetime(date_raw, "19:00", KYIV)
     assert (moment.year, moment.month, moment.day) == (2026, 9, 16)
 
 
-def test_the_date_formats_are_exactly_the_donor_ones() -> None:
+def test_the_table_accepts_seven_date_formats_and_six_time_formats() -> None:
+    """Операторы пишут дату и время в таблице по-разному: каждый новый формат — осознанное решение, а не случайность."""
     assert len(SHEET_DATE_FORMATS) == 7
     assert len(SHEET_TIME_FORMATS) == 6
 
@@ -34,7 +35,7 @@ def test_the_date_formats_are_exactly_the_donor_ones() -> None:
     ("time_raw", "hour", "minute"),
     [("19:05", 19, 5), ("19.05", 19, 5), ("1905", 19, 5), ("19:05:45", 19, 5), ("7:05 PM", 19, 5), ("7 PM", 19, 0)],
 )
-def test_every_time_format_of_the_donor_is_read(time_raw: str, hour: int, minute: int) -> None:
+def test_every_time_format_of_the_plan_table_is_read(time_raw: str, hour: int, minute: int) -> None:
     moment: datetime = parse_sheet_datetime("16.09.2026", time_raw, KYIV)
     assert (moment.hour, moment.minute) == (hour, minute)
 

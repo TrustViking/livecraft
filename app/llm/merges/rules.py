@@ -123,3 +123,12 @@ MIN_DESCRIBED_SOURCES: Final[int] = 2
 POST_ENFORCEMENT_MAX_BODY_PARAGRAPHS: Final[int] = 4
 # Версия контракта стиля в строке лога `merge_style_coverage`.
 STYLE_CONTRACT_VERSION: Final[str] = "v4_merge_quality_hardening"
+
+# Рекомендуемые материалы: не больше двух видео. У слота из двух источников и меньше видео проходит порог, если хоть
+# одно слово его контекста совпало со словами ответа; у слота побольше — если оно встретилось в двух источниках или
+# совпали два слова.
+RECOMMENDED_MAX: Final[int] = 2
+RECOMMENDED_FEW_SOURCES: Final[int] = 2
+RECOMMENDED_FEW_MIN_OVERLAP: Final[int] = 1
+RECOMMENDED_REPEATED_HITS: Final[int] = 2
+RECOMMENDED_MIN_OVERLAP: Final[int] = 2

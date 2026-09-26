@@ -4,6 +4,9 @@
 что стоит между пробелами. `TextPair` сравнивает два текста по выбранному правилу слова: доля общих слов —
 Жаккар (общие слова к словам обоих текстов; слов нет ни в одном — сравнивать нечего, None), доля общего начала —
 длина общего начала к длине более короткого текста.
+
+`StopWords` — частые слова (английские, русские, украинские), которые ничего не говорят о теме текста; тема текста —
+его смысловые слова без них (`StopWords.topic_words`).
 """
 from __future__ import annotations
 
@@ -13,8 +16,10 @@ from enum import Enum
 from typing import Final
 
 from app.core.alphabet import LETTERS
+from app.resources.loader import TextResource
 
 SEMANTIC_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(f"[0-9{LETTERS}]{{3,}}")
+STOP_WORDS_RESOURCE: Final[str] = "lexicon_semantic_stopwords.txt"
 
 
 class WordRule(str, Enum):
@@ -58,3 +63,18 @@ class TextPair:
                 break
             common += 1
         return common / shorter
+
+
+@dataclass(frozen=True)
+class StopWords:
+    """Частые слова в нижнем регистре: по ним нельзя судить, о чём текст."""
+
+    words: frozenset[str]
+
+    @classmethod
+    def load(cls) -> StopWords:
+        return cls(frozenset(TextResource(STOP_WORDS_RESOURCE).lines))
+
+    def topic_words(self, text: str) -> frozenset[str]:
+        """О чём текст: его смысловые слова в нижнем регистре без частых."""
+        return frozenset(WordRule.SEMANTIC.words(text)) - self.words

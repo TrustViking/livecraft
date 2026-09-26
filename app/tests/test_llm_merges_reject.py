@@ -9,12 +9,12 @@ from app.ui import messages_ru as msg
 
 EVENT: LogEvent = LogEvent.of("merge_answer_rejected", model="m")
 
-DONOR_REASON_CODES: frozenset[str] = frozenset(
+MERGE_REASON_CODES: frozenset[str] = frozenset(
     {
         "not_json_object", "missing_keys", "extra_keys", "invalid_title", "invalid_description",
         "cta_as_first_paragraph", "duplicate_paragraph", "empty", "paragraph_underflow", "paragraph_overflow",
         "unexpected_error",
-        # проверка покрытия (`merge_validation.py::_validate_coverage_preserving_merge_or_raise`)
+        # проверка покрытия: как ответ передаёт факты всех источников и как он оформлен
         "per_source_enumeration", "hook_echo_in_body", "cta_in_hook", "insufficient_bullet_coverage",
         "compact_bullet_overflow", "excessive_emoji_usage", "overloaded_bullet", "numbered_title_dump", "semantic_gate",
     }
@@ -32,8 +32,9 @@ COVERAGE_CODES: tuple[MergeRejectCode, ...] = (
 )
 
 
-def test_codes_are_exactly_the_donor_reason_codes_of_this_layer() -> None:
-    assert {code.value for code in MergeRejectCode} == DONOR_REASON_CODES
+def test_codes_are_exactly_the_reason_codes_the_log_and_the_retry_know() -> None:
+    """Коды отказа пишутся в лог и выбирают профиль повтора: новый или пропавший код — осознанное решение."""
+    assert {code.value for code in MergeRejectCode} == MERGE_REASON_CODES
 
 
 @pytest.mark.parametrize("code", list(MergeRejectCode))
@@ -43,7 +44,7 @@ def test_every_code_has_a_human_text(code: MergeRejectCode) -> None:
 
 
 def test_texts_have_no_codes_without_a_member() -> None:
-    assert set(msg.MERGE_REJECT_TEXT) == DONOR_REASON_CODES
+    assert set(msg.MERGE_REJECT_TEXT) == MERGE_REASON_CODES
 
 
 def test_recoverable_codes_are_the_ones_a_hint_can_fix() -> None:
@@ -87,7 +88,7 @@ def test_a_code_is_found_by_its_value_and_gate_codes_are_not_reject_codes() -> N
         (MergeRejectCode.UNEXPECTED, ()),
     ],
 )
-def test_reason_codes_like_the_donor_parse_of_the_error_text(code: MergeRejectCode, reason_codes: tuple[str, ...]) -> None:
+def test_reason_codes_are_named_only_for_description_checks(code: MergeRejectCode, reason_codes: tuple[str, ...]) -> None:
     assert MergeReject(code).reason_codes == reason_codes
 
 

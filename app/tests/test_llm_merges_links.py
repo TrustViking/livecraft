@@ -7,6 +7,7 @@ import pytest
 
 from app.llm.merges.links import (
     AuthoritativeLinks,
+    DescriptionLink,
     LinkCandidate,
     OfficialLinkHints,
     OfficialLinkSelection,
@@ -185,13 +186,21 @@ def test_the_own_video_link_of_a_source_is_youtube_and_never_an_official_link() 
     assert links.urls == () and links.emitted_source_video_urls == 0
 
 
-def test_youtube_links_of_descriptions_are_counted_for_recommended_materials() -> None:
+def test_youtube_links_of_descriptions_are_kept_in_order_for_recommended_materials() -> None:
+    """Ссылки YouTube описаний не идут в официальные: они — кандидаты в рекомендуемые, уже в виде youtu.be, с повторами."""
     links: AuthoritativeLinks = authoritative(
         "https://youtu.be/aaaaaaaaaaa\nhttps://youtu.be/ccccccccccc",
-        "https://www.youtube.com/watch?v=aaaaaaaaaaa&feature=share\nhttps://youtu.be/bbbbbbbbbbb",
+        "https://www.youtube.com/watch?v=aaaaaaaaaaa&feature=share\nhttps://youtu.be/bbbbbbbbbbb https://example.org",
     )
-    assert (links.raw_youtube_urls_found, links.deduped_youtube_candidates, links.repeated_youtube_candidates) == (4, 3, 1)
-    assert links.urls == ()
+    youtube: tuple[DescriptionLink, ...] = links.description_links.youtube
+    assert [(link.url, link.source_index) for link in youtube] == [
+        ("https://youtu.be/aaaaaaaaaaa", 0),
+        ("https://youtu.be/ccccccccccc", 0),
+        ("https://youtu.be/aaaaaaaaaaa", 1),
+        ("https://youtu.be/bbbbbbbbbbb", 1),
+    ]
+    assert youtube[3].line == "https://youtu.be/bbbbbbbbbbb https://example.org"
+    assert links.urls == ("https://example.org",)
 
 
 def test_the_log_lines_name_what_was_selected(llm_log: LogCapture) -> None:
@@ -199,10 +208,8 @@ def test_the_log_lines_name_what_was_selected(llm_log: LogCapture) -> None:
     texts: tuple[str, ...] = tuple(event.text for event in links.events)
     assert llm_log.messages() == list(texts)
     assert texts == (
-        "merged_source_urls_built lang=en inspected=1 emitted=1 selected_youtube_urls=0 deduped=0 "
-        "preserved_non_youtube_tail_urls=0 raw_youtube_urls_found=0 deduped_youtube_candidates=0 "
-        "repeated_youtube_candidates=0 ignored_llm_youtube_urls=0 "
-        "source_urls_mode=authoritative_non_youtube_from_inputs_plus_script_selected_recommended_materials",
+        "merged_source_urls_built lang=en inspected=1 emitted=1 deduped=0 preserved_non_youtube_tail_urls=0 "
+        "ignored_llm_youtube_urls=0",
         "merged_source_urls_cleaned lang=en malformed_tail_urls_dropped=2",
     )
     assert len(authoritative("text").events) == 1
