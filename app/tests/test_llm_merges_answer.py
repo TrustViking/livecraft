@@ -48,7 +48,7 @@ def body(count: int) -> str:
     return "\n\n".join(f"Body paragraph {index} with facts." for index in range(1, count + 1))
 
 
-# --- донор: test_merge_contract_parser.py
+# --- разбор ответа: один объект JSON с названием и описанием
 def test_valid_single_object_json_passes() -> None:
     answer: MergeAnswer = accepted('{"title":"Final title","description":"Paragraph one.\\n\\nParagraph two."}')
     assert answer.title == "Final title"
@@ -87,7 +87,7 @@ def test_exact_keys_reject_whitespace_and_case_variants(payload_text: str, detai
 
 
 def test_multi_variant_response_is_invalid() -> None:
-    """У донора ключ-вариант ловится проверкой лишних ключей раньше отдельного правила вариантов."""
+    """Ключ-вариант — лишний ключ: его ловит проверка лишних ключей, отдельное правило вариантов не нужно."""
     reject: MergeReject = rejected(
         '{"variants":[{"title":"A"}],"description":"Paragraph one.\\n\\nParagraph two.","title":"A"}'
     )
@@ -180,7 +180,7 @@ def test_realistic_merge_output_with_five_service_tail_paragraphs_is_accepted() 
     )
 
 
-# --- донор: test_opener_cta_raw_check.py
+# --- призыв первым абзацем отвергается до восстановления хвоста
 def test_opener_cta_is_rejected_before_tail_recovery() -> None:
     reject: MergeReject = rejected(
         '{"title":"CTA opener","description":"'
@@ -194,7 +194,7 @@ def test_opener_cta_is_rejected_before_tail_recovery() -> None:
     assert reject.reason_codes == ("cta_as_first_paragraph",)
 
 
-# --- донор: test_audit_run_regressions.py::test_tail_separation_recovery_increments_paragraph_recovery_used (разбор)
+# --- восстановленный хвост описания виден в итоге разбора
 def test_tail_recovery_is_reported() -> None:
     raw_text: str = json.dumps(
         {
@@ -212,7 +212,7 @@ def test_tail_recovery_is_reported() -> None:
     assert accepted(raw_text, 4).tail_recovery_applied
 
 
-# --- донор: MergeExecutor._enforce_single_step_overflow_policy (предварительная проверка)
+# --- предварительная проверка: лишние абзацы тела отвергаются до восстановления
 def test_limit_seven_rejects_exactly_eight_body_paragraphs_before_recovery() -> None:
     reject: MergeReject = rejected(json.dumps({"title": "Expanded", "description": body(8)}), 7)
     assert reject.code is MergeRejectCode.PARAGRAPH_OVERFLOW

@@ -1,9 +1,10 @@
 """Окно настройщика: livecraft.bat --setup (CLAUDE.md §8).
 
-`SetupApp` — запуск окна: осведомлённость о DPI до создания Tk (иначе шрифт на HiDPI мыльный, §8.1),
-окно и цикл событий. `SetupWindow` — само окно: три вкладки поверх моделей, строка готовности внизу и
-вопрос при закрытии с несохранённым. Правил у окна нет: что годно, что писать и готова ли программа к
-запуску, решают модели вкладок и `Readiness`. Значения сейфа окно показывает только масками; исключение —
+`SetupApp` — запуск окна для установки. `SetupWindow.open` — окно так, как его открывает программа:
+осведомлённость о DPI до создания Tk (иначе шрифт на HiDPI мыльный, §8.1), затем окно. `SetupWindow` — само
+окно: три вкладки поверх моделей, строка готовности внизу и вопрос при закрытии с несохранённым. Правил у окна
+нет: что годно, что писать и готова ли программа к запуску, решают модели вкладок и `Readiness`; несохранённое —
+одно правило оболочки вкладки (`TabShell.is_dirty`). Значения сейфа окно показывает только масками; исключение —
 своё значение по кнопке «показать» на вкладке «Ключи и ссылки» (§14 решение 11), которое прячется при уходе
 с вкладки. Буфер обмена окно не трогает; строка готовности — только проблемы `Readiness`, в них значений нет.
 Вставка, выделение, вырезание и копирование в полях работают в любой раскладке (`EditShortcuts`).
@@ -12,37 +13,44 @@ from __future__ import annotations
 
 import ctypes
 import tkinter as tk
-from tkinter import font, messagebox, ttk
+from dataclasses import dataclass
+from tkinter import messagebox, ttk
 from typing import Final
 
 from app.paths import LivecraftPaths
+from app.setup.panels.channels_panel import ChannelsPanel
+from app.setup.panels.keys_panel import KeysPanel
+from app.setup.panels.settings_panel import SettingsPanel
 from app.setup.readiness import Readiness
-from app.setup.tabs import PAD, TEXT_WRAP_PIXELS, EditShortcuts
 from app.setup.tabs.channels_tab import ChannelsTab
 from app.setup.tabs.keys_tab import KeysTab
 from app.setup.tabs.settings_tab import SettingsTab
+from app.setup.tabs.tab_event import EditShortcuts, TkEvent
+from app.setup.tabs.tab_layout import PAD, TEXT_WRAP_PIXELS
+from app.setup.tabs.tab_theme import SetupTheme
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
 
 PROCESS_SYSTEM_DPI_AWARE: Final[int] = 1   # SetProcessDpiAwareness: осведомлённость о DPI системы
 CLOSE_PROTOCOL: Final[str] = "WM_DELETE_WINDOW"
-TAB_CHANGED_EVENT: Final[str] = "<<NotebookTabChanged>>"
-# Вид вкладок (итог смотра окна 23-09-2026): вкладки должны быть заметны человеку, который видит окно впервые.
-THEME: Final[str] = "clam"                  # vista и xpnative фон вкладки не берут: рисуют её картинкой
-TAB_STYLE: Final[str] = "TNotebook.Tab"
-TAB_GAP_ELEMENT: Final[str] = "Livecraft.tabgap"
-TAB_PADDING: Final[tuple[int, int]] = (16, 6)                    # внутри вкладки: по горизонтали, по вертикали
-TAB_GAP_PADDING: Final[tuple[int, int, int, int]] = (3, 0, 3, 0)  # с каждого бока: между вкладками — 6
-TAB_SELECTED_EXPAND: Final[tuple[int, int, int, int]] = (0, 2, 0, 0)  # выбранная чуть выше, промежуток не съедает
-TAB_SELECTED_BACKGROUND: Final[str] = "#ffffff"
-TAB_BACKGROUND: Final[str] = "#c9c6bf"      # темнее фона окна clam (#dcdad5): невыбранные не сливаются с ним
-SELECTED: Final[str] = "selected"
-NOT_SELECTED: Final[str] = "!selected"
-DEFAULT_FONT: Final[str] = "TkDefaultFont"
+
+
+@dataclass(frozen=True)
+class DpiAwareness:
+    """Осведомлённость процесса о DPI экрана (§8.1): ставится до создания Tk, одна на процесс."""
+
+    level: int = PROCESS_SYSTEM_DPI_AWARE
+
+    def apply(self) -> None:
+        """Чёткий шрифт на HiDPI. Не Windows или нет shcore — окно просто будет с системным масштабом."""
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(self.level)  # type: ignore[attr-defined]
+        except (AttributeError, OSError):
+            return
 
 
 class SetupWindow:
-    """Окно на три вкладки. Поля: пути установки, корень Tk, вкладки, строка готовности, признак закрытия."""
+    """Окно на три вкладки. Поля: пути установки, корень Tk, стиль, вкладки, строка готовности, признак закрытия."""
 
     def __init__(self, paths: LivecraftPaths) -> None:
         self.paths: LivecraftPaths = paths
@@ -50,29 +58,39 @@ class SetupWindow:
         self.root.title(msg.SETUP_WINDOW_TITLE.format(version=APP_VERSION))
         self.is_closed: bool = False
         self.edit_shortcuts: EditShortcuts = EditShortcuts.install(self.root)
-        self.style: ttk.Style = ttk.Style(self.root)
-        self.selected_tab_font: font.Font = font.nametofont(DEFAULT_FONT, root=self.root).copy()
-        self._tab_gap_image: tk.PhotoImage = tk.PhotoImage(master=self.root, width=1, height=1)
-        self._apply_style()
+        self.theme: SetupTheme = SetupTheme.applied_to(self.root)
         self.notebook: ttk.Notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=PAD, pady=PAD)
-        self.keys_tab: KeysTab = KeysTab(self.notebook, paths, self.refresh_readiness)
-        self.channels_tab: ChannelsTab = ChannelsTab(self.notebook, paths, self.refresh_readiness)
-        self.settings_tab: SettingsTab = SettingsTab(self.notebook, paths, self.settings_saved)
-        self.notebook.add(self.keys_tab.frame, text=msg.SETUP_TAB_KEYS)
-        self.notebook.add(self.channels_tab.frame, text=msg.SETUP_TAB_CHANNELS)
-        self.notebook.add(self.settings_tab.frame, text=msg.SETUP_TAB_SETTINGS)
+        settings: SettingsPanel = SettingsPanel.from_paths(paths)
+        self.keys_tab: KeysTab = KeysTab(self.notebook, KeysPanel.from_paths(paths), self.refresh_readiness)
+        self.channels_tab: ChannelsTab = ChannelsTab(
+            self.notebook, ChannelsPanel.from_paths(paths), self.refresh_readiness, settings.form_languages
+        )
+        self.settings_tab: SettingsTab = SettingsTab(self.notebook, settings, self.settings_saved)
+        for tab in self.tabs:
+            self.notebook.add(tab.frame, text=tab.panel.title)
         # Уход с вкладки «Ключи и ссылки» прячет показанное своё значение (§14 решение 11).
-        self.notebook.bind(TAB_CHANGED_EVENT, lambda _event: self.keys_tab.hide_revealed())
+        self.notebook.bind(TkEvent.TAB_CHANGED, lambda _event: self.keys_tab.hide_revealed())
         self.readiness_line: ttk.Label = ttk.Label(self.root, wraplength=TEXT_WRAP_PIXELS, justify=tk.LEFT)
         self.readiness_line.pack(fill=tk.X, padx=PAD, pady=PAD)
         self.root.protocol(CLOSE_PROTOCOL, self.request_close)
         self.refresh_readiness()
 
+    @classmethod
+    def open(cls, paths: LivecraftPaths) -> SetupWindow:
+        """Окно так, как его открывает программа: осведомлённость о DPI до создания Tk, затем окно."""
+        DpiAwareness().apply()
+        return cls(paths)
+
+    @property
+    def tabs(self) -> tuple[KeysTab | ChannelsTab | SettingsTab, ...]:
+        """Вкладки в порядке окна."""
+        return (self.keys_tab, self.channels_tab, self.settings_tab)
+
     @property
     def is_dirty(self) -> bool:
         """Хотя бы на одной вкладке есть несохранённое."""
-        return any(tab.is_dirty for tab in (self.keys_tab, self.channels_tab, self.settings_tab))
+        return any(tab.is_dirty for tab in self.tabs)
 
     def refresh_readiness(self) -> None:
         """Строка готовности по свежей проверке: готово — одна строка, нет — проблемы (`Readiness.window_line`)."""
@@ -81,7 +99,7 @@ class SetupWindow:
     def settings_saved(self) -> None:
         """Настройки записаны: строка готовности и пометки языков формы на вкладке каналов — без перезапуска окна."""
         self.refresh_readiness()
-        self.channels_tab.refresh_form_languages()
+        self.channels_tab.refresh_form_languages(self.settings_tab.panel.form_languages)
 
     def request_close(self) -> None:
         """Закрытие окна: есть несохранённое — спросить; «нет» — окно остаётся открытым."""
@@ -95,29 +113,6 @@ class SetupWindow:
     def mainloop(self) -> None:
         self.root.mainloop()
 
-    def _apply_style(self) -> None:
-        """Заметные вкладки: отступ внутри, промежуток между вкладками, выбранная — жирная и на светлом фоне.
-
-        Тема Windows по умолчанию (vista) рисует вкладки картинками и фон вкладки не берёт — поэтому тема окна
-        clam. Промежутка между вкладками в ttk нет: вкладка обёрнута прозрачным элементом с отступами по
-        бокам, сквозь который видно фон ряда вкладок. Картинка и шрифт — поля окна, иначе их соберёт мусорщик.
-        """
-        self.style.theme_use(THEME)
-        self.selected_tab_font.configure(weight=font.BOLD)
-        self.style.element_create(
-            TAB_GAP_ELEMENT, "image", self._tab_gap_image, padding=TAB_GAP_PADDING, sticky=tk.NSEW
-        )
-        tab_layout: list[tuple[str, dict[str, object]]] = self.style.layout(TAB_STYLE)
-        self.style.layout(TAB_STYLE, [(TAB_GAP_ELEMENT, {"sticky": tk.NSEW, "children": tab_layout})])
-        self.style.configure(TAB_STYLE, padding=TAB_PADDING, font=DEFAULT_FONT)
-        self.style.map(
-            TAB_STYLE,
-            background=[(SELECTED, TAB_SELECTED_BACKGROUND), (NOT_SELECTED, TAB_BACKGROUND)],
-            font=[(SELECTED, self.selected_tab_font)],
-            padding=[(SELECTED, TAB_PADDING)],      # clam сужает отступ выбранной вкладки — возвращаем свой
-            expand=[(SELECTED, TAB_SELECTED_EXPAND)],
-        )
-
 
 class SetupApp:
     """Запуск настройщика для установки `paths`. tkinter.TclError (нет Tk или рабочего стола) — наружу, в main."""
@@ -126,14 +121,5 @@ class SetupApp:
         self.paths: LivecraftPaths = paths
 
     def run(self) -> None:
-        """DPI до создания Tk, затем окно и его цикл событий до закрытия."""
-        self._enable_dpi_awareness()
-        SetupWindow(self.paths).mainloop()
-
-    @staticmethod
-    def _enable_dpi_awareness() -> None:
-        """Чёткий шрифт на HiDPI (§8.1). Не Windows или нет shcore — окно просто будет с системным масштабом."""
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(PROCESS_SYSTEM_DPI_AWARE)  # type: ignore[attr-defined]
-        except (AttributeError, OSError):
-            return
+        """Окно так, как его открывает программа, и его цикл событий до закрытия."""
+        SetupWindow.open(self.paths).mainloop()

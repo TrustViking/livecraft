@@ -1,27 +1,48 @@
 """То, что введено на вкладке «Настройки запуска» (CLAUDE.md §8.2 п.3).
 
-Черновик — поля вкладки текстом (флажки — bool) и одно правило: перевести введённое в данные livecraft.json
-(`to_data`). Своих проверок у черновика нет: годность настроек решает тот же загрузчик, что читает файл
-(§16, решения к задаче 2.2). Не переводится в число — уходит текстом, и ошибку с именем поля назовёт загрузчик.
-Из раздела form на вкладке правится только ссылка на форму (`form_url`, открытая настройка — §14 решение 15);
-контракт формы (вопросы, варианты, формат даты) переносится как есть.
+Черновик — поля вкладки текстом (флажки — bool), их описание (`FIELDS`) и одно правило: перевести введённое в
+данные livecraft.json (`to_data`). Путь каждого поля — член `SettingKey`, перевод значения — вид поля
+(`DraftField.data`). Своих проверок у черновика нет: годность настроек решает тот же загрузчик, что читает
+файл. Из раздела form на вкладке правится только ссылка на форму (`form_url`, открытая настройка — §14
+решение 15); контракт формы (вопросы, варианты, формат даты) переносится как есть.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import ClassVar, Final
 
-from app.config.loader import FORM_KEY, FORM_URL_KEY, LLM_KEY, FormSettings, LivecraftSettings
+from app.config.settings import LivecraftSettings, ReasoningEffort, ServiceTier, SettingKey
+from app.setup.fields.draft_field import DraftField, DraftKind
 
-# Дробная часть паузы в окне пишется как удобно человеку: «0,5» и «0.5» — одно число.
-DECIMAL_COMMA: Final[str] = ","
-DECIMAL_POINT: Final[str] = "."
+FIELD_WIDTH_CHARS: Final[int] = 32
+URL_WIDTH_CHARS: Final[int] = 64       # ссылка на форму длинная: в узком поле её не проверить глазами
+SECTIONS: Final[tuple[SettingKey, ...]] = (SettingKey.LLM, SettingKey.FORM)
 
 
 @dataclass(frozen=True)
 class SettingsDraft:
-    """Поля вкладки 3: ссылка на форму ключей, сроки и паузы, настройки эфира, шаблон превью, часовой пояс,
+    """Поля вкладки: ссылка на форму ключей, сроки и паузы, настройки эфира, шаблон превью, часовой пояс,
     модель LLM."""
+
+    FIELDS: ClassVar[tuple[DraftField, ...]] = (
+        DraftField(SettingKey.FORM_URL, DraftKind.TEXT, width=URL_WIDTH_CHARS),
+        DraftField(SettingKey.MIN_LEAD_MINUTES, DraftKind.INTEGER, width=FIELD_WIDTH_CHARS),
+        DraftField(SettingKey.KEEP_DAYS, DraftKind.INTEGER, width=FIELD_WIDTH_CHARS),
+        DraftField(SettingKey.AUTO_START, DraftKind.FLAG),
+        DraftField(SettingKey.SET_THUMBNAIL, DraftKind.FLAG),
+        DraftField(SettingKey.CATEGORY_ID, DraftKind.TEXT, width=FIELD_WIDTH_CHARS),
+        DraftField(SettingKey.YOUTUBE_PAUSE_SECONDS, DraftKind.NUMBER, width=FIELD_WIDTH_CHARS),
+        DraftField(SettingKey.IMAGE_DIR_TEMPLATE, DraftKind.TEXT, width=FIELD_WIDTH_CHARS),
+        DraftField(SettingKey.TIMEZONE, DraftKind.TEXT, width=FIELD_WIDTH_CHARS),
+        DraftField(SettingKey.LLM_MODEL, DraftKind.TEXT, width=FIELD_WIDTH_CHARS),
+        DraftField(SettingKey.LLM_FALLBACK_MODEL, DraftKind.TEXT, width=FIELD_WIDTH_CHARS),
+        DraftField(
+            SettingKey.LLM_REASONING_EFFORT, DraftKind.CHOICE, choices=tuple(effort.value for effort in ReasoningEffort)
+        ),
+        DraftField(SettingKey.LLM_SERVICE_TIER, DraftKind.CHOICE, choices=tuple(tier.value for tier in ServiceTier)),
+        DraftField(SettingKey.LLM_TIMEOUT_SEC, DraftKind.INTEGER, width=FIELD_WIDTH_CHARS),
+        DraftField(SettingKey.LLM_MAX_OUTPUT_TOKENS, DraftKind.INTEGER, width=FIELD_WIDTH_CHARS),
+    )
 
     form_url: str
     min_lead_minutes: str
@@ -60,46 +81,18 @@ class SettingsDraft:
             llm_max_output_tokens=str(settings.llm.max_output_tokens),
         )
 
-    def to_data(self, form: FormSettings) -> dict[str, Any]:
-        """Данные livecraft.json из введённого; form — контракт формы: переносится без изменений, кроме ссылки.
+    def to_data(self, settings: LivecraftSettings) -> dict[str, object]:
+        """Данные livecraft.json: данные `settings`, в которых каждое поле черновика стоит на месте своего ключа.
 
-        Ссылка — с обрезанными пробелами по краям, как остальные текстовые поля: пустая значит «не настроено».
+        Всё, чего на вкладке нет (контракт формы), переносится из `settings` как есть.
         """
-        return {
-            "min_lead_minutes": self._integer(self.min_lead_minutes),
-            "keep_days": self._integer(self.keep_days),
-            "auto_start": self.auto_start,
-            "set_thumbnail": self.set_thumbnail,
-            "category_id": self.category_id.strip(),
-            "youtube_pause_seconds": self._pause_seconds,
-            "image_dir_template": self.image_dir_template.strip(),
-            "timezone": self.timezone.strip(),
-            LLM_KEY: {
-                "model": self.llm_model.strip(),
-                "fallback_model": self.llm_fallback_model.strip(),
-                "reasoning_effort": self.llm_reasoning_effort.strip(),
-                "service_tier": self.llm_service_tier.strip(),
-                "timeout_sec": self._integer(self.llm_timeout_sec),
-                "max_output_tokens": self._integer(self.llm_max_output_tokens),
-            },
-            FORM_KEY: {**form.to_data(), FORM_URL_KEY: self.form_url.strip()},
+        root: dict[str, object] = settings.to_data()
+        sections: dict[str, dict[str, object]] = {
+            SettingKey.LLM.value: settings.llm.to_data(),
+            SettingKey.FORM.value: settings.form.to_data(),
         }
-
-    @property
-    def _pause_seconds(self) -> float | str:
-        """Пауза числом, запятая допустима; nan и бесконечность — тоже числом, не число — текстом.
-
-        Конечность и минимум проверяет только загрузчик: у него точный текст на каждый случай.
-        """
-        try:
-            return float(self.youtube_pause_seconds.strip().replace(DECIMAL_COMMA, DECIMAL_POINT))
-        except ValueError:
-            return self.youtube_pause_seconds
-
-    @staticmethod
-    def _integer(text: str) -> int | str:
-        """Целое из текста поля; не вышло — текст как есть, на ошибку загрузчика."""
-        try:
-            return int(text.strip())
-        except ValueError:
-            return text
+        for field in self.FIELDS:
+            key: SettingKey = SettingKey(field.key_path)
+            sections.get(key.section, root)[key.leaf] = field.data(getattr(self, field.name))
+        root.update({section.leaf: sections[section.value] for section in SECTIONS})
+        return root

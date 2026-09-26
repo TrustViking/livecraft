@@ -38,8 +38,7 @@ def split_paragraphs(text: str) -> list[str]:
 
 
 def nonempty_lines(text: str) -> list[str]:
-    """Непустые строки текста (по `
-`) без краевых пробелов, по порядку."""
+    """Непустые строки текста (по `\\n`) без краевых пробелов, по порядку."""
     return [line.strip() for line in (text or "").split(NEWLINE) if line.strip()]
 
 

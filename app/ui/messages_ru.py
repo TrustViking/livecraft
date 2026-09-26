@@ -373,6 +373,9 @@ SETUP_CHANNELS_SAVE_FAILED: Final[str] = "Не удалось записать s
 # Язык канала — один, выбор в выпадающем поле по названию (app\setup\fields\language_choice.py); языки формы — первыми.
 SETUP_LANGUAGE_OPTION: Final[str] = "{name} ({code})"
 SETUP_LANGUAGE_OPTION_IN_FORM: Final[str] = "{name} ({code}) — есть в форме"
+# Код, которого нет в справочнике ISO 639-1 (вариант формы или язык старого channels.json): загрузчик его не примет.
+SETUP_LANGUAGE_OPTION_NOT_ISO: Final[str] = "{code} (не код ISO 639-1)"
+SETUP_LANGUAGE_OPTION_NOT_ISO_IN_FORM: Final[str] = "{code} (не код ISO 639-1) — есть в форме"
 # Текст в поле, который не совпадает ни с одной строкой списка: в черновик канала он не уходит.
 SETUP_LANGUAGE_PICK_FROM_LIST: Final[str] = "выберите язык из списка"
 # Канал, записанный раньше с несколькими языками: у канала теперь один язык (решение Артура 24-09-2026).

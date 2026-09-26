@@ -50,17 +50,6 @@ class SourceLink:
         LogEvent.of(SourceLinkEvent.YOUTUBE_DROPPED, reason=YOUTUBE_DROP_REASON, raw=dropped.raw).emit(LOGGER)
         return dropped
 
-    @classmethod
-    def of_video(cls, raw: str) -> SourceLink:
-        """Ссылка самого видео: полная — очищенная, YouTube — короткая по id; YouTube без id — не ссылка, без лога."""
-        link: WebLink = WebLink.of(raw)
-        if not link.is_complete:
-            return cls(raw=raw, url=None)
-        if not link.unwrapped.is_youtube:
-            return cls(raw=raw, url=link.sanitized)
-        video: YouTubeVideoId | None = YouTubeVideoId.of(link.text)
-        return cls(raw=raw, url=video.short_url if video is not None else None)
-
     @property
     def is_youtube(self) -> bool:
         return self.url is not None and WebLink.of(self.url).unwrapped.is_youtube

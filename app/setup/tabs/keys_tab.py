@@ -2,15 +2,14 @@
 
 Вкладка рисует строки модели (`KeyRow`): название поля, откуда оно, маску и кнопки по доступным действиям.
 Ввод своего значения — поле со скрытыми символами; принято моделью — поле очищается, отказ — красная строка
-под полем, а введённое остаётся. Принятое сразу записывается в сейф этой установки (`VaultStore.open`) —
-одним шагом, как и сброс своего значения: общей кнопки «Сохранить» на вкладке нет. Запись не удалась — диалог,
-вкладка остаётся на прочитанном с диска, введённое — в поле, чтобы нажать «Сохранить значение» ещё раз.
+под полем, а введённое остаётся. Принятое сразу записывается в сейф этой установки — одним шагом, как и сброс
+своего значения: общей кнопки «Сохранить» на вкладке нет. Запись не удалась — диалог, вкладка остаётся на
+прочитанном с диска, введённое — в поле, чтобы нажать «Сохранить значение» ещё раз. Введённое, но не
+сохранённое значение — несохранённое вкладки: окно спросит перед закрытием.
 
 Значение сейфа в виджет по умолчанию не попадает: строка рисует маску из модели, а поле ввода — то, что
 человек печатает сам, и то скрытыми символами. Буфер обмена не трогается: в поле ввода вставлять и выделять
 можно, а копировать и вырезать — нет (привязка на самом поле гасит `<<Copy>>` и `<<Cut>>` в любой раскладке).
-
-Кнопка сброса своего значения подписана тем, что она сделает (`KeyRow.reset_label`).
 
 «Показать своё» (`RowAction.REVEAL`, §14 решение 11): кнопка есть только у поля, которое человек ввёл сам.
 По явному нажатию значение просит у модели (`KeysPanel.own_value` — единственная точка раскрытия в
@@ -22,17 +21,16 @@ from __future__ import annotations
 
 import tkinter as tk
 from collections.abc import Callable
-from tkinter import messagebox, ttk
+from tkinter import ttk
 from typing import Final
 
-from app.core.text_format import PARAGRAPH_BREAK
-from app.paths import LivecraftPaths
-from app.secretsafe.crypto import VaultFormatError
 from app.secretsafe.dpapi import DpapiUnavailable
-from app.secretsafe.store import VaultStore
 from app.secretsafe.value import SecretField
-from app.setup.panels.keys_panel import KeyRow, KeysPanel, KeysPanelEdit, RowAction
-from app.setup.tabs import BREAK, COPY_EVENT, CUT_EVENT, PAD, TEXT_WRAP_PIXELS, ProblemLine
+from app.setup.panels.keys_panel import KeyRow, KeysPanel, RowAction
+from app.setup.panels.panel_edit import PanelEdit
+from app.setup.tabs.tab_event import BREAK, TkEvent
+from app.setup.tabs.tab_layout import PAD, ProblemLine
+from app.setup.tabs.tab_shell import TabShell
 from app.ui import messages_ru as msg
 
 SECRET_ECHO: Final[str] = "•"             # символ вместо каждого введённого: значение не видно через плечо
@@ -49,21 +47,13 @@ HEADERS: Final[tuple[str, ...]] = (
 PROBLEM_COLUMN: Final[int] = 3
 PROBLEM_COLUMN_SPAN: Final[int] = 3
 # Из поля ключа введённое не уходит: ни копированием, ни вырезанием.
-BLOCKED_ENTRY_EVENTS: Final[tuple[str, ...]] = (COPY_EVENT, CUT_EVENT)
+BLOCKED_ENTRY_EVENTS: Final[tuple[TkEvent, ...]] = (TkEvent.COPY, TkEvent.CUT)
 
 
 class KeyRowView:
-    """Виджеты одной строки сейфа: подписи, маска, поле ввода, кнопки и строка проблемы."""
+    """Виджеты одной строки сейфа: подписи, маска, поле ввода, кнопки и строка проблемы; кнопки зовут вкладку."""
 
-    def __init__(
-        self,
-        parent: ttk.Frame,
-        field: SecretField,
-        position: int,
-        on_accept: Callable[[SecretField], None],
-        on_reset: Callable[[SecretField], None],
-        on_toggle_own_value: Callable[[SecretField], None],
-    ) -> None:
+    def __init__(self, parent: ttk.Frame, field: SecretField, position: int, tab: KeysTab) -> None:
         self.field: SecretField = field
         self.label: ttk.Label = ttk.Label(parent)
         self.origin: ttk.Label = ttk.Label(parent)
@@ -72,11 +62,11 @@ class KeyRowView:
         for blocked in BLOCKED_ENTRY_EVENTS:
             self.entry.bind(blocked, lambda _event: BREAK)
         self.accept_button: ttk.Button = ttk.Button(
-            parent, text=msg.SETUP_KEYS_BUTTON_ACCEPT, command=lambda: on_accept(field)
+            parent, text=msg.SETUP_KEYS_BUTTON_ACCEPT, command=lambda: tab.accept(field)
         )
-        self.reset_button: ttk.Button = ttk.Button(parent, command=lambda: on_reset(field))
+        self.reset_button: ttk.Button = ttk.Button(parent, command=lambda: tab.reset(field))
         self.reveal_button: ttk.Button = ttk.Button(
-            parent, text=msg.SETUP_KEYS_BUTTON_REVEAL, command=lambda: on_toggle_own_value(field)
+            parent, text=msg.SETUP_KEYS_BUTTON_REVEAL, command=lambda: tab.toggle_own_value(field)
         )
         self.problem: ProblemLine = ProblemLine(parent, {})
         self.is_revealed: bool = False
@@ -99,16 +89,17 @@ class KeyRowView:
         self._mask = row.display
         self.hide()
         can_input: bool = bool(row.actions & INPUT_ACTIONS)
-        for widget in (self.entry, self.accept_button):
-            if can_input:
+        shown: dict[ttk.Widget, bool] = {
+            self.entry: can_input,
+            self.accept_button: can_input,
+            self.reset_button: RowAction.RESET in row.actions,
+            self.reveal_button: RowAction.REVEAL in row.actions,
+        }
+        for widget, is_shown in shown.items():
+            if is_shown:
                 widget.grid()
             else:
                 widget.grid_remove()
-        for button, action in ((self.reset_button, RowAction.RESET), (self.reveal_button, RowAction.REVEAL)):
-            if action in row.actions:
-                button.grid()
-            else:
-                button.grid_remove()
 
     def show_value(self, value: str) -> None:
         """Показать своё значение в подписи маски — только на экране, до следующего `hide`."""
@@ -127,10 +118,6 @@ class KeyRowView:
         self.entry.delete(0, tk.END)
         self.problem.show_text(None)
 
-    def refused(self, problem: str | None) -> None:
-        """Модель отказала: причина — красной строкой, введённое остаётся в поле."""
-        self.problem.show_text(problem)
-
     def _place(self, grid_row: int) -> None:
         widgets: tuple[ttk.Widget, ...] = (
             self.label, self.origin, self.display, self.entry, self.accept_button, self.reset_button,
@@ -144,76 +131,53 @@ class KeyRowView:
 
 
 class KeysTab:
-    """Вкладка «Ключи и ссылки». `panel` — текущая модель; после каждого действия её заменяет ответ модели.
+    """Вкладка «Ключи и ссылки» в оболочке `shell`; `rows` — виджеты строк по полям сейфа.
 
-    Файл сейфа чужого формата — модели нет (`panel` None): вкладка называет причину и ничего не даёт править.
+    Файл сейфа программы не прочитан — у модели нет строк: вкладка называет причину и ничего не даёт править.
     """
 
-    def __init__(self, notebook: ttk.Notebook, paths: LivecraftPaths, on_saved: Callable[[], None]) -> None:
-        self.paths: LivecraftPaths = paths
-        self.frame: ttk.Frame = ttk.Frame(notebook, padding=PAD)
-        self.notice: ttk.Label = ttk.Label(self.frame, wraplength=TEXT_WRAP_PIXELS, justify=tk.LEFT)
-        self.notice.pack(fill=tk.X, anchor=tk.W)
+    def __init__(self, notebook: ttk.Notebook, panel: KeysPanel, on_saved: Callable[[], None]) -> None:
+        self.shell: TabShell[KeysPanel] = TabShell(notebook, panel, on_saved)
+        self.frame: ttk.Frame = self.shell.frame
+        self.notice: ttk.Label = self.shell.notice
         self.rows_frame: ttk.Frame = ttk.Frame(self.frame)
         self.rows_frame.pack(fill=tk.X, anchor=tk.W, pady=PAD)
         for column, header in enumerate(HEADERS):
             ttk.Label(self.rows_frame, text=header).grid(row=0, column=column, sticky=tk.W, padx=PAD)
         self.rows: dict[SecretField, KeyRowView] = {
-            field: KeyRowView(self.rows_frame, field, position, self.accept, self.reset, self.toggle_own_value)
+            field: KeyRowView(self.rows_frame, field, position, self)
             for position, field in enumerate(SecretField.current())
         }
-        self._on_saved: Callable[[], None] = on_saved
-        self.panel: KeysPanel | None = None
-        self.load_error: VaultFormatError | None = None
-        self._load()
+        self._show()
+
+    @property
+    def panel(self) -> KeysPanel:
+        return self.shell.panel
 
     @property
     def is_dirty(self) -> bool:
-        """Есть несохранённое — по модели."""
-        return self.panel is not None and self.panel.is_dirty
+        """Несохранённое — в модели или введено в поле и не сохранено."""
+        return self.shell.is_dirty(any(view.raw for view in self.rows.values()))
 
     def accept(self, field: SecretField) -> None:
         """«Сохранить значение»: введённое — модели; принято — сразу в сейф, строка перерисована, поле очищено.
 
         Модель отказала — причина под полем; запись не удалась — диалог. В обоих случаях введённое остаётся.
         """
-        if self.panel is None:
-            return
         self.hide_revealed()
         view: KeyRowView = self.rows[field]
-        edit: KeysPanelEdit = self.panel.replace(field, view.raw)
-        if not edit.is_applied:
-            view.refused(edit.problem)
+        edit: PanelEdit[KeysPanel] = self.panel.replace(field, view.raw)
+        if edit.problem is not None:
+            view.problem.show_text(edit.problem.text)
             return
-        if not self._save(edit.panel):
-            return
-        view.accepted()
+        if self._save(edit.panel):
+            view.accepted()
 
     def reset(self, field: SecretField) -> None:
         """Сброс своего значения — сразу в сейф: вернётся поставочное, а если его нет, поле опустеет."""
-        if self.panel is None:
-            return
         self.hide_revealed()
         if self._save(self.panel.reset(field)):
             self.rows[field].problem.show_text(None)
-
-    def _save(self, edited: KeysPanel) -> bool:
-        """Модель с правкой пишет личный сейф; записано — вкладка на прочитанном заново и True.
-
-        Отказ — диалог без значения и без пути к сейфу, вкладка прежняя (несохранённого не остаётся), False.
-        """
-        try:
-            saved: KeysPanel = edited.save(VaultStore.open(self.paths))
-        except DpapiUnavailable:
-            messagebox.showerror(msg.SETUP_SAVE_FAILED_TITLE, msg.SETUP_INPUT_OWN_UNAVAILABLE, parent=self.frame)
-            return False
-        except OSError:
-            messagebox.showerror(msg.SETUP_SAVE_FAILED_TITLE, msg.SETUP_KEYS_SAVE_FAILED_OS, parent=self.frame)
-            return False
-        self.panel = saved
-        self._show()
-        self._on_saved()
-        return True
 
     def toggle_own_value(self, field: SecretField) -> None:
         """«Показать»/«скрыть» своё значение поля. Модель не отдала значение (поставка, поля нет) — ничего."""
@@ -221,12 +185,9 @@ class KeysTab:
         if view.is_revealed:
             view.hide()
             return
-        if self.panel is None:
-            return
         value: str | None = self.panel.own_value(field)
-        if value is None:
-            return
-        view.show_value(value)
+        if value is not None:
+            view.show_value(value)
 
     def hide_revealed(self) -> None:
         """Спрятать за маску всё показанное: перед любым действием вкладки и при уходе с неё."""
@@ -234,21 +195,29 @@ class KeysTab:
             if view.is_revealed:
                 view.hide()
 
-    def _load(self) -> None:
-        """Прочитать оба файла сейфа в модель. Свой повреждённый файл вкладку не закрывает — модель откроется
-        с пустым личным слоем; повреждён файл программы — причина вместо строк."""
+    def _save(self, edited: KeysPanel) -> bool:
+        """Модель с правкой пишет личный сейф; записано — вкладка на прочитанном заново и True.
+
+        Отказ — диалог без значения и без пути к сейфу, вкладка прежняя (в модели несохранённого не остаётся),
+        False.
+        """
         try:
-            self.panel = KeysPanel.from_store(VaultStore.open(self.paths))
-        except VaultFormatError as error:
-            self.load_error = error
+            saved: PanelEdit[KeysPanel] = edited.save()
+        except DpapiUnavailable:
+            self.shell.refuse_save(msg.SETUP_INPUT_OWN_UNAVAILABLE)
+            return False
+        except OSError:
+            self.shell.refuse_save(msg.SETUP_KEYS_SAVE_FAILED_OS)
+            return False
+        self.shell.panel = saved.panel
         self._show()
+        self.shell.on_saved()
+        return True
 
     def _show(self) -> None:
-        """Перерисовать вкладку по модели: оговорки сверху и строки полей; модели нет — только причина."""
-        if self.panel is None:
-            self.notice.configure(text=self.load_error.human)
+        """Перерисовать вкладку по модели: оговорки сверху и строки полей; строк у модели нет — только оговорки."""
+        self.shell.show_notices()
+        if not self.panel.rows:
             self.rows_frame.pack_forget()
-            return
-        self.notice.configure(text=PARAGRAPH_BREAK.join(self.panel.notices))
         for row in self.panel.rows:
             self.rows[row.field].show(row)

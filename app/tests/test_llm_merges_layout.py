@@ -19,7 +19,7 @@ REALISTIC: str = (
 )
 
 
-# --- донор: test_merge_contract_parser.py::test_tail_separation_recognizes_multiple_allowed_tail_blocks_in_order
+# --- хвост описания: несколько разрешённых блоков узнаются по порядку
 def test_tail_blocks_are_recognized_in_order() -> None:
     layout: DescriptionLayout = DescriptionLayout.of(
         "Hook paragraph.\n\n"
@@ -33,7 +33,7 @@ def test_tail_blocks_are_recognized_in_order() -> None:
     assert layout.tail_blocks == (TailBlock.YOUTUBE_LINKS, TailBlock.OFFICIAL_LINKS, TailBlock.HASHTAGS)
 
 
-# --- донор: test_merge_contract_parser.py::test_realistic_merge_output_with_five_service_tail_paragraphs_is_accepted
+# --- настоящий ответ с пятью служебными абзацами хвоста принимается
 def test_realistic_output_with_five_tail_paragraphs() -> None:
     layout: DescriptionLayout = DescriptionLayout.of(REALISTIC, max_body_paragraphs=4)
     assert layout.raw_paragraph_count == 8
@@ -75,7 +75,7 @@ def test_links_to_a_youtube_like_site_are_not_a_youtube_block() -> None:
     assert TailBlock.of("https://m.youtube.com/watch?v=b") is TailBlock.YOUTUBE_LINKS
 
 
-# --- донор: test_merge_contract_parser.py::test_body_only_recovery_accepts_near_good_body
+# --- тело на абзац длиннее предела сводится к пределу
 def test_five_body_paragraphs_collapse_to_four() -> None:
     layout: DescriptionLayout = DescriptionLayout.of(
         "Paragraph one.\n\nParagraph two.\n\nParagraph three.\n\nParagraph four.\n\nParagraph five.\n\n#topic", 4

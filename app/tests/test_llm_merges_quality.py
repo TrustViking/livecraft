@@ -44,7 +44,7 @@ def bullet_lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip().startswith(("🔹 ", "📌 ", "🎤 "))]
 
 
-# --- донор: test_merge_contract_validation.py::test_short_service_lines_are_normalized_to_expected_language
+# --- короткие служебные строки приводятся к языку блока
 def test_short_service_lines_are_normalized_to_expected_language() -> None:
     result: QualityNormalization = normalized(
         "Це короткий вступ про головну тему!\n\n"
@@ -64,7 +64,7 @@ def test_short_service_lines_are_normalized_to_expected_language() -> None:
     assert QualityReasonCode.OFFICIAL_LINKS_HEADING_MISMATCH in result.diagnostics.semantic_gate_reason_codes
 
 
-# --- донор: test_accent_marker_cap_is_enforced_and_overflow_is_logged
+# --- число акцентных значков ограничено, лишние снимаются
 def test_accent_marker_cap_is_enforced() -> None:
     result: QualityNormalization = normalized(
         "Focused hook paragraph with enough detail to stay valid!\n\n"
@@ -80,7 +80,7 @@ def test_accent_marker_cap_is_enforced() -> None:
     assert QualityReasonCode.ACCENT_MARKER_OVERFLOW in result.diagnostics.semantic_gate_reason_codes
 
 
-# --- донор: test_block_spacing_is_stabilized
+# --- между блоками описания — ровно одна пустая строка
 def test_block_spacing_is_stabilized() -> None:
     source: str = (
         "This hook stays factual and readable with enough context!\n"
@@ -100,7 +100,7 @@ def test_block_spacing_is_stabilized() -> None:
     assert result.description.text != source
 
 
-# --- донор: test_script_mix_guard_rejects_cyrillic_contamination_inside_english_body
+# --- кириллица внутри английского тела — смесь алфавитов, жёсткий отказ
 def test_script_mix_in_english_body_is_hard_reject() -> None:
     result: QualityNormalization = normalized(
         "This hook stays factual and readable with enough context about the main topic!\n\n"
@@ -114,7 +114,7 @@ def test_script_mix_in_english_body_is_hard_reject() -> None:
     assert "mиксed" in result.diagnostics.script_mix_suspects
 
 
-# --- донор: test_script_mix_guard_ignores_allowed_brands_and_urls_in_cyrillic_text
+# --- разрешённые бренды и ссылки в кириллическом тексте — не смесь алфавитов
 def test_allowed_brands_and_urls_are_not_script_mix() -> None:
     result: QualityNormalization = normalized(
         "Цей вступ лишається фактичним і зрозумілим для глядачів.\n\n"
@@ -130,7 +130,7 @@ def test_allowed_brands_and_urls_are_not_script_mix() -> None:
     assert QualityReasonCode.SCRIPT_MIX_CONTAMINATION not in result.diagnostics.semantic_gate_reason_codes
 
 
-# --- донор: test_script_mix_guard_ignores_bare_domain_in_cyrillic_text
+# --- домен без схемы в кириллическом тексте — не смесь алфавитов
 def test_bare_domain_in_cyrillic_text_is_not_script_mix() -> None:
     result: QualityNormalization = normalized(
         "После решения украинского суда антикультист дал ссылку на lstv.co.uk как ключевой эпизод.\n\n"
@@ -145,7 +145,7 @@ def test_bare_domain_in_cyrillic_text_is_not_script_mix() -> None:
     assert QualityReasonCode.SCRIPT_MIX_CONTAMINATION not in result.diagnostics.semantic_gate_reason_codes
 
 
-# --- донор: test_script_mix_guard_ignores_multi_level_bare_domain
+# --- многоуровневый домен без схемы — не смесь алфавитов
 def test_multi_level_bare_domain_is_not_script_mix() -> None:
     result: QualityNormalization = normalized(
         "Ця новина була опублікована на news.bbc.co.uk та підтверджена.\n\n"
@@ -155,7 +155,7 @@ def test_multi_level_bare_domain_is_not_script_mix() -> None:
     assert result.diagnostics.script_mix_detected is False
 
 
-# --- донор: test_script_mix_guard_catches_mixed_script_token_in_title
+# --- слово из двух алфавитов в названии ловится
 def test_mixed_script_token_in_title_is_caught() -> None:
     result: QualityNormalization = normalized(
         "Антикульт под лупой: что стоит за риторикой.\n\n🔹 пункт один\n🔹 пункт два\n\nОставляйте комментарии. #тест",
@@ -168,7 +168,7 @@ def test_mixed_script_token_in_title_is_caught() -> None:
     assert "lstv" not in result.diagnostics.script_mix_suspects
 
 
-# --- донор: test_core_wrong_language_hook_is_hard_reject
+# --- тезис явно не на языке блока — жёсткий отказ
 def test_wrong_language_hook_is_hard_reject() -> None:
     result: QualityNormalization = normalized(
         "This English hook is clearly not in the expected block language and stays unchanged.\n\n"
@@ -193,7 +193,7 @@ def test_a_hook_whose_language_is_undecided_is_not_a_language_reject() -> None:
     assert result.diagnostics.semantic_gate_status is QualityGateStatus.OK
 
 
-# --- донор: test_normalize_merge_description_does_not_double_prefix_bullet_as_lead_in
+# --- пункт в роли вводной строки не получает второй маркер
 def test_bullet_is_not_prefixed_twice() -> None:
     result: QualityNormalization = normalized(
         "Hook paragraph with a question?\n\n🔹 First bullet as lead-in\n🔹 Second bullet\n🔹 Third bullet", "en"
@@ -201,7 +201,7 @@ def test_bullet_is_not_prefixed_twice() -> None:
     assert all(not line.strip().startswith("🔹 🔹") for line in result.description.text.splitlines())
 
 
-# --- донор: test_compact_bullet_repair.py
+# --- сжатый контракт: лишние пункты снимаются, порядок сохраняется
 def compact_description(bullet_count: int, lead_in: bool = False) -> tuple[str, list[str]]:
     texts: list[str] = [f"Point {index} stays in original order with concrete detail." for index in range(1, bullet_count + 1)]
     lines: list[str] = ["Tonight we map concrete outcomes from linked source agendas.", ""]
@@ -260,7 +260,7 @@ def test_compact_trim_keeps_non_bullet_lines_in_place() -> None:
     assert (trim.bullets_before, trim.bullets_after) == (9, 7)
 
 
-# --- исправление ошибки донора: простой маркер снимается без первого слова
+# --- простой маркер пункта снимается, первое слово пункта остаётся
 @pytest.mark.parametrize(
     ("line", "expected"),
     [

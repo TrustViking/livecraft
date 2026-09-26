@@ -6,8 +6,8 @@ import pytest
 
 from app.texts.source_title import LOGGER, sanitize_source_video_title
 
-# Случаи донора restreamer (app\tests\test_video_title_cleanup.py) — поведение переносится как есть.
-DONOR_CASES: list[tuple[str, str]] = [
+# Хвост буквенных хештегов уходит; числовые хештеги, хештеги в середине и знаки без букв остаются.
+TITLE_CASES: list[tuple[str, str]] = [
     ("33 серия: Проверка на прочность  #эксперимент #ии #тест", "33 серия: Проверка на прочность"),
     ("The Most Terrible Title | #12", "The Most Terrible Title | #12"),
     ("Название | #14 #эксперимент #ии", "Название | #14"),
@@ -29,8 +29,8 @@ DONOR_CASES: list[tuple[str, str]] = [
 ]
 
 
-@pytest.mark.parametrize(("source", "expected"), DONOR_CASES)
-def test_title_is_cleaned_like_the_donor(source: str, expected: str) -> None:
+@pytest.mark.parametrize(("source", "expected"), TITLE_CASES)
+def test_the_trailing_letter_hashtags_are_removed(source: str, expected: str) -> None:
     assert sanitize_source_video_title(source) == expected
 
 
@@ -40,7 +40,7 @@ def test_empty_title_stays_empty(source: str) -> None:
 
 
 def test_the_separator_is_trimmed_only_after_removal() -> None:
-    """Висящий разделитель без хвоста хештегов — часть названия: донор его не трогает."""
+    """Висящий разделитель без хвоста хештегов — часть названия, его не трогаем."""
     assert sanitize_source_video_title("Название |") == "Название |"
 
 

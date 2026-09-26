@@ -19,9 +19,9 @@ from app.tests.fixtures.merges import merge_video, texts_with
 
 TEXTS: MergePromptTexts = MergePromptTexts.load()
 
-# sha256 значений `AppTemplates` донора (restreamer 35324e5, загрузчик `template_loader.py`); словари — JSON с
-# `sort_keys=True, ensure_ascii=False`. Совпадение значения ресурса с этим хешем и есть «ресурс равен значению донора».
-DONOR_VALUE_SHA256: dict[str, str] = {
+# sha256 значений текстов промта, как их читает программа; словари — JSON с `sort_keys=True, ensure_ascii=False`.
+# Стартовые данные меняются только задачей продукта (CLAUDE.md §14 решение 23): хеш ловит случайную правку.
+TEXT_VALUE_SHA256: dict[str, str] = {
     "title_description": "d0c2cd30174929146a4ff8dc67e00b0b9dd92550b8e3e93874a0bcc8112e8b73",
     "structural_rules": "04258f1042e52ecf099233b9df4324736c56eb439a4122dc80fce0c0ee9b4ef6",
     "no_description": "d632e251e13956f762ef83e9b96e22b2704e3efdee30fb1990574c8b412803af",
@@ -40,8 +40,8 @@ RESOURCE_SHA256: dict[str, str] = {
     "merge_retry_reinforcements.json": "7bcda0878b67330d8cc01c179359dffd49b97e1733fd4a1727573489d62df545",
 }
 
-# Шаблоны донорских тестов (`test_merge_contract_helpers.py::MergeContractServiceBase._config`).
-DONOR_TEST_PROMPT: str = """
+# Короткие шаблоны промта для тестов: по ним видно, какой кусок промта собран из какого правила.
+SAMPLE_PROMPT: str = """
 Write a YouTube stream title and description in {language_name}.
 Generate a new final title, not a copy of any single source title.
 Mentally extract key points from each source, preserve all non-trivial source-specific points,
@@ -60,7 +60,7 @@ Return strict JSON with title and description only.
 
 {sources_block}
 """.strip()
-DONOR_TEST_RULES: str = (
+SAMPLE_RULES: str = (
     "MERGE STRUCTURAL RULES\n"
     "RULE 1: Start with a standalone hook paragraph before any bullets.\n"
     "RULE 2: Keep visual paragraph boundaries explicit with one blank line between structural blocks.\n"
@@ -71,7 +71,7 @@ DONOR_TEST_RULES: str = (
     "EXAMPLE B (bad): Two adjacent lines restate the same thesis with minor wording changes.\n"
     "EXAMPLE B (good): The second line introduces new facts instead of repeating the opener."
 )
-DONOR_TEST_COMPACT: str = (
+SAMPLE_COMPACT: str = (
     "Use the compact merge contract for 1 to 2 source items.\n"
     "Write one cohesive stream description in 2 to 3 compact paragraphs.\n"
     "Paragraph 1 (hook): write 1 to 2 sentences grounded in the main tension, risk, or key conflict.\n"
@@ -87,7 +87,7 @@ DONOR_TEST_COMPACT: str = (
     "Keep agenda points specific and factual, not generic placeholders.\n"
     "The description must still cover all merged source items and preserve key concrete facts from each source."
 )
-DONOR_TEST_EXPANDED: str = (
+SAMPLE_EXPANDED: str = (
     "Use the expanded merge contract for 3 or more source items.\n"
     "Write {expanded_bullet_min} to {expanded_bullet_max} short bullet lines total.\n"
     "You may organize the bullets into 2 to 3 thematic micro-blocks when that improves clarity.\n"
@@ -98,18 +98,18 @@ DONOR_TEST_EXPANDED: str = (
     "response can be separated into different bullets or micro-blocks.\n"
     "{speaker_anchor_line}"
 )
-DONOR_TEST_NARRATIVE: str = (
+SAMPLE_NARRATIVE: str = (
     "This stream covers a single unified event or case. Write the description as connected prose, not a bullet list. "
     "Hook paragraph first, then 2-3 prose paragraphs. No bullets."
 )
 
 
-def donor_test_texts(
-    prompt: str = DONOR_TEST_PROMPT,
-    rules: str = DONOR_TEST_RULES,
-    compact: str = DONOR_TEST_COMPACT,
-    expanded: str = DONOR_TEST_EXPANDED,
-    narrative: str = DONOR_TEST_NARRATIVE,
+def sample_texts(
+    prompt: str = SAMPLE_PROMPT,
+    rules: str = SAMPLE_RULES,
+    compact: str = SAMPLE_COMPACT,
+    expanded: str = SAMPLE_EXPANDED,
+    narrative: str = SAMPLE_NARRATIVE,
 ) -> MergePromptTexts:
     return texts_with(
         contracts={
@@ -153,7 +153,7 @@ def test_resource_file_is_the_transferred_one(name: str, digest: str) -> None:
     assert hashlib.sha256(TextResource(name).path.read_bytes()).hexdigest() == digest
 
 
-def test_template_values_equal_the_donor_values() -> None:
+def test_template_values_are_the_starting_values() -> None:
     def sha(value: object) -> str:
         text: str = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -166,7 +166,7 @@ def test_template_values_equal_the_donor_values() -> None:
         "no_description": sha(TEXTS.no_description),
         "contracts": sha(contracts),
         "retry_reinforcements": sha(reinforcements),
-    } == DONOR_VALUE_SHA256
+    } == TEXT_VALUE_SHA256
 
 
 def test_texts_cover_every_contract_and_every_retry_signal() -> None:
@@ -178,11 +178,11 @@ def test_texts_cover_every_contract_and_every_retry_signal() -> None:
     assert not TEXTS.title_description.startswith("#")
 
 
-# --- донорские тесты промта (test_merge_contract_prompt.py)
+# --- промт: цель, источники, контракт и повтор
 
 
 def test_prompt_targets_youtube_title_and_description_only() -> None:
-    text: str = build("en", two_videos(), donor_test_texts()).text
+    text: str = build("en", two_videos(), sample_texts()).text
     for fragment in (
         "YouTube stream title and description",
         "99 characters",
@@ -211,7 +211,7 @@ def test_prompt_targets_youtube_title_and_description_only() -> None:
 
 
 def test_prompt_uses_expanded_contract_for_three_or_more_sources(llm_log: LogCapture) -> None:
-    text: str = build("en", three_videos(), donor_test_texts()).text
+    text: str = build("en", three_videos(), sample_texts()).text
     assert "Use the expanded merge contract for 3 or more source items." in text
     assert "Write 4 to 6 short bullet lines total." in text
     assert "2 to 3 thematic micro-blocks" in text
@@ -224,7 +224,7 @@ def test_prompt_uses_expanded_contract_for_three_or_more_sources(llm_log: LogCap
 
 
 def test_compact_contract_is_read_from_templates_and_exposes_4_7_range() -> None:
-    texts: MergePromptTexts = donor_test_texts(
+    texts: MergePromptTexts = sample_texts(
         compact="TEMPLATE COMPACT CONTRACT\nUse compact bullet range {compact_bullet_range} for compact mode.",
         expanded="Expanded template {expanded_bullet_min}-{expanded_bullet_max}",
         narrative="Narrative template",
@@ -237,7 +237,7 @@ def test_compact_contract_is_read_from_templates_and_exposes_4_7_range() -> None
 def test_compact_prompt_keeps_the_compact_contract_under_a_targeted_retry() -> None:
     facts: RetryFacts = RetryFacts(source_count=2, actual_paragraphs=6, max_paragraphs=4)
     retry: RetryProfile = RetryProfile.targeted(RetrySignal.PARAGRAPH_OVERFLOW, facts, TEXTS)
-    text: str = build("en", two_videos(), donor_test_texts(), retry).text
+    text: str = build("en", two_videos(), sample_texts(), retry).text
     assert retry.enabled and text.endswith(retry.instruction_block)
     assert "Use the expanded merge contract" not in text
     assert "Use the compact merge contract for 1 to 2 source items." in text
@@ -255,7 +255,7 @@ def test_merge_prompt_uses_clean_full_source_text_without_urls_hashtags_or_trunc
         ),
         merge_video(2, "Source 2", "Second source keeps the semantic context intact without extra links."),
     )
-    text: str = build("en", videos, donor_test_texts()).text
+    text: str = build("en", videos, sample_texts()).text
     for absent in ("https://youtu.be/aaaaaaaaaaa", "https://example.org/details", "#topic", "Official links:",
                    "Join and follow updates.", "YOUTUBE CANDIDATES"):
         assert absent not in text
@@ -270,7 +270,7 @@ def test_merge_prompt_uses_clean_full_source_text_without_urls_hashtags_or_trunc
     assert "hashtags_removed=" in logs
 
 
-# --- донорские тесты правил структуры (test_merge_structural_rules.py)
+# --- правила структуры описания в промте каждого контракта
 
 
 STRUCTURAL_RULES: str = (
@@ -285,7 +285,7 @@ STRUCTURAL_RULES: str = (
 
 
 def structural_texts() -> MergePromptTexts:
-    return donor_test_texts(
+    return sample_texts(
         prompt="Write in {language_name}.\n{merge_contract_block}\n\n{youtube_candidates_block}\n\n{sources_block}",
         rules=STRUCTURAL_RULES,
         compact="COMPACT CONTRACT {compact_bullet_range}",
@@ -317,7 +317,7 @@ def test_structural_rules_are_appended_for_expanded_mode() -> None:
 
 
 def test_structural_rules_are_appended_for_narrative_mode() -> None:
-    """У донора «одно событие» подменялось; здесь описание само даёт пять общих цепочек имён."""
+    """«Одно событие» узнаётся по самим описаниям: пять общих цепочек имён."""
     description: str = "John Smith met Mary Jones while Alex Brown and Nina White and Oleg Ivanov reported from the same event."
     videos = (merge_video(2, "One", description), merge_video(3, "Two", description))
     prompt: MergePrompt = build("en", videos, structural_texts())
@@ -392,7 +392,7 @@ def test_contract_block_with_retry_appends_the_instruction() -> None:
 
 
 def test_template_without_contract_placeholder_gets_the_block_appended() -> None:
-    texts: MergePromptTexts = donor_test_texts(prompt="Head in {language_name}.\n{sources_block}", rules="RULES")
+    texts: MergePromptTexts = sample_texts(prompt="Head in {language_name}.\n{sources_block}", rules="RULES")
     text: str = build("en", two_videos(), texts).text
     assert text.startswith("Head in English.\nSOURCE 1\n")
     assert "Paragraph four.\n\nRULES\n\nUse the compact merge contract" in text
@@ -405,7 +405,7 @@ def test_braces_in_source_text_do_not_break_the_template() -> None:
 
 
 def test_contract_is_chosen_by_the_prompt_descriptions() -> None:
-    """Пустое после чистки описание идёт в выбор контракта текстом «нет описания», как у донора."""
+    """Пустое после чистки описание идёт в выбор контракта текстом «нет описания», а не пустой строкой."""
     prompt: MergePrompt = build("en", (merge_video(2, "A", ""), merge_video(3, "B", "")), TEXTS)
     assert prompt.contract.mode is MergeContractMode.COMPACT
     assert prompt.contract.max_body_paragraphs == 4

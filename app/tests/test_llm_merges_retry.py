@@ -110,7 +110,7 @@ def test_targeted_profile_without_lines_is_disabled() -> None:
     assert (profile.focus_label, profile.reject_signal_label) == ("-", "-")
 
 
-# --- выбор профиля после отказа (донор: `MergeOrchestrator._select_retry_profile`)
+# --- выбор профиля после отказа: подсказку повтора даёт первый сигнал в порядке важности
 
 
 @pytest.mark.parametrize(
@@ -127,7 +127,7 @@ def test_targeted_profile_without_lines_is_disabled() -> None:
         (("missing_block_spacing", "compact_bullet_overflow"), RetrySignal.COMPACT_BULLET_OVERFLOW),
     ],
 )
-def test_the_first_signal_in_donor_order_wins(codes: tuple[str, ...], signal: RetrySignal) -> None:
+def test_the_first_signal_in_priority_order_wins(codes: tuple[str, ...], signal: RetrySignal) -> None:
     assert RetrySignal.first_of(codes) is signal
     facts: RetryFacts = RetryFacts(source_count=3, actual_bullets=2, required_bullets=5, max_paragraphs=7)
     assert RetryProfile.after_reject(codes, facts, TEXTS) == RetryProfile.targeted(signal, facts, TEXTS)

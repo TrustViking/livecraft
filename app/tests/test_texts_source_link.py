@@ -32,20 +32,6 @@ def test_a_clean_link_writes_no_log_line(caplog: pytest.LogCaptureFixture) -> No
     assert caplog.messages == []
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("https://example.org/?utm_source=x", "https://example.org"),
-        ("https://www.youtube.com/watch?v=abc123def45", "https://youtu.be/abc123def45"),
-        ("https://youtube.com/watch?v=short", None),         # YouTube без id — не ссылка видео
-        ("example.org", None),
-        ("", None),
-    ],
-)
-def test_video_link_is_the_clean_link_or_the_short_youtube_link(raw: str, expected: str | None) -> None:
-    assert SourceLink.of_video(raw).url == expected
-
-
 def test_links_in_text_are_cleaned_and_the_changed_ones_named() -> None:
     text: str = "See https://example.org/?utm_source=x and https://example.org/page, then https://[bad here."
     linked: LinkedText = LinkedText.of(text)

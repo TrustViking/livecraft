@@ -1,17 +1,20 @@
-"""Чистка названия источника от хвоста хештегов (CLAUDE.md §2 контур A: `core\\video_title_cleanup.py`).
+"""Чистка названия источника от хвоста хештегов (CLAUDE.md §2 контур A).
 
-Перенесено из restreamer (`app\\core\\video_title_cleanup.py::sanitize_source_video_title`) как есть: чистое
-преобразование строки без знания о предметных объектах (§0). Правило донора: с конца названия снимается
-сплошной хвост хештегов; хештег с буквой убирается, числовой (`#2`, `#2026`) остаётся; после этого
-срезаются висящие разделители `| — – -`. Хештег в середине названия не трогается.
+Хештеги в конце названия ролика — метки для поиска, а не часть названия эфира: с конца названия снимается
+сплошной хвост хештегов. Хештег с буквой убирается, числовой (`#2`, `#2026`) остаётся — это номер серии или год,
+он нужен человеку. После снятия срезаются висящие разделители `| — – -`, иначе название кончалось бы знаком.
+Хештег в середине названия — часть фразы, его не трогаем. Чистое преобразование строки без знания о предметных
+объектах (§0).
 """
 from __future__ import annotations
 
+import logging
 import re
+from enum import Enum
 from typing import Final
 
 from app.core.text_format import SPACE
-from app.observability.log_event import LogArea, get_logger
+from app.observability.log_event import LogArea, LogEvent, get_logger
 
 LOGGER = get_logger(LogArea.TEXTS)
 
@@ -20,6 +23,12 @@ NON_WHITESPACE_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\S+")
 HASHTAG_LETTER_PATTERN: Final[re.Pattern[str]] = re.compile(r"[^\W\d_]")
 HASHTAG_DIGITS_PATTERN: Final[re.Pattern[str]] = re.compile(r"\d+")
 TRAILING_SEPARATOR_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?:\s*[|—–-]+\s*)+$")
+
+
+class SourceTitleEvent(str, Enum):
+    """События лога чистки названия источника."""
+
+    HASHTAGS_REMOVED = "title_hashtags_removed"
 
 
 def sanitize_source_video_title(raw_title: str) -> str:
@@ -37,7 +46,8 @@ def sanitize_source_video_title(raw_title: str) -> str:
     result: str = SPACE.join(part for part in (prefix, *kept_tokens) if part)
     result = TRAILING_SEPARATOR_PATTERN.sub("", result).strip()
     if removed_count > 0:
-        LOGGER.debug("title_hashtags_removed count=%d title=%r result=%r", removed_count, raw_title, result)
+        event: LogEvent = LogEvent.of(SourceTitleEvent.HASHTAGS_REMOVED, count=removed_count, title=raw_title)
+        event.extended(result=result).emit(LOGGER, logging.DEBUG)
     return result
 
 
@@ -52,7 +62,8 @@ def _trailing_hashtag_zone_start(title: str) -> int | None:
 
 
 def _is_kept_hashtag(token: str) -> bool:
-    """Числовой хештег (номер серии) остаётся; хештег с буквой уходит; прочее (`#!`) остаётся, как у донора."""
+    """Числовой хештег (номер серии, год) остаётся; хештег с буквой уходит; знаки без букв (`#!`) — не метка
+    поиска, остаются."""
     body: str = token[1:]
     if HASHTAG_DIGITS_PATTERN.fullmatch(body) is not None:
         return True

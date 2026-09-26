@@ -5,35 +5,22 @@
 тем же разбором, что читает файл (`ChannelsFile.parse`); ошибка разбора и есть проблема поля. Пишет только
 файл каналов (`ChannelsFile.save`): прежний файл уходит в channels.previous.json, свой JSON вкладка не собирает.
 
-Вкладка неизменяемая: `add`, `update`, `remove` и `save` отдают новую, прежняя остаётся тем, чем была.
-Окно Tk (задача 2.3) только рисует её ответы; библиотека окна сюда не импортируется, ничего не печатается.
-Вход в канал и «проверить все» — живые проверки задачи 2.4, здесь их нет.
+API вкладки тот же, что у двух других моделей: `title`, `notices`, `is_dirty`, `save`. Вкладка неизменяемая:
+`add`, `update`, `remove` и `save` отдают новую, прежняя остаётся тем, чем была. Окно Tk только рисует её
+ответы; библиотека окна сюда не импортируется, ничего не печатается.
 """
 from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from typing import Any
 
-from app.config.channel import ChannelConfig, ChannelsFileKey, ConfiguredChannels, Privacy
+from app.config.channel import ChannelConfig, ChannelsFileKey, ConfiguredChannels
 from app.config.files import ChannelsFile
 from app.config.json_node import ConfigError, SettingProblem
 from app.paths import LivecraftPaths
 from app.setup.fields.channel_draft import ChannelDraft
+from app.setup.panels.panel_edit import PanelEdit
 from app.ui import messages_ru as msg
-
-
-@dataclass(frozen=True)
-class ChannelsPanelEdit:
-    """Итог правки: вкладка после неё и проблема. Негодно — `panel` та же, что была, `problem` называет почему."""
-
-    panel: ChannelsPanel
-    problem: SettingProblem | None
-
-    @property
-    def is_applied(self) -> bool:
-        """Правка принята: вкладка содержит новый список."""
-        return self.problem is None
 
 
 @dataclass(frozen=True)
@@ -53,8 +40,12 @@ class ChannelsPanel:
 
     @classmethod
     def from_paths(cls, paths: LivecraftPaths) -> ChannelsPanel:
-        """Прочитать channels.json. Не прочитался — вкладка без каналов и с причиной от разбора."""
-        file: ChannelsFile = ChannelsFile.of(paths)
+        """Вкладка на channels.json этой установки."""
+        return cls.from_file(ChannelsFile.of(paths))
+
+    @classmethod
+    def from_file(cls, file: ChannelsFile) -> ChannelsPanel:
+        """Прочитать файл каналов. Не прочитался — вкладка без каналов и с причиной от разбора."""
         try:
             channels: tuple[ChannelConfig, ...] = file.load().channels
         except ConfigError as error:
@@ -68,14 +59,13 @@ class ChannelsPanel:
         return cls(channels=channels, loaded=channels, load_problem=None, is_file_missing=False, file=file)
 
     @property
+    def title(self) -> str:
+        return msg.SETUP_TAB_CHANNELS
+
+    @property
     def drafts(self) -> tuple[ChannelDraft, ...]:
         """Строки таблицы каналов текстом — что окно показывает и отдаёт обратно на правку."""
         return tuple(ChannelDraft.of(channel) for channel in self.channels)
-
-    @property
-    def privacy_options(self) -> tuple[str, ...]:
-        """Варианты видимости для выпадающего списка — из самого перечня загрузчика."""
-        return tuple(privacy.value for privacy in Privacy)
 
     @property
     def problem(self) -> SettingProblem | None:
@@ -98,13 +88,13 @@ class ChannelsPanel:
             )
         return ()
 
-    def add(self, draft: ChannelDraft) -> ChannelsPanelEdit:
+    def add(self, draft: ChannelDraft) -> PanelEdit[ChannelsPanel]:
         """Добавить канал в конец списка."""
         return self._edit([*self._data, draft.to_data()])
 
-    def update(self, index: int, draft: ChannelDraft) -> ChannelsPanelEdit:
+    def update(self, index: int, draft: ChannelDraft) -> PanelEdit[ChannelsPanel]:
         """Заменить канал с номером index. Номера нет — IndexError: это ошибка окна, а не ввода."""
-        data: list[dict[str, Any]] = self._data
+        data: list[dict[str, object]] = self._data
         data[index] = draft.to_data()
         return self._edit(data)
 
@@ -114,23 +104,23 @@ class ChannelsPanel:
         del channels[index]
         return dataclasses.replace(self, channels=tuple(channels))
 
-    def save(self, paths: LivecraftPaths) -> ChannelsPanelEdit:
+    def save(self) -> PanelEdit[ChannelsPanel]:
         """Записать список через загрузчик и вернуть вкладку, прочитанную заново. Негоден — не пишет ничего.
 
-        OSError — наружу: сказать о нём человеку — дело окна (задача 2.3).
+        OSError — наружу: сказать о нём человеку — дело окна.
         """
         problem: SettingProblem | None = self.problem
         if problem is not None:
-            return ChannelsPanelEdit(panel=self, problem=problem)
-        ChannelsFile.of(paths).save(ConfiguredChannels(channels=self.channels))
-        return ChannelsPanelEdit(panel=ChannelsPanel.from_paths(paths), problem=None)
+            return PanelEdit(panel=self, problem=problem)
+        self.file.save(ConfiguredChannels(channels=self.channels))
+        return PanelEdit(panel=ChannelsPanel.from_file(self.file))
 
     @property
-    def _data(self) -> list[dict[str, Any]]:
+    def _data(self) -> list[dict[str, object]]:
         """Текущий список как данные channels.json."""
         return [channel.to_data() for channel in self.channels]
 
-    def _edit(self, data: list[dict[str, Any]]) -> ChannelsPanelEdit:
+    def _edit(self, data: list[dict[str, object]]) -> PanelEdit[ChannelsPanel]:
         """Разобрать будущий список разбором файла: годен — новая вкладка с его каналами (NFC), иначе — та же.
 
         Проблема строки — путь внутри канала (`channels[i].поле` → `поле`); путь без номера канала (весь список,
@@ -140,5 +130,5 @@ class ChannelsPanel:
             channels: tuple[ChannelConfig, ...] = self.file.parse({ChannelsFileKey.CHANNELS.value: data}).channels
         except ConfigError as error:
             problem: SettingProblem = SettingProblem(key=error.key.within_item.text, text=error.problem)
-            return ChannelsPanelEdit(panel=self, problem=problem)
-        return ChannelsPanelEdit(panel=dataclasses.replace(self, channels=channels), problem=None)
+            return PanelEdit(panel=self, problem=problem)
+        return PanelEdit(panel=dataclasses.replace(self, channels=channels))

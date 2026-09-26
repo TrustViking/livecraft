@@ -6,10 +6,11 @@
 вкладке не правится и переносится при записи как есть. Пишет только файл настроек (`SettingsFile.save`).
 
 Нет или не читается livecraft.json — вкладка открывается на поставочном шаблоне программы (`ShippedSettings`),
-говорит об этом и пишет файл только по «сохранить»: разбор по-прежнему умолчаний не подставляет (§16, решения
-к задаче 2.2).
+говорит об этом и пишет файл только по «сохранить»: разбор по-прежнему умолчаний не подставляет. Языки формы
+(`form_languages`) — только из прочитанного файла: на шаблоне вкладка не выдаёт чужую форму за настроенную.
 
-Вкладка неизменяемая: `apply` и `save` отдают новую. Окно Tk (задача 2.3) только рисует её ответы.
+API вкладки тот же, что у двух других моделей: `title`, `notices`, `is_dirty`, `save`. Вкладка неизменяемая:
+`apply` и `save` отдают новую. Окно Tk только рисует её ответы.
 """
 from __future__ import annotations
 
@@ -18,23 +19,11 @@ from dataclasses import dataclass
 
 from app.config.files import SettingsFile, ShippedSettings
 from app.config.json_node import ConfigError, SettingProblem
-from app.config.settings import LivecraftSettings, ReasoningEffort, ServiceTier
+from app.config.settings import FormQuestion, LivecraftSettings
 from app.paths import LivecraftPaths
 from app.setup.fields.settings_draft import SettingsDraft
+from app.setup.panels.panel_edit import PanelEdit
 from app.ui import messages_ru as msg
-
-
-@dataclass(frozen=True)
-class SettingsPanelEdit:
-    """Итог правки: вкладка после неё и проблема. Негодно — `panel` та же, что была, `problem` называет почему."""
-
-    panel: SettingsPanel
-    problem: SettingProblem | None
-
-    @property
-    def is_applied(self) -> bool:
-        """Правка принята: вкладка содержит новые настройки."""
-        return self.problem is None
 
 
 @dataclass(frozen=True)
@@ -52,8 +41,12 @@ class SettingsPanel:
 
     @classmethod
     def from_paths(cls, paths: LivecraftPaths) -> SettingsPanel:
-        """Прочитать livecraft.json. Не прочитался — вкладка на шаблоне программы и с причиной от разбора."""
-        file: SettingsFile = SettingsFile.of(paths)
+        """Вкладка на livecraft.json этой установки."""
+        return cls.from_file(SettingsFile.of(paths))
+
+    @classmethod
+    def from_file(cls, file: SettingsFile) -> SettingsPanel:
+        """Прочитать файл настроек. Не прочитался — вкладка на шаблоне программы и с причиной от разбора."""
         try:
             settings: LivecraftSettings = file.load()
         except ConfigError as error:
@@ -66,19 +59,20 @@ class SettingsPanel:
         return cls(settings=settings, loaded=settings, load_problem=None, file=file)
 
     @property
+    def title(self) -> str:
+        return msg.SETUP_TAB_SETTINGS
+
+    @property
     def draft(self) -> SettingsDraft:
         """Поля вкладки текстом — что окно показывает и отдаёт обратно в `apply`."""
         return SettingsDraft.of(self.settings)
 
     @property
-    def reasoning_effort_options(self) -> tuple[str, ...]:
-        """Варианты уровня reasoning — из самого перечня загрузчика."""
-        return tuple(effort.value for effort in ReasoningEffort)
-
-    @property
-    def service_tier_options(self) -> tuple[str, ...]:
-        """Варианты тарифа — из самого перечня загрузчика."""
-        return tuple(tier.value for tier in ServiceTier)
+    def form_languages(self) -> tuple[str, ...]:
+        """Коды вариантов вопроса о языке в форме прочитанного файла; файл не прочитан — языков формы нет."""
+        if self.loaded is None:
+            return ()
+        return tuple(self.loaded.form.values.get(FormQuestion.LANGUAGE.value, {}))
 
     @property
     def is_dirty(self) -> bool:
@@ -92,18 +86,18 @@ class SettingsPanel:
             return ()
         return (msg.SETUP_SETTINGS_NOTICE_UNREADABLE.format(key=self.load_problem.key, problem=self.load_problem.text),)
 
-    def apply(self, draft: SettingsDraft) -> SettingsPanelEdit:
+    def apply(self, draft: SettingsDraft) -> PanelEdit[SettingsPanel]:
         """Принять поля вкладки: разбор загрузчиком; негодно — та же вкладка и проблема с путём поля."""
         try:
-            settings: LivecraftSettings = self.file.parse(draft.to_data(self.settings.form))
+            settings: LivecraftSettings = self.file.parse(draft.to_data(self.settings))
         except ConfigError as error:
-            return SettingsPanelEdit(panel=self, problem=SettingProblem(key=error.key_path, text=error.problem))
-        return SettingsPanelEdit(panel=dataclasses.replace(self, settings=settings), problem=None)
+            return PanelEdit(panel=self, problem=SettingProblem(key=error.key_path, text=error.problem))
+        return PanelEdit(panel=dataclasses.replace(self, settings=settings))
 
-    def save(self, paths: LivecraftPaths) -> SettingsPanel:
-        """Записать настройки через загрузчик и вернуть вкладку, прочитанную заново.
+    def save(self) -> PanelEdit[SettingsPanel]:
+        """Записать настройки через загрузчик и вернуть вкладку, прочитанную заново. Настройки годны всегда.
 
-        OSError — наружу: сказать о нём человеку — дело окна (задача 2.3).
+        OSError — наружу: сказать о нём человеку — дело окна.
         """
-        SettingsFile.of(paths).save(self.settings)
-        return SettingsPanel.from_paths(paths)
+        self.file.save(self.settings)
+        return PanelEdit(panel=SettingsPanel.from_file(self.file))

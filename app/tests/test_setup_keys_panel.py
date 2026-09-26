@@ -15,7 +15,8 @@ from app.secretsafe.store import LocalVaultState, ProgramKey, VaultStore
 from app.secretsafe.field import SecretField, VaultOrigin
 from app.secretsafe.value import SecretValue
 from app.secretsafe.vault import Vault
-from app.setup.panels.keys_panel import KeyRow, KeysPanel, KeysPanelEdit, RowAction
+from app.setup.panels.keys_panel import KeyRow, KeysPanel, RowAction
+from app.setup.panels.panel_edit import PanelEdit
 from app.tests.conftest import SUPPLIED_VALUES, write_supplied_vault
 from app.ui import messages_ru as msg
 
@@ -55,7 +56,13 @@ def _row(panel: KeysPanel, field: SecretField) -> KeyRow:
     return next(row for row in panel.rows if row.field is field)
 
 
-def _applied(edit: KeysPanelEdit) -> KeysPanel:
+def _problem(edit: PanelEdit[KeysPanel]) -> str:
+    """Текст проблемы отказа; ключ проблемы — поле сейфа."""
+    assert edit.problem is not None
+    return edit.problem.text
+
+
+def _applied(edit: PanelEdit[KeysPanel]) -> KeysPanel:
     assert edit.is_applied, edit.problem
     return edit.panel
 
@@ -96,9 +103,9 @@ def test_the_legacy_form_url_has_no_row_even_when_it_lies_in_the_vault(ready_pat
 
 def test_the_legacy_form_url_cannot_be_entered(store: VaultStore) -> None:
     before: KeysPanel = KeysPanel.from_store(store)
-    edit: KeysPanelEdit = before.replace(SecretField.KEY_FORM_URL, LEGACY_FORM_URL)
+    edit: PanelEdit[KeysPanel] = before.replace(SecretField.KEY_FORM_URL, LEGACY_FORM_URL)
     assert not edit.is_applied
-    assert edit.problem == msg.SETUP_INPUT_LEGACY_FIELD
+    assert _problem(edit) == msg.SETUP_INPUT_LEGACY_FIELD
     assert edit.panel is before
 
 
@@ -135,7 +142,7 @@ def test_an_empty_field_offers_only_enter_and_says_none(bare_store: VaultStore) 
 
 def test_replace_with_good_input_makes_the_field_own_and_leaves_the_old_panel(store: VaultStore) -> None:
     before: KeysPanel = KeysPanel.from_store(store)
-    edit: KeysPanelEdit = before.replace(SecretField.SHEETS_ID, OWN_SHEET_URL)
+    edit: PanelEdit[KeysPanel] = before.replace(SecretField.SHEETS_ID, OWN_SHEET_URL)
     after: KeysPanel = _applied(edit)
     assert edit.problem is None
     assert _row(after, SecretField.SHEETS_ID).origin_label == msg.VAULT_ORIGIN_OWN
@@ -148,44 +155,44 @@ def test_replace_with_good_input_makes_the_field_own_and_leaves_the_old_panel(st
 
 def test_replace_with_bad_input_names_the_problem_and_changes_nothing(store: VaultStore) -> None:
     before: KeysPanel = KeysPanel.from_store(store)
-    edit: KeysPanelEdit = before.replace(SecretField.SHEETS_RANGE, "A")
+    edit: PanelEdit[KeysPanel] = before.replace(SecretField.SHEETS_RANGE, "A")
     assert not edit.is_applied
-    assert edit.problem == msg.SETUP_INPUT_SHEETS_RANGE
+    assert _problem(edit) == msg.SETUP_INPUT_SHEETS_RANGE
     assert edit.panel is before
     assert edit.panel.rows == before.rows
 
 
 def test_replace_with_empty_input_without_an_own_value_asks_for_input(store: VaultStore) -> None:
     """Под строкой только поставочное значение: сброса нет — текст просит ввести значение."""
-    edit: KeysPanelEdit = KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, "   ")
-    assert edit.problem == msg.SETUP_INPUT_EMPTY
+    edit: PanelEdit[KeysPanel] = KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, "   ")
+    assert _problem(edit) == msg.SETUP_INPUT_EMPTY
 
 
 def test_replace_with_empty_input_over_the_supply_names_the_return_button(store: VaultStore) -> None:
     panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE))
-    edit: KeysPanelEdit = panel.replace(SecretField.SHEETS_RANGE, "")
+    edit: PanelEdit[KeysPanel] = panel.replace(SecretField.SHEETS_RANGE, "")
     assert not edit.is_applied and edit.panel is panel
-    assert edit.problem == msg.SETUP_INPUT_EMPTY_RESET.format(button=msg.SETUP_KEYS_BUTTON_RESET_TO_SUPPLIED)
-    assert "Вернуть значение программы" in edit.problem
+    assert _problem(edit) == msg.SETUP_INPUT_EMPTY_RESET.format(button=msg.SETUP_KEYS_BUTTON_RESET_TO_SUPPLIED)
+    assert "Вернуть значение программы" in _problem(edit)
 
 
 def test_replace_with_empty_input_without_supply_names_the_delete_button(bare_store: VaultStore) -> None:
     panel: KeysPanel = _applied(KeysPanel.from_store(bare_store).replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY))
-    edit: KeysPanelEdit = panel.replace(SecretField.OPENAI_API_KEY, " 	 ")
+    edit: PanelEdit[KeysPanel] = panel.replace(SecretField.OPENAI_API_KEY, " 	 ")
     assert not edit.is_applied and edit.panel is panel
-    assert edit.problem == msg.SETUP_INPUT_EMPTY_RESET.format(button=msg.SETUP_KEYS_BUTTON_DELETE_OWN)
-    assert "Удалить своё значение" in edit.problem
+    assert _problem(edit) == msg.SETUP_INPUT_EMPTY_RESET.format(button=msg.SETUP_KEYS_BUTTON_DELETE_OWN)
+    assert "Удалить своё значение" in _problem(edit)
 
 
 def test_replace_with_empty_input_in_an_empty_field_asks_for_input(bare_store: VaultStore) -> None:
-    edit: KeysPanelEdit = KeysPanel.from_store(bare_store).replace(SecretField.SHEETS_ID, "")
-    assert edit.problem == msg.SETUP_INPUT_EMPTY
+    edit: PanelEdit[KeysPanel] = KeysPanel.from_store(bare_store).replace(SecretField.SHEETS_ID, "")
+    assert _problem(edit) == msg.SETUP_INPUT_EMPTY
 
 
 @pytest.mark.parametrize("raw", ["", "   "])
 def test_empty_input_into_the_legacy_form_url_still_says_it_cannot_be_entered(store: VaultStore, raw: str) -> None:
-    edit: KeysPanelEdit = KeysPanel.from_store(store).replace(SecretField.KEY_FORM_URL, raw)
-    assert edit.problem == msg.SETUP_INPUT_LEGACY_FIELD
+    edit: PanelEdit[KeysPanel] = KeysPanel.from_store(store).replace(SecretField.KEY_FORM_URL, raw)
+    assert _problem(edit) == msg.SETUP_INPUT_LEGACY_FIELD
 
 
 def test_every_row_names_a_real_button_for_empty_input(store: VaultStore) -> None:
@@ -232,7 +239,7 @@ def test_reset_without_a_supplied_value_leaves_no_field(bare_store: VaultStore) 
 
 def test_reset_of_a_saved_own_field_shows_the_supplied_one_under_it(store: VaultStore) -> None:
     """Поставочный слой не теряется при наложении: под сохранённым своим видно поставочное (§8.2)."""
-    saved: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID)).save(store)
+    saved: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID)).save().panel
     reset: KeysPanel = saved.reset(SecretField.SHEETS_ID)
     supplied: SecretValue | None = saved.supplied.get(SecretField.SHEETS_ID)
     assert supplied is not None and supplied.reveal() == SUPPLIED_VALUES[SecretField.SHEETS_ID]
@@ -253,7 +260,7 @@ def test_reset_label_of_an_own_field_without_supply_deletes_it(bare_store: Vault
 
 
 def test_reset_label_of_a_saved_own_field_over_the_supply_returns_the_program_value(store: VaultStore) -> None:
-    saved: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID)).save(store)
+    saved: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID)).save().panel
     assert _row(saved, SecretField.SHEETS_ID).reset_label == msg.SETUP_KEYS_BUTTON_RESET_TO_SUPPLIED
 
 
@@ -284,7 +291,7 @@ def test_a_rejected_replace_leaves_the_panel_clean(store: VaultStore) -> None:
 
 
 def test_reset_of_a_saved_own_field_makes_the_panel_dirty(store: VaultStore) -> None:
-    saved: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE)).save(store)
+    saved: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE)).save().panel
     assert not saved.is_dirty
     assert saved.reset(SecretField.SHEETS_RANGE).is_dirty
 
@@ -297,7 +304,7 @@ def test_replace_then_reset_back_to_the_read_state_is_clean(store: VaultStore) -
 
 def test_the_panel_is_clean_after_save(store: VaultStore) -> None:
     edited: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE))
-    assert not edited.save(store).is_dirty
+    assert not edited.save().panel.is_dirty
 
 
 # --- запись
@@ -309,7 +316,7 @@ def test_save_writes_only_the_local_file(store: VaultStore) -> None:
     stat_before: os.stat_result = store.supplied_path.stat()
     assert not store.local_path.exists()
     panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY))
-    panel.save(store)
+    panel.save()
     assert store.local_path.is_file()
     assert store.supplied_path.read_bytes() == before
     stat_after: os.stat_result = store.supplied_path.stat()
@@ -319,7 +326,7 @@ def test_save_writes_only_the_local_file(store: VaultStore) -> None:
 
 def test_after_save_the_reread_panel_shows_own(store: VaultStore) -> None:
     panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE))
-    saved: KeysPanel = panel.save(store)
+    saved: KeysPanel = panel.save().panel
     reread: KeysPanel = KeysPanel.from_store(store)
     for current in (saved, reread):
         row: KeyRow = _row(current, SecretField.SHEETS_RANGE)
@@ -331,8 +338,8 @@ def test_after_save_the_reread_panel_shows_own(store: VaultStore) -> None:
 
 
 def test_save_after_reset_removes_the_field_from_the_local_file(store: VaultStore) -> None:
-    saved: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE)).save(store)
-    after: KeysPanel = saved.reset(SecretField.SHEETS_RANGE).save(store)
+    saved: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE)).save().panel
+    after: KeysPanel = saved.reset(SecretField.SHEETS_RANGE).save().panel
     assert after.own == Vault.empty()
     assert _row(after, SecretField.SHEETS_RANGE).origin_label == msg.VAULT_ORIGIN_SUPPLIED
 
@@ -341,7 +348,7 @@ def test_save_without_dpapi_goes_out_as_dpapi_unavailable(ready_paths: Livecraft
     """Сказать о недоступном DPAPI человеку — дело окна; модель ошибку не глотает."""
     panel: KeysPanel = KeysPanel.from_store(_no_dpapi_store(ready_paths))
     with pytest.raises(DpapiUnavailable):
-        panel.save(_no_dpapi_store(ready_paths))
+        panel.save()
     assert not ready_paths.vault_local_file.exists()
 
 
@@ -364,8 +371,8 @@ def test_without_dpapi_an_empty_field_offers_nothing(livecraft_paths: LivecraftP
 
 def test_without_dpapi_replace_is_refused_with_a_reason(ready_paths: LivecraftPaths) -> None:
     panel: KeysPanel = KeysPanel.from_store(_no_dpapi_store(ready_paths))
-    edit: KeysPanelEdit = panel.replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY)
-    assert edit.problem == msg.SETUP_INPUT_OWN_UNAVAILABLE
+    edit: PanelEdit[KeysPanel] = panel.replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY)
+    assert _problem(edit) == msg.SETUP_INPUT_OWN_UNAVAILABLE
     assert edit.panel is panel
 
 
@@ -386,7 +393,7 @@ def _break_local_key(store: VaultStore) -> None:
 
 
 def test_an_unreadable_local_file_is_announced_with_the_replacement_notice(store: VaultStore) -> None:
-    _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID)).save(store)
+    _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID)).save()
     _break_local_key(store)
     panel: KeysPanel = KeysPanel.from_store(store)
     assert panel.local_state is LocalVaultState.UNREADABLE
@@ -395,15 +402,15 @@ def test_an_unreadable_local_file_is_announced_with_the_replacement_notice(store
 
 
 def test_a_readable_local_file_has_no_replacement_notice(store: VaultStore) -> None:
-    _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID)).save(store)
+    _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID)).save()
     assert msg.SETUP_KEYS_NOTICE_LOCAL_UNREADABLE not in KeysPanel.from_store(store).notices
 
 
 def test_the_first_save_replaces_the_unreadable_local_file(store: VaultStore) -> None:
-    _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID)).save(store)
+    _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID)).save()
     _break_local_key(store)
     panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_RANGE, OWN_RANGE))
-    saved: KeysPanel = panel.save(store)
+    saved: KeysPanel = panel.save().panel
     assert saved.local_state is LocalVaultState.READ
     assert saved.own.origin_of(SecretField.SHEETS_RANGE) is VaultOrigin.OWN
     assert saved.own.get(SecretField.SHEETS_ID) is None
@@ -427,7 +434,7 @@ def test_a_broken_local_file_opens_the_panel_with_the_broken_notice(store: Vault
 def test_a_broken_local_file_is_replaced_by_the_first_save(store: VaultStore) -> None:
     store.local_path.write_text(BROKEN_LOCAL_TEXT, encoding=TEXT_ENCODING)
     panel: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.SHEETS_ID, OWN_SHEET_ID))
-    saved: KeysPanel = panel.save(store)
+    saved: KeysPanel = panel.save().panel
     assert saved.local_state is LocalVaultState.READ
     assert msg.SETUP_KEYS_NOTICE_LOCAL_BROKEN not in saved.notices
     assert saved.own.get(SecretField.SHEETS_ID) == SecretValue(field=SecretField.SHEETS_ID, value=OWN_SHEET_ID)
@@ -443,11 +450,16 @@ def test_a_broken_local_file_without_dpapi_keeps_the_no_own_notice(ready_paths: 
     assert msg.SETUP_KEYS_NOTICE_LOCAL_BROKEN not in panel.notices
 
 
-def test_a_broken_supplied_file_still_stops_the_panel(ready_paths: LivecraftPaths) -> None:
+def test_a_broken_supplied_file_gives_a_panel_with_the_reason_and_nothing_to_edit(ready_paths: LivecraftPaths) -> None:
+    """Файл программы повреждён: вкладка есть, причина — в оговорках, строк нет, писать своё некуда."""
     ready_paths.vault_file.write_text(BROKEN_LOCAL_TEXT, encoding=TEXT_ENCODING)
-    with pytest.raises(VaultFormatError) as raised:
-        KeysPanel.from_store(VaultStore.open(ready_paths))
-    assert raised.value.advice == msg.VAULT_FILE_ADVICE_SUPPLIED
+    panel: KeysPanel = KeysPanel.from_paths(ready_paths)
+    assert isinstance(panel.load_problem, VaultFormatError)
+    assert panel.load_problem.advice == msg.VAULT_FILE_ADVICE_SUPPLIED
+    assert panel.notices == (panel.load_problem.human,)
+    assert panel.rows == ()
+    assert not panel.can_save_own and not panel.is_dirty
+    assert _problem(panel.replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY)) == msg.SETUP_INPUT_OWN_UNAVAILABLE
 
 
 # --- оговорка §7.2 и отсутствие значений в выводе
@@ -466,7 +478,7 @@ def test_no_vault_value_shows_in_rows_or_notices(store: VaultStore) -> None:
     edited: KeysPanel = _applied(read.replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY))
     edited = _applied(edited.replace(SecretField.SHEETS_ID, OWN_SHEET_URL))
     edited = _applied(edited.replace(SecretField.SHEETS_RANGE, OWN_RANGE))
-    saved: KeysPanel = edited.save(store)
+    saved: KeysPanel = edited.save().panel
     panels: tuple[KeysPanel, ...] = (read, edited, saved, saved.reset(SecretField.SHEETS_RANGE))
     values: set[str] = _all_secret_values(*panels)
     assert len(values) == 2 * len(SecretField.current())       # поставочные и свои — все шесть в эталоне
@@ -506,7 +518,7 @@ def test_own_value_of_an_own_field_is_the_entered_value(store: VaultStore) -> No
 
 def test_own_value_of_a_saved_own_field_is_read_back(store: VaultStore) -> None:
     edited: KeysPanel = _applied(KeysPanel.from_store(store).replace(SecretField.OPENAI_API_KEY, OWN_OPENAI_KEY))
-    assert edited.save(store).own_value(SecretField.OPENAI_API_KEY) == OWN_OPENAI_KEY
+    assert edited.save().panel.own_value(SecretField.OPENAI_API_KEY) == OWN_OPENAI_KEY
 
 
 def test_own_value_of_a_supplied_field_is_none_and_nothing_is_revealed(

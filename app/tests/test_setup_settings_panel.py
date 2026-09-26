@@ -8,11 +8,14 @@ from typing import Any
 import pytest
 
 from app.config.files import SettingsFile
-from app.config.settings import LivecraftSettings, ReasoningEffort, ServiceTier
+from app.config.settings import LivecraftSettings, ReasoningEffort, ServiceTier, SettingKey
 from app.paths import LivecraftPaths
 from app.setup.fields.settings_draft import SettingsDraft
-from app.setup.panels.settings_panel import SettingsPanel, SettingsPanelEdit
+from app.setup.fields.draft_field import DraftField
+from app.setup.panels.panel_edit import PanelEdit
+from app.setup.panels.settings_panel import SettingsPanel
 from app.tests.conftest import SHIPPED_SETTINGS_FILE
+from app.tests.fixtures.drafts import draft_with
 from app.ui import messages_ru as msg
 
 BROKEN_JSON: bytes = b'{"min_lead_minutes": 60,'
@@ -24,13 +27,13 @@ def _shipped() -> LivecraftSettings:
 
 
 def _applied(panel: SettingsPanel, **changes: Any) -> SettingsPanel:
-    edit: SettingsPanelEdit = panel.apply(dataclasses.replace(panel.draft, **changes))
+    edit: PanelEdit[SettingsPanel] = panel.apply(draft_with(panel.draft, **changes))
     assert edit.is_applied, edit.problem
     return edit.panel
 
 
-def _rejected(panel: SettingsPanel, **changes: Any) -> SettingsPanelEdit:
-    edit: SettingsPanelEdit = panel.apply(dataclasses.replace(panel.draft, **changes))
+def _rejected(panel: SettingsPanel, **changes: Any) -> PanelEdit[SettingsPanel]:
+    edit: PanelEdit[SettingsPanel] = panel.apply(draft_with(panel.draft, **changes))
     assert not edit.is_applied
     assert edit.panel is panel
     return edit
@@ -66,16 +69,18 @@ def test_the_draft_shows_the_shipped_values(ready_paths: LivecraftPaths) -> None
 
 def test_the_unchanged_draft_applies_to_the_same_settings(ready_paths: LivecraftPaths) -> None:
     panel: SettingsPanel = SettingsPanel.from_paths(ready_paths)
-    edit: SettingsPanelEdit = panel.apply(panel.draft)
+    edit: PanelEdit[SettingsPanel] = panel.apply(panel.draft)
     assert edit.is_applied
     assert edit.panel.settings == panel.settings
     assert not edit.panel.is_dirty
 
 
-def test_the_choice_options_come_from_the_loader_enums(ready_paths: LivecraftPaths) -> None:
-    panel: SettingsPanel = SettingsPanel.from_paths(ready_paths)
-    assert panel.reasoning_effort_options == tuple(item.value for item in ReasoningEffort)
-    assert panel.service_tier_options == tuple(item.value for item in ServiceTier)
+def test_the_choices_come_from_the_loader_enums() -> None:
+    choices: dict[str, tuple[str, ...]] = {field.name: field.choices for field in SettingsDraft.FIELDS if field.choices}
+    assert choices == {
+        "llm_reasoning_effort": tuple(item.value for item in ReasoningEffort),
+        "llm_service_tier": tuple(item.value for item in ServiceTier),
+    }
 
 
 # --- правки
@@ -91,13 +96,13 @@ def test_a_changed_keep_days_applies_and_makes_the_panel_dirty(ready_paths: Live
 
 
 def test_text_in_an_integer_field_is_named_by_the_loader(ready_paths: LivecraftPaths) -> None:
-    edit: SettingsPanelEdit = _rejected(SettingsPanel.from_paths(ready_paths), min_lead_minutes="abc")
+    edit: PanelEdit[SettingsPanel] = _rejected(SettingsPanel.from_paths(ready_paths), min_lead_minutes="abc")
     assert edit.problem is not None
     assert (edit.problem.key, edit.problem.text) == ("min_lead_minutes", msg.CONFIG_PROBLEM_INT_MIN.format(minimum=0))
 
 
 def test_a_value_below_the_minimum_is_named_by_the_loader(ready_paths: LivecraftPaths) -> None:
-    edit: SettingsPanelEdit = _rejected(SettingsPanel.from_paths(ready_paths), llm_timeout_sec="0")
+    edit: PanelEdit[SettingsPanel] = _rejected(SettingsPanel.from_paths(ready_paths), llm_timeout_sec="0")
     assert edit.problem is not None
     assert (edit.problem.key, edit.problem.text) == ("llm.timeout_sec", msg.CONFIG_PROBLEM_INT_MIN.format(minimum=1))
 
@@ -115,14 +120,14 @@ def test_a_whole_pause_becomes_a_number(ready_paths: LivecraftPaths) -> None:
 @pytest.mark.parametrize("text", ["nan", "inf", "-inf", "Infinity"])
 def test_a_pause_that_is_not_a_finite_number_is_a_problem(ready_paths: LivecraftPaths, text: str) -> None:
     """nan и бесконечность черновик отдаёт числом: точный текст о конечности называет загрузчик."""
-    edit: SettingsPanelEdit = _rejected(SettingsPanel.from_paths(ready_paths), youtube_pause_seconds=text)
+    edit: PanelEdit[SettingsPanel] = _rejected(SettingsPanel.from_paths(ready_paths), youtube_pause_seconds=text)
     assert edit.problem is not None
     assert (edit.problem.key, edit.problem.text) == ("youtube_pause_seconds", msg.CONFIG_PROBLEM_NUMBER_FINITE)
 
 
 @pytest.mark.parametrize("text", ["abc", "полсекунды", ""])
 def test_a_pause_that_is_not_a_number_is_a_problem(ready_paths: LivecraftPaths, text: str) -> None:
-    edit: SettingsPanelEdit = _rejected(SettingsPanel.from_paths(ready_paths), youtube_pause_seconds=text)
+    edit: PanelEdit[SettingsPanel] = _rejected(SettingsPanel.from_paths(ready_paths), youtube_pause_seconds=text)
     assert edit.problem is not None
     assert edit.problem.key == "youtube_pause_seconds"
     assert edit.problem.text == msg.CONFIG_PROBLEM_NUMBER_MIN.format(minimum=0.0)
@@ -130,13 +135,13 @@ def test_a_pause_that_is_not_a_number_is_a_problem(ready_paths: LivecraftPaths, 
 
 def test_the_draft_leaves_the_finiteness_rule_to_the_loader(ready_paths: LivecraftPaths) -> None:
     """Правило конечности одно — у загрузчика: черновик отдаёт nan числом, а не текстом."""
-    draft: SettingsDraft = dataclasses.replace(SettingsPanel.from_paths(ready_paths).draft, youtube_pause_seconds="nan")
-    value: Any = draft.to_data(_shipped().form)["youtube_pause_seconds"]
+    draft: SettingsDraft = draft_with(SettingsPanel.from_paths(ready_paths).draft, youtube_pause_seconds="nan")
+    value: object = draft.to_data(_shipped())["youtube_pause_seconds"]
     assert isinstance(value, float) and math.isnan(value)
 
 
 def test_an_unknown_timezone_is_a_problem(ready_paths: LivecraftPaths) -> None:
-    edit: SettingsPanelEdit = _rejected(SettingsPanel.from_paths(ready_paths), timezone="Europe/Nowhere")
+    edit: PanelEdit[SettingsPanel] = _rejected(SettingsPanel.from_paths(ready_paths), timezone="Europe/Nowhere")
     assert edit.problem is not None
     assert (edit.problem.key, edit.problem.text) == ("timezone", msg.CONFIG_PROBLEM_TIMEZONE_UNKNOWN)
 
@@ -147,7 +152,7 @@ def test_spaces_around_the_timezone_are_trimmed(ready_paths: LivecraftPaths) -> 
 
 
 def test_an_unknown_reasoning_effort_is_a_problem(ready_paths: LivecraftPaths) -> None:
-    edit: SettingsPanelEdit = _rejected(SettingsPanel.from_paths(ready_paths), llm_reasoning_effort="extreme")
+    edit: PanelEdit[SettingsPanel] = _rejected(SettingsPanel.from_paths(ready_paths), llm_reasoning_effort="extreme")
     assert edit.problem is not None
     assert edit.problem.key == "llm.reasoning_effort"
     assert edit.problem.text == msg.CONFIG_PROBLEM_CHOICE.format(allowed="none, low, medium, high, xhigh, max")
@@ -179,7 +184,7 @@ def test_a_form_url_is_applied_with_spaces_trimmed(ready_paths: LivecraftPaths) 
     ],
 )
 def test_a_bad_form_url_is_a_problem_of_the_field(ready_paths: LivecraftPaths, text: str) -> None:
-    edit: SettingsPanelEdit = _rejected(SettingsPanel.from_paths(ready_paths), form_url=text)
+    edit: PanelEdit[SettingsPanel] = _rejected(SettingsPanel.from_paths(ready_paths), form_url=text)
     assert edit.problem is not None
     assert edit.problem.key == "form.url"
     assert edit.problem.text == msg.CONFIG_PROBLEM_FORM_URL
@@ -194,7 +199,7 @@ def test_an_emptied_form_url_means_not_configured(ready_paths: LivecraftPaths) -
 
 def test_save_writes_the_form_url_and_keeps_the_form_contract(ready_paths: LivecraftPaths) -> None:
     before: dict[str, Any] = json.loads(ready_paths.config_file.read_text(encoding="utf-8"))
-    saved: SettingsPanel = _applied(SettingsPanel.from_paths(ready_paths), form_url=FORM_URL).save(ready_paths)
+    saved: SettingsPanel = _applied(SettingsPanel.from_paths(ready_paths), form_url=FORM_URL).save().panel
     after: dict[str, Any] = json.loads(ready_paths.config_file.read_text(encoding="utf-8"))
     assert after["form"]["url"] == FORM_URL
     assert list(after["form"])[0] == "url"
@@ -211,7 +216,7 @@ def test_save_writes_the_form_url_and_keeps_the_form_contract(ready_paths: Livec
 
 def test_save_changes_only_the_edited_field(ready_paths: LivecraftPaths) -> None:
     before: dict[str, Any] = json.loads(ready_paths.config_file.read_text(encoding="utf-8"))
-    saved: SettingsPanel = _applied(SettingsPanel.from_paths(ready_paths), keep_days="14").save(ready_paths)
+    saved: SettingsPanel = _applied(SettingsPanel.from_paths(ready_paths), keep_days="14").save().panel
     after: dict[str, Any] = json.loads(ready_paths.config_file.read_text(encoding="utf-8"))
     assert after["form"] == before["form"]
     assert list(after["form"]["values"]["language"]) == list(before["form"]["values"]["language"])
@@ -222,7 +227,7 @@ def test_save_changes_only_the_edited_field(ready_paths: LivecraftPaths) -> None
 
 
 def test_save_without_changes_writes_the_shipped_file_again(ready_paths: LivecraftPaths) -> None:
-    SettingsPanel.from_paths(ready_paths).save(ready_paths)
+    assert SettingsPanel.from_paths(ready_paths).save().is_applied
     assert ready_paths.config_file.read_bytes() == SHIPPED_SETTINGS_FILE.read_bytes()
 
 
@@ -237,7 +242,7 @@ def test_without_a_settings_file_the_panel_opens_on_the_template(livecraft_paths
     )
     assert panel.is_dirty
     assert not livecraft_paths.config_file.exists()
-    saved: SettingsPanel = panel.save(livecraft_paths)
+    saved: SettingsPanel = panel.save().panel
     assert SettingsFile(livecraft_paths.config_file).load() == panel.settings
     assert saved.notices == ()
 
@@ -250,7 +255,7 @@ def test_a_broken_settings_file_is_named_and_replaced_only_on_save(livecraft_pat
     assert panel.load_problem is not None
     assert len(panel.notices) == 1
     assert livecraft_paths.config_file.read_bytes() == BROKEN_JSON
-    panel.save(livecraft_paths)
+    panel.save()
     assert livecraft_paths.config_file.read_text(encoding="utf-8") == SettingsFile(livecraft_paths.config_file).render(panel.settings)
     assert SettingsFile(livecraft_paths.config_file).load() == panel.settings
 
@@ -263,3 +268,34 @@ def test_a_settings_file_missing_a_field_opens_on_the_template(livecraft_paths: 
     assert panel.loaded is None
     assert panel.load_problem is not None
     assert (panel.load_problem.key, panel.load_problem.text) == ("timezone", msg.CONFIG_PROBLEM_MISSING_KEY)
+
+
+# --- черновик: поля и данные файла
+
+
+def test_the_draft_fields_are_the_draft_attributes() -> None:
+    """Имя поля черновика — имя члена SettingKey строчными; порядок полей — порядок вкладки."""
+    assert [field.name for field in SettingsDraft.FIELDS] == [field.name for field in dataclasses.fields(SettingsDraft)]
+    for field in SettingsDraft.FIELDS:
+        assert SettingKey(field.key_path).name.lower() == field.name
+        assert field.key_path in msg.SETUP_SETTINGS_FIELD_LABELS
+
+
+def test_the_draft_data_puts_every_field_at_its_key_and_keeps_the_rest(ready_paths: LivecraftPaths) -> None:
+    """Данные черновика — данные настроек, где каждое поле вкладки стоит на месте своего ключа."""
+    settings: LivecraftSettings = _shipped()
+    draft: SettingsDraft = draft_with(SettingsDraft.of(settings), keep_days="7", llm_model=" gpt-x ", form_url=FORM_URL)
+    data: dict[str, object] = draft.to_data(settings)
+    expected: dict[str, Any] = settings.to_data()
+    expected["keep_days"] = 7
+    expected["llm"]["model"] = "gpt-x"
+    expected["form"]["url"] = FORM_URL
+    assert data == expected
+    assert list(data) == list(expected)
+
+
+def test_the_url_field_is_wider_than_the_rest() -> None:
+    widths: dict[str, int | None] = {field.name: field.width for field in SettingsDraft.FIELDS}
+    url: DraftField = SettingsDraft.FIELDS[0]
+    assert url.name == "form_url"
+    assert widths["form_url"] == 64 and widths["keep_days"] == 32
