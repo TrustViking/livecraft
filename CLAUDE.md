@@ -697,7 +697,7 @@ tmp\                      временные файлы задачи; удаля
 
 История до 26-09-2026 — `git show 3e399ba:CLAUDE.md`.
 
-**Где мы (26-09-2026).** Ветка `feature/livecraft`; последний принятый код — `eaf1488` (R7). Baseline тестов — **2826**. Реестр замка — **263**: E1 18, E2 32, E3 6, E4 7, E5 112, E6 0, E7 0, E8 0, E9 0, E10 0, E11 3, E12 3, E13 13, E14 17, E15 26, E16 3 (кольца), E17 0, E18 6, E19 1, E20 16, E21 0; исключений 9 (E1 4, E8 3, E13 2). planers — `9903b2e` (21-09-2026), перед этапом 5 перечитать по текущему HEAD.
+**Где мы (26-09-2026).** Ветка `feature/livecraft`; последний принятый код — `f2b379a` (R8). Baseline тестов — **2856**. Реестр замка — **145**: E1 9, E2 12, E3 6, E4 7, E5 73, E6 0, E7 0, E8 0, E9 0, E10 0, E11 3, E12 1, E13 3, E14 8, E15 10, E16 2 (кольца `openai*`, `job` | `run`), E17 0, E18 4, E19 1, E20 6, E21 0; исключений 9 (E1 4, E8 3, E13 2). Из 145 на область R9 — 117, на R10 — 28. planers — `9903b2e` (21-09-2026), перед этапом 5 перечитать по текущему HEAD.
 
 **Что работает.**
 - Этапы 0–2 закрыты (2.4 — в этапе 6): замок одного экземпляра, сейф (`reveal()` — `SheetsReader._request`, `OpenAiClient._api`, `KeysPanel.own_value`, временная `FormUrlMigration`), конфиги, готовность по частям режима, настройщик на трёх вкладках.
@@ -705,7 +705,7 @@ tmp\                      временные файлы задачи; удаля
 - Нейросеть и merge — код есть, в запуск не подключён (3.15): `LlmBackend`, `MergeJob` → `SlotTexts` (`merged`), санация `MergePublication`; пробник `python -m app.tools.llm_probe`.
 - Флаги `--announce`, `--broadcast`, `--from-package`, `--no-llm`, `--setup` разбираются; части MERGE, ANNOUNCE, BROADCAST, PACKAGES_IN показываются несделанными (`app\run\mode.py::NOT_BUILT_PARTS`).
 
-**Этап R.** Приняты R1.1a, R1.1a-2, R1.1b (дефекты D1–D7, D9), R1.2a, R1.2b (мёртвый код), R1.3, R2.1a, R2.1b (замок), R3 (`766cf25`), R4 (`24c8af4`), R5 (`cbee396`), R6 (`beb0406`), R7 (`eaf1488`). R2.2, R2.3 отменены. Контрольный прогон режима А после R5–R7 — за Артуром. **R8 — промт выдан 26-09-2026**, дальше R9, R10 (§13).
+**Этап R.** Приняты R1.1a, R1.1a-2, R1.1b (дефекты D1–D7, D9), R1.2a, R1.2b (мёртвый код), R1.3, R2.1a, R2.1b (замок), R3 (`766cf25`), R4 (`24c8af4`), R5 (`cbee396`), R6 (`beb0406`), R7 (`eaf1488`), R8 (`f2b379a`). R2.2, R2.3 отменены. Контрольный прогон режима А после R5–R8 — за Артуром. **R9 — промт выдан 26-09-2026**, дальше R10 (§13).
 
 **Продукт.** После R10 — 3.14b, 3.15, затем этапы 4–8 (§13).
 
@@ -719,6 +719,7 @@ tmp\                      временные файлы задачи; удаля
 - Запуск (R5): `run_cli` → `Launch`; части запуска отдают `RunOutcome`, код — `ExitCode.combined`; что делает режим — `ModeReadiness.step` (`app\run\mode.py`: в `readiness.py` не влезал по E18); консоль — только `Console`; лог — `RunLog` (чужие обработчики не снимает); фильтр секретов строит сейф (`Vault.log_filter`); пробники — `ProbeLauncher`, `ProbeSession`, `ProbeConsole`; фасады перенесённых модулей не оставлены.
 - Контур A (R6): ряд — `AdmittedRow` или `SkippedRow`, итог — `PlannedRows`; факты о видео — `SourceFacts` (один кеш `SourceCatalog`, им же пользуется пробник); `SourceVideo(row, facts)` — единственное чтение данных видео, в том числе в merge; счётчики стадий — `app\core\counts.py::Counts`; `StreamSlot(key, texts, previews, sources)`; в пакет идут только `SlotBuild.slots`; `SourceFailureReason` — в `sources\metadata.py`.
 - Конфиг и готовность (R7): поля читает `JsonNode`, объекты строят себя `from_node` в пару к `to_data`; файлы — `SettingsFile`, `ChannelsFile` (`ConfigRead` — значение или ошибка); поставочный livecraft.json — ресурс `settings_shipped.json`; готовность — по нуждам (`Need`, `Readiness.gap` — единственный текст нужды, строка режима — одна на нужду с перечнем частей); прогон таблицы получает `PlanBasis`; вид происхождения значения сейфа один — `VaultOrigin`; ошибки конфига, сейфа и входа — по контракту (E7 — ноль во всём `app`).
+- Merge I (R8): правила — один плоский `MergeRules(lexicons, texts, headings, gate)`, лексиконы `MergeLexicons` читаются один раз; признаки кода отказа — `REJECT_TRAITS`; схема ответа — `MergeAnswer.SCHEMA`; минимум пунктов — `MergeContract.min_bullets`; «язык явно не тот» — `LanguageMatch` (unknown — не отказ); описание по заботам (`hook_echo.py`, `opening.py`, `emoji.py`, `script_mix.py`); три поиска имён собственных — три разных правила (`CapitalizedRuns`, `extract_named_entities`, имена в пункте); общие объекты тестов merge — `app\tests\fixtures\merges.py`.
 - Общие объекты R3: лог — `observability\log_event.py` (`LogArea`, `LogValue`, «пусто» = `-`, `LogEvent`); время — `Clock`, до чтения настроек — `ShippedSettings.clock`; повторы — `RetryLoop`; `TEXT_ENCODING` и знаки текста — `core\text_format.py`.
 - Живые данные у Артура (в git не входят): `secrets\client_secret.json`, `secrets\cookies.txt`, `tools\yt-dlp.exe`, `tools\deno.exe`; `secrets\channels.json` — 6 каналов из planers; ключ OpenAI и ссылка формы введены в настройщике.
 - Тесты: серии тестов с буфером обмена параллельно не запускать; `httpx2` в `conftest.py` — зависимость SDK `openai`, не новая.
