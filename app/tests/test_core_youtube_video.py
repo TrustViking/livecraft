@@ -40,8 +40,6 @@ def test_every_link_kind_gives_the_id_and_the_short_link(text: str) -> None:
 
 def test_the_watch_link_is_built_from_the_id() -> None:
     assert YouTubeVideoId(VIDEO_ID).watch_url == f"https://www.youtube.com/watch?v={VIDEO_ID}"
-    assert YouTubeVideoId.watch_url_of(f"https://youtu.be/{VIDEO_ID}") == f"https://www.youtube.com/watch?v={VIDEO_ID}"
-    assert YouTubeVideoId.watch_url_of("https://vimeo.com/123456789") is None
 
 
 def test_of_two_links_the_earliest_wins_whatever_its_kind() -> None:

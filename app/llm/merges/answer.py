@@ -18,7 +18,7 @@ from typing import ClassVar, Final
 
 from app.core.text_format import SPACE, WHITESPACE_RUN_PATTERN
 from app.llm.backend import LlmResponse
-from app.llm.json_text import PARSE_CANDIDATE, PARSE_DIRECT, parse_json_tolerant
+from app.llm.json_text import PARSE_CANDIDATE, PARSE_DIRECT, ParsedJson
 from app.llm.merges import rules
 from app.llm.merges.description import MergedDescription
 from app.llm.merges.emoji import EMOJI_PATTERN
@@ -92,10 +92,11 @@ class MergePayload:
         if response.structured is not None:
             return cls(data=response.structured, mode=AnswerParseMode.STRUCTURED, model=response.model)
         try:
-            data, mode = parse_json_tolerant(response.text)
+            parsed: ParsedJson = ParsedJson.tolerant(response.text)
         except RecursionError:                 # глубоко вложенный JSON — не объект ответа
             return cls(data=None, mode=None, model=response.model)
-        return cls(data=data, mode=AnswerParseMode(mode) if data is not None else None, model=response.model)
+        mode: AnswerParseMode | None = AnswerParseMode(parsed.found.value) if parsed.data is not None else None
+        return cls(data=parsed.data, mode=mode, model=response.model)
 
     @property
     def description_value(self) -> object:

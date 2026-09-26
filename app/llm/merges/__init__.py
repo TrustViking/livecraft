@@ -6,12 +6,15 @@
 `reject.py` (`MergeReject`, `MergeRejectCode` и таблица признаков `RejectTraits`). Описание ответа по заботам:
 `description.py` (`MergedDescription`), `hook_echo.py` (`HookEcho`, `HookParagraph`), `opening.py`
 (`DescriptionOpening`), `emoji.py` (`EmojiUsage`), `script_mix.py` (`ScriptMixProbe`, `HomoglyphRepair`), `blocks.py`
-(`DescriptionBlocks`), `layout.py` (`DescriptionLayout`, `TailSplit`, `BodyRecovery`). Все словари и тексты одним
+(`DescriptionBlocks`), `layout.py` (`DescriptionLayout`, `TailSplit`, `BodyRecovery`). Официальные ссылки источников —
+`links.py` (`LinkCandidate`, `RankedLinks`, `OfficialLinkSelection`, `AuthoritativeLinks`). Все словари и тексты одним
 плоским объектом — `merge_rules.py` (`MergeLexicons`, `MergeRules`, `PublishGate`). Над ними: качество `quality.py`
 (`QualityNormalization`, `QualityDiagnostics`), ответ `answer.py` (`MergeAnswer.parse`, схема `MergeAnswer.SCHEMA`),
 промт — `source.py` (`MergeSource`), `contract.py` (`MergeContract`, `BulletRange`), `retry.py` (`RetryProfile`,
-сигналы — по `MergeRejectCode`), `prompt.py` (`MergePrompt`); проверка ответа — `links.py` (`OfficialLinkSelection`),
-`check.py` (`MergeCheck`, `FormattingRecovery`); исполнение — `attempt.py` (`MergeAttempt`), `job.py` (`MergeJob`),
-`run.py` (`MergeRun`); санация принятого ответа — `publication.py` (`MergePublication`).
+сигналы — по `MergeRejectCode`), `prompt.py` (`MergePrompt`); проверка ответа — `check.py` (`MergeCheck`,
+`MergeDiagnostics`); санация принятого ответа — `publication.py` (`MergePublication`, `PublicationBody`, `GateVerdict`).
+Исполнение: `run.py` (`MergeRun` — merge запуска, запрос попытки, счётчики, `MergeStopReason`), `attempt.py`
+(`MergeAttempt`, итог `MergeAttemptResult`, восстановление форматирования `FormattingRecovery`), `outcome.py`
+(`AttemptHistory`, `MergeOutcome`), `job.py` (`MergeJob` — merge слота).
 Модель merge видит только через разъём `app\\llm\\backend.py::LlmBackend`.
 """

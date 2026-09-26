@@ -116,11 +116,6 @@ class SourceVideo:
         return self.row.row_number
 
     @property
-    def table_link(self) -> str:
-        """Ячейка ссылки в таблице как есть."""
-        return self.row.row.link
-
-    @property
     def refusal(self) -> SourceFailureReason | None:
         return self.facts.refusal
 
@@ -144,12 +139,6 @@ class SourceVideo:
         if metadata is None:
             return SourceText(title="", description="")
         return SourceText(title=metadata.title, description=metadata.description)
-
-    @property
-    def metadata_url(self) -> str:
-        """Ссылка, по которой спрашивали yt-dlp; данных видео нет — пусто."""
-        metadata: SourceMetadata | None = self.facts.fetch.metadata
-        return metadata.url if metadata is not None else ""
 
     def slot_key(self, zone: ZoneInfo) -> SlotKey | None:
         """Ключ слота: момент старта ряда в зоне программы и язык видео. Язык есть только у годного источника."""

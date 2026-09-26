@@ -1,7 +1,7 @@
-"""Блоки «🌐 …:» с официальными ссылками в ответе модели (донор: test_merged_publish_payload_sanitation.py)."""
+"""Блоки «🌐 …:» с официальными ссылками в ответе модели."""
 from __future__ import annotations
 
-from app.texts.official_links import OfficialLinksBlocks, official_link_urls
+from app.texts.official_links import LinkLines, OfficialLinksBlocks
 
 HEADING: str = "\U0001F310 Official links:"
 
@@ -41,15 +41,15 @@ def test_youtube_and_incomplete_links_do_not_enter_the_block() -> None:
         "https://youtu.be/ddddddddddd"
     )
     # Второй заголовок: в следующем абзаце только YouTube — ссылок блока нет, заголовок подавлен, абзац остаётся в тексте
-    # (его ссылку потом снимает хвост), как у донора.
+    # (его ссылку потом снимает хвост).
     assert blocks.cleaned_text == "Body.\n\nhttps://youtu.be/ddddddddddd"
     assert blocks.source_urls == ("https://example.org",)
     assert blocks.empty_blocks_suppressed == 1
 
 
 def test_a_block_with_a_non_link_line_gives_no_links() -> None:
-    assert official_link_urls(["https://example.org", "some words"]) == ()
-    assert official_link_urls(["", "https://example.org/?utm_source=x", "https://example.org"]) == ("https://example.org",)
+    assert LinkLines(("https://example.org", "some words")).urls == ()
+    assert LinkLines(("", "https://example.org/?utm_source=x", "https://example.org")).urls == ("https://example.org",)
     blocks: OfficialLinksBlocks = OfficialLinksBlocks.of(f"Body.\n\n{HEADING}\nhttps://example.org\nsome words")
     assert blocks.cleaned_text == "Body." and blocks.source_urls == () and blocks.empty_blocks_suppressed == 1
 

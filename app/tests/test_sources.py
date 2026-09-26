@@ -641,7 +641,7 @@ def test_source_without_title_is_not_ready_and_gets_no_language_and_no_preview(l
     prepared: PreparedSources = catalog_for(_FakeFetcher({LINK: no_title}), get).prepare(rows_of(admitted(2, LINK)))
     video: SourceVideo = prepared.videos[0]
     assert not video.is_ready
-    assert video.facts.fetch.metadata is not None and video.metadata_url == LINK
+    assert video.facts.fetch.metadata is not None and video.facts.fetch.metadata.url == LINK
     assert video.refusal is SourceFailureReason.NO_TITLE
     assert video.facts.language is None
     assert language_decisions(log) == []
@@ -702,10 +702,9 @@ def test_the_source_text_and_links_come_from_the_video_and_the_row() -> None:
     video: SourceVideo = video_of(row, fetched, None)
     assert video.text == SourceText(title=fetched.metadata.title, description=fetched.metadata.description)
     assert (video.link, video.watch_url) == (LINK, f"https://www.youtube.com/watch?v={LINK[-11:]}")
-    assert video.table_link == row.row.link and video.metadata_url == LINK
     failed: SourceFetch = SourceFetch.failed(LINK, SourceFailureReason.TIMEOUT)
     empty: SourceVideo = video_of(row, failed, None)
-    assert (empty.text, empty.metadata_url) == (SourceText(title="", description=""), "")
+    assert empty.text == SourceText(title="", description="")
 
 
 def test_prepared_sources_count_by_reason_and_by_language() -> None:

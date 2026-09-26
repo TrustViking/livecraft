@@ -4,12 +4,15 @@
 считает пунктом и заголовок «🌐 …:» (у него маркер 🌐), проверка ответа модели — нет: заголовок ссылок не тезис.
 Заголовок официальных ссылок — одно определение (`is_official_links_heading`). Призывы — лексикон `CtaLexicon`:
 префиксы, с которых описание не должно начинаться, и подсказки, по которым строка или абзац узнаётся как призыв
-(ресурсы `lexicon_cta_prefixes.txt`, `lexicon_cta_hints.txt`, `lexicon_cta_prefix_hints.txt`).
+(ресурсы `lexicon_cta_prefixes.txt`, `lexicon_cta_hints.txt`, `lexicon_cta_prefix_hints.txt`). Там же правила хвоста:
+строка-призыв в конце текста, последнее предложение-призыв абзаца, последний абзац-призыв тела (`TextTail` — абзац,
+разделённый на текст и хвост).
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 from functools import cached_property
 from typing import Final
 
@@ -18,7 +21,7 @@ from app.core.text_format import SPACE
 from app.core.web_link import URL_LINE_PATTERN
 from app.resources.loader import TextResource
 from app.texts.hashtags import HASHTAG_PATTERN
-from app.texts.paragraphs import collapse_spaces, nonempty_lines
+from app.texts.paragraphs import SENTENCE_BREAK_PATTERN, collapse_spaces, nonempty_lines, split_paragraphs
 
 NEUTRAL_BULLET_MARKER: Final[str] = "🔹"
 ACCENT_BULLET_MARKERS: Final[tuple[str, ...]] = ("📌", "🎤", "🎥", "⚖", "🌐", "✅")
@@ -45,6 +48,14 @@ HINT_WORD_TEMPLATE: Final[str] = r"(?<!\w){hint}(?!\w)"
 # Абзац-призыв — не больше двух строк; абзац с хештегом не длиннее 220 знаков — призыв и без подсказок.
 CTA_PARAGRAPH_MAX_LINES: Final[int] = 2
 CTA_HASHTAG_PARAGRAPH_MAX_CHARS: Final[int] = 220
+# Знаки перед подсказкой в начале строки-призыва («- Подпишитесь», «> Смотрите»).
+CTA_LINE_LEAD_CHARS: Final[str] = "-*•> "
+# Строка-призыв без подсказки в начале — не длиннее 200 знаков (длинный абзац со словом «комментарий» — не призыв).
+STANDALONE_CTA_MAX_CHARS: Final[int] = 200
+# Предложение-призыв отделяется от абзаца, где предложений не меньше двух.
+MIN_SENTENCES_FOR_SPLIT: Final[int] = 2
+# Абзац-призыв в конце тела снимается, только если тело остаётся: абзацев не меньше двух.
+FINAL_CTA_MIN_PARAGRAPHS: Final[int] = 2
 
 
 def is_official_links_heading(text: str) -> bool:
@@ -100,6 +111,23 @@ class BulletLine:
     def has_marker_prefix(self) -> bool:
         """Строка начинается маркером-эмодзи, даже без пробела после него."""
         return self.text.startswith(ALLOWED_BULLET_MARKERS)
+
+
+class FinalParagraph(str, Enum):
+    """Последний абзац тела глазами правила «абзац-призыв в конце»: призыв он или почему остаётся."""
+
+    EMPTY = "empty"                          # тела нет
+    SINGLE_PARAGRAPH = "single_paragraph"    # абзац один: без него тела не останется
+    NOT_CTA = "not_cta"
+    CTA = "cta"
+
+
+@dataclass(frozen=True)
+class TextTail:
+    """Абзац, разделённый на текст и хвост одного вида (хештеги или призыв); хвоста нет — пусто."""
+
+    text: str
+    tail: str = ""
 
 
 @dataclass(frozen=True)
@@ -158,3 +186,41 @@ class CtaLexicon:
 
     def _contains_hint(self, normalized_text: str) -> bool:
         return any(pattern.search(normalized_text) for pattern in self.hint_patterns)
+
+    def is_standalone_line(self, line: str) -> bool:
+        """Строка-призыв хвоста: начинается с подсказки (после «-», «*», «•», «>») или не длиннее 200 знаков
+        и с подсказкой внутри."""
+        normalized_line: str = collapse_spaces(line).lower()
+        if not normalized_line:
+            return False
+        if normalized_line.lstrip(CTA_LINE_LEAD_CHARS).startswith(self.hints):
+            return True
+        return len(normalized_line) <= STANDALONE_CTA_MAX_CHARS and self.looks_like_cta_line(line)
+
+    def split_final_sentence(self, paragraph: str) -> TextTail:
+        """Последнее предложение абзаца — призыв: оно уходит в хвост; абзац из одного предложения-призыва уходит
+        в хвост целиком; без текста перед призывом абзац остаётся как есть."""
+        normalized: str = paragraph.strip()
+        sentences: list[str] = SENTENCE_BREAK_PATTERN.split(normalized)
+        if len(sentences) < MIN_SENTENCES_FOR_SPLIT:
+            return TextTail(text="", tail=normalized) if self.looks_like_cta_line(normalized) else TextTail(normalized)
+        candidate: str = sentences[-1].strip()
+        body: str = SPACE.join(sentences[:-1]).strip()
+        if not body or not self.looks_like_cta_line(candidate):
+            return TextTail(normalized)
+        return TextTail(text=body, tail=candidate)
+
+    def final_paragraph(self, body: str) -> FinalParagraph:
+        """Последний абзац тела (абзацев от двух) — призыв: абзац-призыв по лексикону, а одна строка без маркера
+        пункта — ещё и по подсказке в строке."""
+        paragraphs: list[str] = split_paragraphs(body)
+        if not paragraphs:
+            return FinalParagraph.EMPTY
+        if len(paragraphs) < FINAL_CTA_MIN_PARAGRAPHS:
+            return FinalParagraph.SINGLE_PARAGRAPH
+        last: str = paragraphs[-1]
+        last_lines: list[str] = nonempty_lines(last)
+        is_single_line: bool = len(last_lines) == 1 and not BulletLine.of(last_lines[0]).is_bullet
+        if self.looks_like_cta_paragraph(last) or (is_single_line and self.looks_like_cta_line(last)):
+            return FinalParagraph.CTA
+        return FinalParagraph.NOT_CTA

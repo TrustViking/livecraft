@@ -13,27 +13,36 @@ from app.llm.merges.answer import MergeAnswer
 from app.llm.merges.attempt import (
     OVERFLOW_PARAGRAPHS_UNKNOWN,
     OVERLOADED_COUNT_UNKNOWN,
+    AttemptEvent,
+    FormattingRecovery,
     MergeAttempt,
     MergeAttemptResult,
+    RecoveryAction,
+    RecoveryOutcome,
     RejectedMerge,
 )
-from app.llm.merges.check import MergeAttemptLabel
+from app.llm.merges.check import MergeAttemptLabel, MergeCheck, MergeCheckPassed
 from app.llm.merges.contract import MergeContract
 from app.llm.merges.description import MergedDescription
 from app.llm.merges.merge_rules import MergeRules
 from app.llm.merges.prompt import MergePrompt
 from app.llm.merges.reject import MergeReject, MergeRejectCode
 from app.llm.merges.retry import RetryFacts, RetryMode, RetryProfile, RetrySignal
+from app.llm.merges.run import MergeRun
 from app.observability.log_event import LogArea
 from app.sources.video import SourceVideo
 from app.tests.conftest import LLM_SETTINGS
 from app.tests.fixtures.logs import LogCapture
 from app.tests.fixtures.merges import (
     ADJACENT_ANSWER,
+    CHECK_LABEL,
+    EMOJI,
     CTA_FIRST_ANSWER,
     EXPANDED_SOURCES,
     FAKE_BACKEND,
     HOOK,
+    LONG_ALPHA,
+    LONG_BETA,
     MODEL,
     OVERFLOW_ANSWER,
     OVERLOADED_ANSWER,
@@ -43,14 +52,24 @@ from app.tests.fixtures.merges import (
     STRONG_HOOK,
     THIN_ANSWER,
     TITLE,
+    TWO_SOURCES,
     UNDERFLOW_ANSWER,
     QueueBackend,
     answer,
+    bullets,
+    check_as_is,
     error,
+    merge_check,
     sources_of,
 )
 
 RULES: MergeRules = MergeRules.load()
+NEUTRAL: str = chr(0x1F539)
+
+
+def reject_code(verdict: MergeCheckPassed | MergeReject) -> str:
+    assert isinstance(verdict, MergeReject), verdict
+    return verdict.reason_code
 
 
 @pytest.fixture
@@ -64,15 +83,14 @@ def three_sources() -> tuple[SourceVideo, ...]:
 
 
 def prompt_for(videos: tuple[SourceVideo, ...], language: str = "en") -> MergePrompt:
-    prompt: MergePrompt | object = MergePrompt.of(language, videos, RULES.texts)
-    assert isinstance(prompt, MergePrompt)
-    return prompt
+    return MergePrompt.of(language, videos, RULES.texts)
 
 
 def attempt_with(backend: QueueBackend, videos: tuple[SourceVideo, ...] | None = None, language: str = "en") -> MergeAttempt:
     sources: tuple[SourceVideo, ...] = videos if videos is not None else three_sources()
     label: MergeAttemptLabel = MergeAttemptLabel(slot_id="16-10-2026_1900_en", language=language, model=MODEL, attempt=1)
-    return MergeAttempt(prompt_for(sources, language), label, sources, backend, LLM_SETTINGS, RULES)
+    merge_run: MergeRun = MergeRun(backend=backend, model=MODEL, settings=LLM_SETTINGS, rules=RULES)
+    return MergeAttempt(prompt_for(sources, language), label, sources, merge_run)
 
 
 def run_once(reply: str | LlmRequestError, structured: bool = False) -> MergeAttemptResult:
@@ -106,7 +124,7 @@ def test_the_request_carries_the_merge_schema_zero_temperature_and_settings() ->
 
 def test_a_strong_answer_is_accepted_with_its_diagnostics(llm_log: LogCapture) -> None:
     result: MergeAttemptResult = run_once(answer(STRONG_ANSWER))
-    assert result.accepted is not None and result.rejected is None and result.error is None
+    assert result.accepted is not None and result.rejected is None and result.failure is None
     assert result.accepted.title == TITLE
     assert result.accepted.paragraph_count == 3 and not result.accepted.tail_recovery_applied
     assert result.accepted.diagnostics.bullet_points_count == len(STRONG_BULLETS)
@@ -115,7 +133,7 @@ def test_a_strong_answer_is_accepted_with_its_diagnostics(llm_log: LogCapture) -
     messages: list[str] = llm_log.messages()
     valid: list[str] = [line for line in messages if line.startswith("merge_llm_response_valid ")]
     assert valid == [
-        f"merge_llm_response_valid {result.label.prefix} title_length={len(TITLE)} "
+        f"{result.label.event(AttemptEvent.RESPONSE_VALID).text} title_length={len(TITLE)} "
         f"description_length={len(result.accepted.description.text)} paragraph_count=3 youtube_links_in_llm_output=0"
     ]
     assert any(line.startswith("merge_style_coverage ") for line in messages)
@@ -191,7 +209,7 @@ def test_paragraph_underflow_is_recoverable() -> None:
     assert retry.reject_signals == ("paragraph_underflow",)
 
 
-def test_an_unknown_paragraph_count_falls_back_to_the_donor_number() -> None:
+def test_an_unknown_paragraph_count_falls_back_to_eight() -> None:
     contract: MergeContract = prompt_for(three_sources()).contract
     facts: RetryFacts = RejectedMerge(MergeReject(MergeRejectCode.PARAGRAPH_OVERFLOW)).facts(contract, 3)
     assert facts.actual_paragraphs == OVERFLOW_PARAGRAPHS_UNKNOWN == 8
@@ -209,7 +227,7 @@ def test_an_unknown_paragraph_count_falls_back_to_the_donor_number() -> None:
 def test_each_repetition_reject_has_its_targeted_retry(code: MergeRejectCode, signal: RetrySignal) -> None:
     contract: MergeContract = prompt_for(three_sources()).contract
     rejected: RejectedMerge = RejectedMerge(MergeReject(code), MergedDescription(STRONG_ANSWER), 6)
-    result: MergeAttemptResult = MergeAttemptResult(label=MergeAttemptLabel("s", "en", MODEL, 1), rejected=rejected)
+    result: MergeAttemptResult = MergeAttemptResult(label=MergeAttemptLabel("s", "en", MODEL, 1), outcome=rejected)
     assert result.next_retry(contract, 3, RULES.texts) == RetryProfile.targeted(
         signal, rejected.facts(contract, 3), RULES.texts
     )
@@ -221,7 +239,7 @@ def test_compact_overflow_retry_names_the_bullets_and_the_contract_range() -> No
     rejected: RejectedMerge = RejectedMerge(MergeReject(MergeRejectCode.COMPACT_BULLET_OVERFLOW), None, 9)
     facts: RetryFacts = rejected.facts(contract, 2)
     assert (facts.actual_bullets, facts.min_bullets, facts.max_bullets) == (9, 4, 7)
-    result: MergeAttemptResult = MergeAttemptResult(label=MergeAttemptLabel("s", "en", MODEL, 1), rejected=rejected)
+    result: MergeAttemptResult = MergeAttemptResult(label=MergeAttemptLabel("s", "en", MODEL, 1), outcome=rejected)
     retry: RetryProfile = result.next_retry(contract, 2, RULES.texts)
     assert retry == RetryProfile.targeted(RetrySignal.COMPACT_BULLET_OVERFLOW, facts, RULES.texts)
     assert any("9" in line for line in retry.reinforcement_lines)
@@ -251,7 +269,7 @@ def test_adjacent_repeated_bullets_are_a_duplicate_paragraph() -> None:
 
 def test_quota_is_an_error_value_that_stops_the_run() -> None:
     result: MergeAttemptResult = run_once(error(LlmErrorKind.QUOTA))
-    assert result.error is not None and result.is_quota and not result.is_model_configuration
+    assert result.failure is not None and result.is_quota and not result.is_model_configuration
     assert result.code == "quota_exhausted" and result.codes == ("quota_exhausted",)
     assert result.raw_chars == 0 and not result.raw_received
 
@@ -272,13 +290,91 @@ def test_any_other_error_is_unexpected_and_retried_plainly(kind: LlmErrorKind) -
     assert retry == RetryProfile.standard(("unexpected_error",))
 
 
+# --- восстановление форматирования
+
+
+def emoji_heavy_answer() -> str:
+    hook: str = (
+        f"{EMOJI[0]} Tonight we align the Brussels vote {EMOJI[1]}, the Kharkiv transport shock {EMOJI[2]}, and the "
+        f"Geneva aid timetable {EMOJI[3]} into one grounded briefing {EMOJI[4]} that stays source-specific {EMOJI[5]} "
+        f"without losing clarity {EMOJI[6]} while keeping the agenda concrete {EMOJI[7]} and readable {EMOJI[8]} for "
+        f"every viewer {EMOJI[9]}."
+    )
+    return (
+        f"{hook}\n\nIn this stream you'll see:\n{bullets(STRONG_BULLETS)}\n\n"
+        f"Watch live {chr(0x2705)} and share updates {chr(0x1F4E3)} #briefing"
+    )
+
+
+def test_three_source_emoji_overflow_is_salvaged(llm_log: LogCapture) -> None:
+    """От трёх источников лишние эмодзи снимаются, и ответ проходит проверку заново."""
+    check: MergeCheck = merge_check(emoji_heavy_answer(), title="Brussels, Kharkiv, Geneva: the operational agenda")
+    reject: MergeCheckPassed | MergeReject = check.run()
+    assert reject_code(reject) == "excessive_emoji_usage"
+    assert isinstance(reject, MergeReject)
+    recovery: FormattingRecovery = FormattingRecovery.of(check, reject)
+    assert recovery.passed is not None and recovery.reject is None
+    assert recovery.outcome is RecoveryOutcome.APPLIED
+    assert RecoveryAction.REDUCED_EMOJI in recovery.actions
+    text: str = recovery.passed.description.text
+    assert all(emoji not in text for emoji in EMOJI[:4]) and chr(0x1F4E3) not in text
+    assert f"{NEUTRAL} Brussels sanctions vote" in text
+    line: str = next(message for message in llm_log.messages() if message.startswith("merge_llm_validation_salvage"))
+    assert line.startswith(f"{CHECK_LABEL.event(AttemptEvent.SALVAGE).text} outcome=applied reason_codes=excessive_emoji_usage")
+    assert "actions=reduced_non_structural_emoji" in line
+    assert f"emoji_before={check.diagnostics.emoji_count} emoji_after=" in line
+    assert "replacement_reason_codes" not in line
+
+
+def test_salvage_reveals_a_non_formatting_issue(llm_log: LogCapture) -> None:
+    points: list[str] = [LONG_ALPHA, LONG_BETA, *STRONG_BULLETS[:4]]
+    answer: str = f"{HOOK} {' '.join(EMOJI)} {EMOJI[0]}\n\n{bullets(points)}"
+    check: MergeCheck = check_as_is(answer, EXPANDED_SOURCES)
+    reject: MergeCheckPassed | MergeReject = check.run()
+    assert reject_code(reject) == "excessive_emoji_usage"
+    assert isinstance(reject, MergeReject)
+    recovery: FormattingRecovery = FormattingRecovery.of(check, reject)
+    assert recovery.passed is None and recovery.reject is not None
+    assert recovery.reject.reason_code == "overloaded_bullet"
+    assert recovery.outcome is RecoveryOutcome.REVEALED
+    line: str = next(message for message in llm_log.messages() if message.startswith("merge_llm_validation_salvage"))
+    assert "outcome=revealed_non_formatting_issue reason_codes=excessive_emoji_usage" in line
+    assert "replacement_reason_codes=overloaded_bullet" in line
+
+
+def test_salvage_is_not_tried_below_three_sources(llm_log: LogCapture) -> None:
+    answer: str = f"{HOOK} {' '.join(EMOJI)} {EMOJI[0]}\n\n{bullets(STRONG_BULLETS[:5])}"
+    check: MergeCheck = check_as_is(answer, TWO_SOURCES)
+    reject: MergeCheckPassed | MergeReject = check.run()
+    assert reject_code(reject) == "excessive_emoji_usage"
+    assert isinstance(reject, MergeReject)
+    recovery: FormattingRecovery = FormattingRecovery.of(check, reject)
+    assert recovery.verdict is reject and recovery.actions == ()
+    assert not any(message.startswith("merge_llm_validation_salvage") for message in llm_log.messages())
+
+
+def test_salvage_is_only_for_emoji_overflow() -> None:
+    check: MergeCheck = check_as_is(f"{HOOK}\n\n{bullets(STRONG_BULLETS[:3])}", EXPANDED_SOURCES)
+    reject: MergeCheckPassed | MergeReject = check.run()
+    assert isinstance(reject, MergeReject)
+    recovery: FormattingRecovery = FormattingRecovery.of(check, reject)
+    assert recovery.verdict is reject and recovery.actions == ()
+
+
+def test_salvage_without_any_change_keeps_the_reject() -> None:
+    check: MergeCheck = check_as_is(f"{HOOK}\n\n{bullets(STRONG_BULLETS)}", EXPANDED_SOURCES)
+    reject: MergeReject = MergeReject(MergeRejectCode.EXCESSIVE_EMOJI_USAGE)
+    recovery: FormattingRecovery = FormattingRecovery.of(check, reject)
+    assert recovery.verdict is reject and recovery.actions == ()
+
+
 # --- строки лога
 
 
-def test_the_invalid_line_has_donor_keys_and_no_answer_text() -> None:
+def test_the_invalid_line_names_the_reason_and_has_no_answer_text() -> None:
     result: MergeAttemptResult = run_once(answer(OVERFLOW_ANSWER))
-    line: str = result.invalid_line(FAKE_BACKEND)
-    assert line.startswith(f"merge_llm_response_invalid {result.label.prefix} provider=fake stage=primary ")
+    line: str = result.invalid_event(FAKE_BACKEND).text
+    assert line.startswith(f"{result.label.event(AttemptEvent.RESPONSE_INVALID).text} provider=fake stage=primary ")
     assert "code=paragraph_overflow raw_response_received=yes " in line
     assert 'reason="body_paragraphs=8 allowed=2..7"' in line
     assert line.endswith(f"raw_chars={len(answer(OVERFLOW_ANSWER))}")
@@ -296,3 +392,11 @@ def test_no_answer_text_reaches_the_log(llm_log: LogCapture) -> None:
 def test_merge_rules_carry_the_publication_headings() -> None:
     assert RULES.headings.official_links("uk") == "🌐 Офіційні ресурси:"
     assert RULES.headings.recommended_materials("en") == "Recommended materials:"
+
+
+def test_the_outcome_is_exactly_one_of_accepted_rejected_or_failure() -> None:
+    label: MergeAttemptLabel = MergeAttemptLabel("s", "en", MODEL, 1)
+    failed: MergeAttemptResult = MergeAttemptResult(label, error(LlmErrorKind.TIMEOUT).failure)
+    assert (failed.accepted, failed.rejected) == (None, None) and failed.failure is not None
+    rejected: MergeAttemptResult = MergeAttemptResult(label, RejectedMerge(MergeReject(MergeRejectCode.NOT_JSON_OBJECT)))
+    assert (rejected.accepted, rejected.failure) == (None, None) and rejected.rejected is not None

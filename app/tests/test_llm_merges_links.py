@@ -1,31 +1,32 @@
 from __future__ import annotations
 
-import hashlib
 import logging
-import pathlib
 from collections.abc import Iterator
 
 import pytest
 
-from app.llm.merges.links import OFFICIAL_LINK_HINTS_RESOURCE, AuthoritativeLinks, OfficialLinkHints, OfficialLinkSelection
+from app.llm.merges.links import (
+    AuthoritativeLinks,
+    LinkCandidate,
+    OfficialLinkHints,
+    OfficialLinkSelection,
+    RankedLinks,
+    SourceDescriptionLines,
+    TextLinks,
+)
 from app.observability.log_event import LogArea
-from app.resources.loader import TextResource
 from app.sources.video import SourceVideo
 from app.tests.fixtures.logs import LogCapture
 from app.tests.fixtures.merges import merge_video
 
 HINTS: OfficialLinkHints = OfficialLinkHints.load()
-# Отпечаток файла restreamer `app\resources\text\lexicon_official_link_hints.txt` (35324e5): ресурс перенесён побайтно.
-DONOR_HINTS_SHA256: str = "d000eb4738f32cffc387235315fe254857dd7fb03535a7479e7ef570d705e4d8"
 
 
 def select(*descriptions: str) -> OfficialLinkSelection:
-    return OfficialLinkSelection.of(list(descriptions), HINTS)
+    return OfficialLinkSelection.of(SourceDescriptionLines.of(descriptions), HINTS)
 
 
-def test_hints_resource_is_the_donor_file_byte_for_byte() -> None:
-    path: pathlib.Path = TextResource(OFFICIAL_LINK_HINTS_RESOURCE).path
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == DONOR_HINTS_SHA256
+def test_the_hints_of_the_answer_check_name_official_pages() -> None:
     assert "official" in HINTS.hints.phrases and "сайт" in HINTS.hints.phrases
 
 
@@ -34,6 +35,30 @@ def test_context_is_a_lowercase_substring_of_the_line() -> None:
     assert HINTS.has_context("Офіційний сайт ініціативи")
     assert not HINTS.has_context("Read more https://example.org")
     assert not HINTS.has_context("   ")
+
+
+def test_publish_context_is_the_links_heading_or_its_own_hint() -> None:
+    assert HINTS.publish_hints.phrases == ("official", "resource", "resources", "details", "site", "website")
+    assert HINTS.has_publish_context("More DETAILS https://example.org")
+    assert HINTS.has_publish_context("\U0001F310 Links:")
+    assert not HINTS.has_publish_context("Офіційний сайт https://example.org")     # подсказки проверки ответа — не эти
+
+
+def test_the_description_lines_keep_the_source_of_each_line() -> None:
+    lines: SourceDescriptionLines = SourceDescriptionLines.of(("one\r\n  two  ", "three"))
+    assert [(line.text, line.source_index) for line in lines.lines] == [("one", 0), ("two", 0), ("three", 1)]
+
+
+def test_ranking_is_by_score_and_then_by_order() -> None:
+    ranked: RankedLinks = RankedLinks(
+        (
+            LinkCandidate("http://alpha.org/p", has_context=False, index=0),
+            LinkCandidate("https://bravo.org/p", has_context=False, index=1),
+            LinkCandidate("https://charlie.org/p", has_context=False, index=2),
+            LinkCandidate("https://delta.org/p", has_context=True, index=3),
+        )
+    )
+    assert ranked.urls == ("https://delta.org/p", "https://bravo.org/p", "https://charlie.org/p", "http://alpha.org/p")
 
 
 def test_no_links_gives_an_empty_selection() -> None:
@@ -109,7 +134,7 @@ def test_selection_for_slot_sources_reads_raw_video_descriptions() -> None:
     assert OfficialLinkSelection.for_sources(sources, HINTS) == select("Official site: https://alpha.org", "")
 
 
-# --- официальные ссылки после санации (донор: url_selector.py::select_authoritative_non_youtube, build_authoritative)
+# --- официальные ссылки описания эфира после санации
 
 
 def source_with(description: str, row: int = 2, title: str = "Source title") -> SourceVideo:
@@ -124,7 +149,7 @@ def llm_log() -> Iterator[LogCapture]:
 
 def authoritative(*descriptions: str, tail: tuple[str, ...] = (), malformed: int = 0) -> AuthoritativeLinks:
     sources: tuple[SourceVideo, ...] = tuple(source_with(text, index + 2) for index, text in enumerate(descriptions))
-    return AuthoritativeLinks.of("en", sources, tail, malformed)
+    return AuthoritativeLinks.of("en", sources, TextLinks(tail, malformed), HINTS)
 
 
 def test_root_and_language_path_of_one_site_are_one_link() -> None:
@@ -150,13 +175,13 @@ def test_at_most_three_source_links_then_every_new_tail_link() -> None:
     )
     assert links.urls[3:] == ("https://e.example", "https://f.example")
     assert links.emitted_source_video_urls == 3 and len(links.urls) == 5
-    assert links.preserved_tail == 3 and links.duplicate_urls_removed == 1
-    assert links.ignored_llm_youtube_urls == 1 and links.malformed_dropped == 3
+    assert len(links.text.preserved) == 3 and links.duplicate_urls_removed == 1
+    assert links.text.youtube_count == 1 and links.text.malformed_dropped == 3
 
 
 def test_the_own_video_link_of_a_source_is_youtube_and_never_an_official_link() -> None:
     """Ссылка ряда — всегда видео YouTube: ссылка самого видео в официальные не идёт."""
-    links: AuthoritativeLinks = AuthoritativeLinks.of("en", (source_with("", title="Official conference"),), (), 0)
+    links: AuthoritativeLinks = AuthoritativeLinks.of("en", (source_with("", title="Official conference"),), TextLinks(()), HINTS)
     assert links.urls == () and links.emitted_source_video_urls == 0
 
 
@@ -169,17 +194,18 @@ def test_youtube_links_of_descriptions_are_counted_for_recommended_materials() -
     assert links.urls == ()
 
 
-def test_the_log_lines_have_donor_keys(llm_log: LogCapture) -> None:
+def test_the_log_lines_name_what_was_selected(llm_log: LogCapture) -> None:
     links: AuthoritativeLinks = authoritative("https://example.org", tail=("https://[bad",), malformed=1)
-    assert llm_log.messages() == list(links.log_lines)
-    assert links.log_lines == (
+    texts: tuple[str, ...] = tuple(event.text for event in links.events)
+    assert llm_log.messages() == list(texts)
+    assert texts == (
         "merged_source_urls_built lang=en inspected=1 emitted=1 selected_youtube_urls=0 deduped=0 "
         "preserved_non_youtube_tail_urls=0 raw_youtube_urls_found=0 deduped_youtube_candidates=0 "
         "repeated_youtube_candidates=0 ignored_llm_youtube_urls=0 "
         "source_urls_mode=authoritative_non_youtube_from_inputs_plus_script_selected_recommended_materials",
         "merged_source_urls_cleaned lang=en malformed_tail_urls_dropped=2",
     )
-    assert len(authoritative("text").log_lines) == 1
+    assert len(authoritative("text").events) == 1
 
 
 def test_a_bad_address_in_a_source_description_is_not_a_link() -> None:

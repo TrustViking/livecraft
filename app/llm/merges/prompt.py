@@ -5,7 +5,7 @@
 блоком правил и контракта, затем политика смешения тем и политика ссылок, а инструкция повтора — последней, чтобы
 начало промта (правила, контракт, источники) у первой попытки и у повтора совпадало.
 
-Меньше двух источников — не исключение, а `MergePromptRefusal`: такой слот merge не делает.
+Промт собирается только для слота, где merge нужен: у него не меньше двух источников с описанием (`MergeJob`).
 """
 from __future__ import annotations
 
@@ -18,11 +18,10 @@ from typing import Final
 import pycountry
 
 from app.core.text_format import PARAGRAPH_BREAK
-from app.llm.merges import rules
 from app.llm.merges.contract import MergeContract
 from app.llm.merges.prompt_texts import MergeContractMode, MergePromptTexts
 from app.llm.merges.retry import RetryProfile
-from app.llm.merges.source import MergeSource
+from app.llm.merges.source import HARD_TRUNCATION_DISABLED, MergeSource
 from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.sources.video import SourceVideo
 
@@ -31,32 +30,13 @@ LOGGER: logging.Logger = get_logger(LogArea.LLM)
 UNKNOWN_LANGUAGE_NAME: Final[str] = "Unknown"
 LANGUAGE_NAME_FIELD: Final[str] = "name"           # английское название языка в записи справочника pycountry
 MERGE_CONTRACT_PLACEHOLDER: Final[str] = "{merge_contract_block}"
-HARD_TRUNCATION_DISABLED: Final[str] = "disabled"   # тексты источников в промт идут целиком
 
 
 class PromptEvent(str, Enum):
     """События промта в логе."""
 
-    REFUSED = "merge_prompt_refused"
     SOURCES_READY = "merge_prompt_sources_ready"
     CONTRACT_SELECTED = "merge_prompt_contract_selected"
-
-
-@dataclass(frozen=True)
-class MergePromptRefusal:
-    """Промт не собирается: источников меньше двух (merge нужен только для слота из нескольких видео)."""
-
-    language: str
-    source_count: int
-
-    @property
-    def event(self) -> LogEvent:
-        return LogEvent.of(
-            PromptEvent.REFUSED,
-            language=self.language,
-            source_count=self.source_count,
-            min_sources=rules.PROMPT_MIN_SOURCES,
-        )
 
 
 @dataclass(frozen=True)
@@ -76,11 +56,7 @@ class MergePrompt:
         videos: Sequence[SourceVideo],
         texts: MergePromptTexts,
         retry: RetryProfile | None = None,
-    ) -> MergePrompt | MergePromptRefusal:
-        if len(videos) < rules.PROMPT_MIN_SOURCES:
-            refusal: MergePromptRefusal = MergePromptRefusal(language=language, source_count=len(videos))
-            refusal.event.emit(LOGGER, logging.WARNING)
-            return refusal
+    ) -> MergePrompt:
         sources: tuple[MergeSource, ...] = tuple(MergeSource.of(video, texts) for video in videos)
         contract: MergeContract = MergeContract.select(tuple(source.prompt_description for source in sources), texts)
         prompt: MergePrompt = cls(language=language, sources=sources, contract=contract, retry=retry, texts=texts)
@@ -168,7 +144,7 @@ class MergePrompt:
             narrative_trigger=contract.mode is MergeContractMode.NARRATIVE,
         )
         return (
-            *(source.log_line(index, self.language) for index, source in enumerate(self.sources, start=1)),
+            *(source.event(index, self.language).text for index, source in enumerate(self.sources, start=1)),
             sources_ready.text,
             contract_selected.text,
         )

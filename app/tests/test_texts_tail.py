@@ -1,25 +1,23 @@
-"""Хвост ответа модели: строки, абзацы и сбор хвоста в конце и внутри текста (донор: test_sanitizer_tail_parser.py)."""
+"""Хвост ответа модели: строки, абзацы и сбор хвоста в конце и внутри текста."""
 from __future__ import annotations
 
 import pytest
 
-from app.texts.description_marks import CtaLexicon
+from app.texts.description_marks import CtaLexicon, TextTail
+from app.texts.hashtags import is_hashtags_line
 from app.texts.tail import (
+    CtaTailLine,
     EmbeddedTail,
+    TailCollector,
     TailFragments,
-    TailReader,
-    TextTail,
+    TailParagraph,
     TrailingTail,
     UrlTail,
     clean_double_bullet_markers,
-    dedupe_cta_lines,
-    is_hashtags_line,
     is_source_url_line,
-    merge_hashtag_lines,
 )
 
 CTA: CtaLexicon = CtaLexicon.load()
-READER: TailReader = TailReader(CTA)
 NEUTRAL: str = chr(0x1F539)
 PIN: str = chr(0x1F4CC)
 
@@ -49,28 +47,13 @@ def test_hashtags_line(line: str, expected: bool) -> None:
     assert is_hashtags_line(line) is expected
 
 
-@pytest.mark.parametrize(
-    "line",
-    [
-        "Напишите в комментариях, какие вопросы вы считаете ключевыми.",
-        "Напишіть у коментарях, що ви думаєте про це.",
-        "Write a comment and share your thoughts on this topic.",
-        "- Subscribe to our channel",
-        "Watch the full stream here",
-    ],
-)
-def test_standalone_cta_lines(line: str) -> None:
-    assert READER.is_standalone_cta_line(line)
-
-
-def test_long_factual_text_with_a_comment_word_is_not_a_standalone_cta() -> None:
-    long_text: str = (
-        "Юрист прокомментировал ситуацию и дал развёрнутый комментарий о позиции защиты, "
-        "включая анализ доказательной базы, свидетельских показаний и процедурных нарушений, "
-        "которые были допущены в ходе следствия по делу обвиняемого."
-    )
-    assert not READER.is_standalone_cta_line(long_text)
-    assert not READER.is_standalone_cta_line("   ")
+def test_a_cta_line_of_the_tail_may_carry_hashtags() -> None:
+    with_tags: CtaTailLine = CtaTailLine("Join us tonight and share your thoughts. #live", CTA)
+    assert with_tags.is_cta and with_tags.has_split_hashtags
+    assert with_tags.hashtags == TextTail(text="Join us tonight and share your thoughts.", tail="#live")
+    plain: CtaTailLine = CtaTailLine("Subscribe to our channel", CTA)
+    assert plain.is_cta and not plain.has_split_hashtags
+    assert not CtaTailLine("Facts about the vote. #live", CTA).is_cta
 
 
 def test_double_bullet_markers_keep_the_first_marker() -> None:
@@ -80,12 +63,23 @@ def test_double_bullet_markers_keep_the_first_marker() -> None:
 
 
 def test_hashtag_lines_merge_without_case_repeats() -> None:
-    assert merge_hashtag_lines(["#AI #Climate", "#ai #Ukraine", "text #x"]) == "#AI #Climate #Ukraine #x"
-    assert merge_hashtag_lines([]) == ""
+    fragments: TailFragments = TailFragments(hashtag_lines=("#AI #Climate", "#ai #Ukraine", "text #x"))
+    assert fragments.hashtags_line == "#AI #Climate #Ukraine #x"
+    assert TailFragments().hashtags_line == ""
 
 
 def test_cta_lines_dedupe_without_case_and_spaces() -> None:
-    assert dedupe_cta_lines(["Join  us", "join us", "", "Share"]) == ("Join us", "Share")
+    joined: TailFragments = TailFragments(cta_lines=("Join  us", "join us", "", "Share")).followed_by(TailFragments())
+    assert joined.cta_lines == ("Join us", "Share")
+
+
+def test_the_collector_counts_changed_and_malformed_url_lines() -> None:
+    collector: TailCollector = TailCollector()
+    for line in ("https://example.org/?utm_source=x", "https://[bad", "https://example.com"):
+        collector.add_url_line(line)
+    assert (collector.urls, collector.url_changes, collector.malformed) == (
+        ["https://example.org", "https://example.com"], 1, 1
+    )
 
 
 # --- абзацы
@@ -93,27 +87,18 @@ def test_cta_lines_dedupe_without_case_and_spaces() -> None:
 
 def test_url_tail_takes_clean_links_and_counts_changed_and_malformed() -> None:
     paragraph: str = "Body text (https://example.org/?utm_source=x https://[bad https://example.org"
-    # Открывающая скобка перед ссылками остаётся в тексте — как у донора (скобка — граница, а не часть ссылки).
-    assert READER.url_tail(paragraph) == UrlTail(
+    # Открывающая скобка перед ссылками остаётся в тексте: скобка — граница, а не часть ссылки.
+    assert TailParagraph.of(paragraph).url_tail == UrlTail(
         text="Body text (", urls=("https://example.org",), change_count=1, malformed=1
     )
-    assert READER.url_tail("No links here.") == UrlTail(text="No links here.")
-    assert READER.url_tail("  ") == UrlTail(text="")
+    assert TailParagraph.of("No links here.").url_tail == UrlTail(text="No links here.")
+    assert TailParagraph.of("  ").url_tail == UrlTail(text="")
 
 
 def test_hashtag_tail_trims_the_text_before_it() -> None:
-    assert READER.hashtag_tail("Body words, #one #two") == TextTail(text="Body words", tail="#one #two")
-    assert READER.hashtag_tail("Body #one words") == TextTail(text="Body #one words")
-
-
-def test_cta_tail_takes_the_last_cta_sentence_or_the_whole_cta_paragraph() -> None:
-    assert READER.cta_tail("Facts come first. Join us tonight and share your thoughts.") == TextTail(
-        text="Facts come first.", tail="Join us tonight and share your thoughts."
-    )
-    assert READER.cta_tail("Subscribe to our channel") == TextTail(text="", tail="Subscribe to our channel")
-    assert READER.cta_tail("Facts come first. More facts arrive later.") == TextTail(
-        text="Facts come first. More facts arrive later."
-    )
+    assert TailParagraph.of("Body words, #one #two").hashtag_tail == TextTail(text="Body words", tail="#one #two")
+    assert TailParagraph.of("Body #one words").hashtag_tail == TextTail(text="Body #one words")
+    assert TailParagraph.of("").hashtag_tail == TextTail(text="")
 
 
 # --- хвост в конце текста

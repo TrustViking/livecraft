@@ -1,16 +1,16 @@
 """Сборка описания эфира после санации: тело, рекомендуемые материалы, официальные ссылки, призыв, хештеги.
 
-Перенесено из restreamer, поведение как есть: `app\\publish\\sanitizers\\description_composer.py`
-(`DescriptionComposer.compose`, `resolve_layout`, `render_recommended_block`) и заголовки блоков
-`app\\resources\\heading_resolver.py` (`_HARDCODED_SEED` — ресурс `publish_headings.json` без правки строк).
+Порядок частей: тело, рекомендуемые материалы, официальные ссылки, призыв, хештеги — через пустую строку; раскладка
+частей (`DescriptionParts.layout`) идёт в строки лога санации. Заголовки блоков — ресурс `publish_headings.json`.
 
 Заголовок блока — по языку описания: пустой, служебный (`unknown`, `other`, `none`, `und`, `xx`) или не двухбуквенный код
-— английский, как у донора; язык, которого нет в файле, — тоже английский и строка лога `heading_fallback_en` (у донора —
-перевод нейросетью с кешем на диске; это задача 3.14b). Рекомендуемые материалы рисуются строками «👉 ссылка» — так донор
-рисовал их, когда название видео не получено; названия видео — задача 3.14b.
+— английский; язык, которого нет в файле, — тоже английский и строка лога `heading_fallback_en` (перевод заголовка — задача
+3.14b). Рекомендуемые материалы рисуются строками «👉 ссылка», пока название видео не получено; названия видео — задача
+3.14b.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -19,7 +19,7 @@ from typing import Final
 from app.core.language_code import LanguageCode
 from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
 from app.core.web_link import WebLink
-from app.observability.log_event import LogArea, get_logger
+from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.resources.loader import TextResource
 
 LOGGER = get_logger(LogArea.TEXTS)
@@ -33,6 +33,14 @@ LAYOUT_EMPTY: Final[str] = "empty"
 LAYOUT_BLANK: Final[str] = "blank"
 
 
+class ComposerEvent(str, Enum):
+    """События сборки описания в логе."""
+
+    INVALID_LANGUAGE = "heading_cache_invalid_language_format"
+    FALLBACK_EN = "heading_fallback_en"
+    RECOMMENDED_RENDERED = "recommended_block_rendered_with_titles"
+
+
 class HeadingKind(str, Enum):
     """Блок описания со своим заголовком."""
 
@@ -41,7 +49,7 @@ class HeadingKind(str, Enum):
 
 
 class LayoutPart(str, Enum):
-    """Части описания в строке раскладки (`tail_layout` донора)."""
+    """Части описания в строке раскладки (`tail_layout`)."""
 
     BODY = "body"
     RECOMMENDED = "recommended_materials"
@@ -69,16 +77,16 @@ class PublishHeadings:
     def resolve(self, kind: HeadingKind, language: str) -> str:
         """Заголовок вида на языке; не знаем языка — английский."""
         by_language: Mapping[str, str] = self.headings[kind.value]
-        normalized: str = str(language or "").strip().lower()
+        normalized: str = language.strip().lower()
         if normalized in INVALID_LANGUAGES:
             return by_language[FALLBACK_LANGUAGE]
         if not LanguageCode(normalized).is_shaped:
-            LOGGER.warning("heading_cache_invalid_language_format kind=%s language=%r", kind.value, language)
+            LogEvent.of(ComposerEvent.INVALID_LANGUAGE, kind=kind, language=repr(language)).emit(LOGGER, logging.WARNING)
             return by_language[FALLBACK_LANGUAGE]
         heading: str | None = by_language.get(normalized)
         if heading:
             return heading
-        LOGGER.info("heading_fallback_en kind=%s language=%s", kind.value, normalized)
+        LogEvent.of(ComposerEvent.FALLBACK_EN, kind=kind, language=normalized).emit(LOGGER)
         return by_language[FALLBACK_LANGUAGE]
 
 
@@ -86,7 +94,7 @@ class PublishHeadings:
 class DescriptionParts:
     """Части описания: тело, строка хештегов, ссылки рекомендуемых видео, официальные ссылки, призыв.
 
-    Опубликованное описание призыва не несёт (донор отбрасывает его всегда); поле нужно раскладке до отбрасывания.
+    Опубликованное описание призыва не несёт (призыв не публикуется никогда); поле нужно раскладке до отбрасывания.
     """
 
     body: str
@@ -110,7 +118,7 @@ class DescriptionParts:
         return LAYOUT_JOINER.join(parts) if parts else LAYOUT_EMPTY
 
     def compose(self, language: str, headings: PublishHeadings) -> str:
-        """Описание: части через пустую строку в порядке донора — тело, рекомендуемые, официальные, призыв, хештеги."""
+        """Описание: части через пустую строку по порядку — тело, рекомендуемые, официальные, призыв, хештеги."""
         parts: list[str] = []
         if self.body:
             parts.append(self.body.strip())
@@ -132,8 +140,6 @@ class DescriptionParts:
         entries: list[str] = [RECOMMENDED_ENTRY.format(url=url.strip()) for url in self.recommended_urls if url.strip()]
         if not entries:
             return ""
-        LOGGER.info(
-            "recommended_block_rendered_with_titles urls=%d titles_rendered=0 title_fetch_failures=%d",
-            len(entries), len(entries),
-        )
+        rendered: LogEvent = LogEvent.of(ComposerEvent.RECOMMENDED_RENDERED, urls=len(entries), titles_rendered=0)
+        rendered.extended(title_fetch_failures=len(entries)).emit(LOGGER)
         return PARAGRAPH_BREAK.join([headings.recommended_materials(language), *entries]).strip()

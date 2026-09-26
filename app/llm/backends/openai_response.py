@@ -1,25 +1,24 @@
 """Ответ OpenAI Responses API: текст, причина обрыва и расход (CLAUDE.md §2 строки про llm\\). Только для OpenAI.
 
-Правила донора: текст — `output_text`, иначе куски `output[].content[]` типов output_text/text
-(`llm_client.py`); расход — поля `ResponseUsage` openai (`llm_usage_tracker.py`): input_tokens,
-input_tokens_details.{cached_tokens, cache_write_tokens}, output_tokens, output_tokens_details.reasoning_tokens,
-total_tokens. Здесь ответ SDK становится общими объектами разъёма — `RequestUsage` со стоимостью по ценам
-OpenAI и `LlmResponse`.
+Текст — `output_text`, иначе куски `output[].content[]` типов output_text/text. Расход — поля `ResponseUsage` openai:
+input_tokens, input_tokens_details.{cached_tokens, cache_write_tokens}, output_tokens,
+output_tokens_details.reasoning_tokens, total_tokens. Ответ SDK бывает объектом или словарём — `SdkObject` читает поля
+одинаково. Здесь ответ SDK становится общими объектами разъёма — `RequestUsage` со стоимостью по ценам OpenAI и
+`LlmResponse`.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Final
+from enum import Enum
+from typing import Any, Final
 
 from app.core.text_format import NEWLINE
 from app.llm.backend import LlmResponse
-from app.llm.backends.openai_model import OpenAiModel, ServiceTierRule
-from app.llm.json_text import parse_json_object
-from app.llm.usage import RequestUsage
-
-if TYPE_CHECKING:      # только для аннотаций: openai.py сам импортирует этот модуль
-    from app.llm.backends.openai import OpenAiRequest
+from app.llm.backends.openai_model import OpenAiModel, OpenAiTariffs, ServiceTierRule
+from app.llm.backends.openai_request import OpenAiRequest
+from app.llm.json_text import ParsedJson
+from app.llm.usage import RequestUsage, TokenCounts
 
 INT_PATTERN: Final[re.Pattern[str]] = re.compile(r"-?\d+")
 THOUSANDS_SEPARATOR: Final[str] = ","
@@ -27,15 +26,32 @@ INCOMPLETE_MAX_OUTPUT: Final[str] = "max_output_tokens"
 OUTPUT_TEXT_TYPES: Final[frozenset[str]] = frozenset({"output_text", "text"})
 
 
-def read_field(container: Any, name: str) -> Any:
-    """Поле ответа SDK: у объекта — атрибут, у словаря — ключ; нет — None."""
-    if isinstance(container, dict):
-        return container.get(name)
-    return getattr(container, name, None)
+class ResponseField(str, Enum):
+    """Поля ответа Responses API, которые читает программа."""
+
+    ID = "id"
+    MODEL = "model"
+    SERVICE_TIER = "service_tier"
+    USAGE = "usage"
+    OUTPUT = "output"
+    OUTPUT_TEXT = "output_text"
+    CONTENT = "content"
+    TEXT = "text"
+    TYPE = "type"
+    INCOMPLETE_DETAILS = "incomplete_details"
+    REASON = "reason"
+    INPUT_TOKENS = "input_tokens"
+    INPUT_DETAILS = "input_tokens_details"
+    CACHED_TOKENS = "cached_tokens"
+    CACHE_WRITE_TOKENS = "cache_write_tokens"
+    OUTPUT_TOKENS = "output_tokens"
+    OUTPUT_DETAILS = "output_tokens_details"
+    REASONING_TOKENS = "reasoning_tokens"
+    TOTAL_TOKENS = "total_tokens"
 
 
 def parse_int(raw: Any) -> int | None:
-    """Целое из числа или строки «1,234»; логическое, дробная строка и мусор — None (правило донора)."""
+    """Целое из числа или строки «1,234»; логическое, дробная строка и мусор — None."""
     if isinstance(raw, bool):
         return None
     if isinstance(raw, int):
@@ -46,46 +62,83 @@ def parse_int(raw: Any) -> int | None:
     return int(text) if INT_PATTERN.fullmatch(text) else None
 
 
-def _int_field(container: Any, name: str) -> int:
-    return parse_int(read_field(container, name)) or 0
+@dataclass(frozen=True)
+class SdkObject:
+    """Объект ответа SDK или его часть: поле читается у объекта атрибутом, у словаря ключом; нет — None."""
+
+    value: Any
+
+    def get(self, name: ResponseField) -> Any:
+        if isinstance(self.value, dict):
+            return self.value.get(name.value)
+        return getattr(self.value, name.value, None)
+
+    def part(self, name: ResponseField) -> SdkObject:
+        return SdkObject(self.get(name))
+
+    def integer(self, name: ResponseField) -> int | None:
+        return parse_int(self.get(name))
+
+    def count(self, name: ResponseField) -> int:
+        """Число токенов поля; нет или не число — 0."""
+        return self.integer(name) or 0
+
+    def text(self, name: ResponseField) -> str:
+        """Строка поля без краёв; нет — пусто."""
+        return str(self.get(name) or "").strip()
+
+    def items(self, name: ResponseField) -> tuple[SdkObject, ...]:
+        """Элементы поля-списка; не список — пусто."""
+        found: Any = self.get(name)
+        return tuple(SdkObject(item) for item in found) if isinstance(found, list) else ()
+
+    @property
+    def output_text(self) -> str:
+        """Текст ответа: `output_text`, иначе куски `output[].content[]` типов output_text/text."""
+        direct: str = self.text(ResponseField.OUTPUT_TEXT)
+        if direct:
+            return direct
+        chunks: list[str] = [
+            content.text(ResponseField.TEXT)
+            for item in self.items(ResponseField.OUTPUT)
+            for content in item.items(ResponseField.CONTENT)
+            if content.text(ResponseField.TYPE).lower() in OUTPUT_TEXT_TYPES and content.text(ResponseField.TEXT)
+        ]
+        return NEWLINE.join(chunks).strip()
 
 
 @dataclass(frozen=True)
 class OpenAiUsage:
     """Токены одного ответа OpenAI, как их назвал сам ответ: модель и тариф — фактические, а не запрошенные."""
 
-    input_tokens: int
-    cached_input_tokens: int
-    cache_write_tokens: int
-    output_tokens: int
-    reasoning_tokens: int
-    total_tokens: int
+    tokens: TokenCounts
     response_id: str
     model: str
     service_tier: str
 
     @classmethod
-    def from_response(cls, response: Any) -> OpenAiUsage | None:
+    def from_response(cls, response: SdkObject) -> OpenAiUsage | None:
         """Расход из ответа; нет `usage` или в нём нет входа и выхода — None (расход неизвестен)."""
-        usage: Any = read_field(response, "usage")
-        if usage is None:
-            return None
-        input_tokens: int | None = parse_int(read_field(usage, "input_tokens"))
-        output_tokens: int | None = parse_int(read_field(usage, "output_tokens"))
+        usage: SdkObject = response.part(ResponseField.USAGE)
+        input_tokens: int | None = usage.integer(ResponseField.INPUT_TOKENS)
+        output_tokens: int | None = usage.integer(ResponseField.OUTPUT_TOKENS)
         if input_tokens is None or output_tokens is None:
             return None
-        input_details: Any = read_field(usage, "input_tokens_details")
-        total: int | None = parse_int(read_field(usage, "total_tokens"))
-        return cls(
+        input_details: SdkObject = usage.part(ResponseField.INPUT_DETAILS)
+        total: int | None = usage.integer(ResponseField.TOTAL_TOKENS)
+        tokens: TokenCounts = TokenCounts(
             input_tokens=input_tokens,
-            cached_input_tokens=_int_field(input_details, "cached_tokens"),
-            cache_write_tokens=_int_field(input_details, "cache_write_tokens"),
+            cached_input_tokens=input_details.count(ResponseField.CACHED_TOKENS),
+            cache_write_tokens=input_details.count(ResponseField.CACHE_WRITE_TOKENS),
             output_tokens=output_tokens,
-            reasoning_tokens=_int_field(read_field(usage, "output_tokens_details"), "reasoning_tokens"),
+            thinking_tokens=usage.part(ResponseField.OUTPUT_DETAILS).count(ResponseField.REASONING_TOKENS),
             total_tokens=total if total is not None else input_tokens + output_tokens,
-            response_id=str(read_field(response, "id") or ""),
-            model=str(read_field(response, "model") or ""),
-            service_tier=str(read_field(response, "service_tier") or ""),
+        )
+        return cls(
+            tokens=tokens,
+            response_id=response.text(ResponseField.ID),
+            model=response.text(ResponseField.MODEL),
+            service_tier=response.text(ResponseField.SERVICE_TIER),
         )
 
     @property
@@ -93,25 +146,19 @@ class OpenAiUsage:
         """Тариф, по которому ответ посчитан; ответ не назвал — тариф по умолчанию."""
         return ServiceTierRule.of(self.service_tier)
 
-    def cost(self, requested: OpenAiModel) -> float | None:
-        """Стоимость по фактической модели ответа; ответ её не назвал — по запрошенной (правило донора)."""
-        served: OpenAiModel = OpenAiModel(self.model) if self.model.strip() else requested
-        return served.cost(self, self.tier)
+    def served(self, requested: OpenAiModel) -> OpenAiModel:
+        """Модель, по которой считается цена: названная ответом, а не названа — запрошенная."""
+        return OpenAiModel(self.model) if self.model else requested
 
-    def to_request_usage(self, requested: OpenAiModel, label: str) -> RequestUsage:
+    def to_request_usage(self, request: OpenAiRequest, tariffs: OpenAiTariffs) -> RequestUsage:
         """Общий расход разъёма: токены, фактический тариф и стоимость по ценам OpenAI."""
         return RequestUsage(
-            input_tokens=self.input_tokens,
-            cached_input_tokens=self.cached_input_tokens,
-            cache_write_tokens=self.cache_write_tokens,
-            output_tokens=self.output_tokens,
-            thinking_tokens=self.reasoning_tokens,
-            total_tokens=self.total_tokens,
+            tokens=self.tokens,
             response_id=self.response_id,
             model=self.model,
             tier=self.tier.value,
-            label=label,
-            cost_usd=self.cost(requested),
+            label=request.request.label,
+            cost_usd=tariffs.cost(self.served(request.model), self.tokens, self.tier),
         )
 
 
@@ -124,53 +171,26 @@ class OpenAiReply:
     usage: OpenAiUsage | None
 
     @classmethod
-    def of(cls, response: Any) -> OpenAiReply:
+    def of(cls, raw: Any) -> OpenAiReply:
+        response: SdkObject = SdkObject(raw)
         return cls(
-            text=cls._output_text(response),
-            incomplete_reason=cls._incomplete_reason(response),
+            text=response.output_text,
+            incomplete_reason=response.part(ResponseField.INCOMPLETE_DETAILS).text(ResponseField.REASON).lower(),
             usage=OpenAiUsage.from_response(response),
         )
-
-    @staticmethod
-    def _output_text(response: Any) -> str:
-        """Текст ответа: `output_text`, иначе куски `output[].content[]` типов output_text/text (правило донора)."""
-        direct: Any = read_field(response, "output_text")
-        if isinstance(direct, str) and direct.strip():
-            return direct.strip()
-        items: Any = read_field(response, "output")
-        if not isinstance(items, list):
-            return ""
-        chunks: list[str] = []
-        for item in items:
-            contents: Any = read_field(item, "content")
-            if not isinstance(contents, list):
-                continue
-            for content in contents:
-                text: Any = read_field(content, "text")
-                kind: str = str(read_field(content, "type") or "").strip().lower()
-                if kind in OUTPUT_TEXT_TYPES and isinstance(text, str) and text.strip():
-                    chunks.append(text.strip())
-        return NEWLINE.join(chunks).strip()
-
-    @staticmethod
-    def _incomplete_reason(response: Any) -> str:
-        details: Any = read_field(response, "incomplete_details")
-        return str(read_field(details, "reason") or "").strip().lower() if details is not None else ""
 
     @property
     def hit_max_output(self) -> bool:
         return self.incomplete_reason == INCOMPLETE_MAX_OUTPUT
 
-    def request_usage(self, request: OpenAiRequest) -> RequestUsage | None:
+    def request_usage(self, request: OpenAiRequest, tariffs: OpenAiTariffs) -> RequestUsage | None:
         """Расход ответа в общем виде; ответ его не сообщил — None."""
-        if self.usage is None:
-            return None
-        return self.usage.to_request_usage(request.model, request.request.label)
+        return self.usage.to_request_usage(request, tariffs) if self.usage is not None else None
 
     def to_response(self, request: OpenAiRequest) -> LlmResponse:
         """Общий ответ разъёма: JSON разбирается, только если запрос просил схему; модель — названная ответом."""
         return LlmResponse(
             text=self.text,
-            structured=parse_json_object(self.text) if request.request.is_structured else None,
+            structured=ParsedJson.first_object(self.text).data if request.request.is_structured else None,
             model=self.usage.model if self.usage is not None and self.usage.model else request.model.name,
         )

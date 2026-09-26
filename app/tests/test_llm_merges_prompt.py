@@ -8,7 +8,7 @@ from collections.abc import Iterator
 import pytest
 
 from app.llm.merges.contract import MergeContractMode
-from app.llm.merges.prompt import MergePrompt, MergePromptRefusal
+from app.llm.merges.prompt import MergePrompt
 from app.llm.merges.prompt_texts import MergePromptTexts
 from app.llm.merges.retry import RetryFacts, RetryProfile, RetrySignal
 from app.observability.log_event import LogArea
@@ -136,9 +136,7 @@ def three_videos() -> tuple[SourceVideo, ...]:
 
 
 def build(language: str, videos: tuple[SourceVideo, ...], texts: MergePromptTexts, retry: RetryProfile | None = None) -> MergePrompt:
-    prompt: MergePrompt | MergePromptRefusal = MergePrompt.of(language, videos, texts, retry)
-    assert isinstance(prompt, MergePrompt)
-    return prompt
+    return MergePrompt.of(language, videos, texts, retry)
 
 
 @pytest.fixture
@@ -439,14 +437,6 @@ def test_narrative_log_line_has_no_bullet_range() -> None:
     assert prompt.log_lines[-1].endswith(
         "contract_mode=narrative expected_bullet_range=- expanded_structure_enabled=no narrative_trigger=yes"
     )
-
-
-@pytest.mark.parametrize("count", [0, 1])
-def test_fewer_than_two_sources_is_a_refusal_value(count: int, llm_log: LogCapture) -> None:
-    result: MergePrompt | MergePromptRefusal = MergePrompt.of("uk", two_videos()[:count], TEXTS)
-    assert result == MergePromptRefusal(language="uk", source_count=count)
-    assert llm_log.messages(logging.WARNING) == [f"merge_prompt_refused language=uk source_count={count} min_sources=2"]
-    assert llm_log.messages(logging.INFO) == []
 
 
 # --- название языка

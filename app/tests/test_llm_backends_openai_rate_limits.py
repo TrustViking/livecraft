@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.llm.backends.openai_rate_limits import RateLimitSnapshot, parse_reset_seconds
+from app.llm.backends.openai_rate_limits import RateLimitSnapshot, ResetText
 from app.tests.fixtures.clock import StoppedClock
 
 NOW: float = 1_800_000_000.0
@@ -17,13 +17,13 @@ FIXED_CLOCK: StoppedClock = StoppedClock.at(datetime.fromtimestamp(NOW, timezone
     [("1m30s", 90.0), ("200ms", 0.2), ("6s", 6.0), ("1h", 3600.0), ("12", 12.0), ("0.5", 0.5), (str(NOW + 42), 42.0)],
 )
 def test_reset_values_become_seconds(raw: str, seconds: float) -> None:
-    assert parse_reset_seconds(raw, NOW) == pytest.approx(seconds)
+    assert ResetText(raw).seconds(NOW) == pytest.approx(seconds)
 
 
 def test_unreadable_reset_is_none_and_the_past_is_zero() -> None:
-    assert parse_reset_seconds("", NOW) is None
-    assert parse_reset_seconds("скоро", NOW) is None
-    assert parse_reset_seconds(str(NOW - 100), NOW) == 0.0
+    assert ResetText("").seconds(NOW) is None
+    assert ResetText("скоро").seconds(NOW) is None
+    assert ResetText(str(NOW - 100)).seconds(NOW) == 0.0
 
 
 def test_the_tightest_limits_are_taken() -> None:
@@ -39,7 +39,7 @@ def test_the_tightest_limits_are_taken() -> None:
     assert snapshot == RateLimitSnapshot(
         remaining_requests=499, remaining_tokens=12000, reset_requests_sec=90.0, reset_tokens_sec=0.2
     )
-    line: str = snapshot.log_line("gpt-5.4", "merge")
+    line: str = snapshot.event("gpt-5.4", "merge").text
     assert line == "llm_rate_limits model=gpt-5.4 label=merge rem_req=499 rem_tok=12000 reset_req=90s reset_tok=0s"
 
 
@@ -61,4 +61,12 @@ def test_no_ratelimit_headers_is_an_empty_snapshot() -> None:
         snapshot.remaining_requests, snapshot.remaining_tokens, snapshot.reset_requests_sec, snapshot.reset_tokens_sec
     )
     assert found == (None, None, None, None)
-    assert snapshot.log_line("", "") == "llm_rate_limits model=unknown label=unknown"
+    assert snapshot.event("", "").text == "llm_rate_limits model=unknown label=unknown"
+
+
+def test_headers_of_a_holder_that_has_none_are_looked_for_further() -> None:
+    nested: RateLimitSnapshot | None = RateLimitSnapshot.from_raw_response(
+        SimpleNamespace(headers=None, http_response=SimpleNamespace(headers={"x-ratelimit-remaining-tokens": "7"})),
+        FIXED_CLOCK,
+    )
+    assert nested is not None and nested.remaining_tokens == 7

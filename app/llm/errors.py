@@ -1,28 +1,29 @@
 """Отказ нейросети: что случилось, повторять ли, виновата ли настройка модели (CLAUDE.md §2 строки про llm\\).
 
-Общий объект разъёма (`app\\llm\\backend.py`): только данные отказа и правила над ними — «повторяемо»,
-«виновата настройка», «повод для запасной модели». Как исключение библиотеки конкретной нейросети становится
-этим отказом, решает её реализация в `app\\llm\\backends\\`. Отказ знает, чья он (`backend`): имя
-реализации идёт в лог, её название для человека — в текст.
+Общие объекты разъёма (`app\\llm\\backend.py`). `LlmFailure` — значение отказа: вид, чья нейросеть, код ответа,
+код и параметр ошибки, подробность — и правила над ними: «повторяемо», «виновата настройка», «повод для запасной
+модели». `LlmRequestError` — исключение с этим значением: так разъём сообщает о сбое `complete`; попытка merge и
+выбор модели дальше работают со значением. Как исключение библиотеки конкретной нейросети становится отказом, решает
+её реализация в `app\\llm\\backends\\` — там же правила, которые знают параметры запроса этой нейросети.
 
-Текст исключения — русская строка без ключа и без текста промта. `detail` — подробность ответа для лога:
-реализация вычёркивает из неё ключ (`scrubbed`) и обрезает её; исходная ошибка библиотеки — только `__cause__`.
+Текст отказа — русская строка без ключа и без текста промта. `detail` — подробность ответа для лога: реализация
+вычёркивает из неё ключ и обрезает её (`cleaned`); исходная ошибка библиотеки — только `__cause__` исключения.
 """
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Final
 
-from app.observability.log_event import LogValue
+from app.observability.log_event import LogEvent
 from app.ui import messages_ru as msg
 
 DETAIL_MAX_CHARS: Final[int] = 300
-TEMPERATURE_PARAM: Final[str] = "temperature"
 
 
 class LlmErrorKind(str, Enum):
-    """Вид отказа. Значения — `reason_code` донора без приставки нейросети: чья она, говорит поле `backend`."""
+    """Вид отказа. Значение — код причины в логе, без имени нейросети: чья она, говорит поле `backend`."""
 
     TIMEOUT = "timeout"
     CONNECTION = "connection_error"
@@ -36,7 +37,7 @@ class LlmErrorKind(str, Enum):
     UNSUPPORTED_PARAMETER = "unsupported_parameter"
     BAD_REQUEST = "bad_request"
     FAILED = "request_failed"
-    EMPTY_OUTPUT = "empty_output"        # ответ пришёл, но текста в нём нет (RuntimeError у донора)
+    EMPTY_OUTPUT = "empty_output"        # ответ пришёл, но текста в нём нет
     NOT_CONFIGURED = "not_configured"    # ключа нет — к нейросети не обращались
 
     @property
@@ -51,7 +52,7 @@ class LlmErrorKind(str, Enum):
 
     @property
     def is_fallback_reason(self) -> bool:
-        """Этот проект не может пользоваться моделью — только это оправдывает переход на запасную (донор)."""
+        """Этот проект не может пользоваться моделью — только это оправдывает переход на запасную."""
         return self in (LlmErrorKind.ACCESS_DENIED, LlmErrorKind.MODEL_NOT_FOUND)
 
     def human(self, backend_title: str) -> str:
@@ -75,106 +76,92 @@ _MODEL_CONFIGURATION: Final[frozenset[LlmErrorKind]] = frozenset(
 )
 
 
-class LlmRequestError(Exception):
-    """Запрос к нейросети не удался. Поля не меняются после создания; текст — русская строка без секретов.
+class LlmEvent(str, Enum):
+    """События отказа нейросети в логе."""
 
-    `backend` — имя реализации (`LlmBackend.name`); по нему текст берёт название нейросети для человека.
-    """
+    REQUEST_FAILED = "llm_request_failed"
 
-    def __init__(
-        self,
-        kind: LlmErrorKind,
-        *,
-        backend: str,
-        status_code: int | None = None,
-        api_error_code: str = "",
-        api_error_param: str = "",
-        detail: str = "",
-    ) -> None:
-        self._kind: LlmErrorKind = kind
-        self._backend: str = backend
-        self._status_code: int | None = status_code
-        self._api_error_code: str = api_error_code
-        self._api_error_param: str = api_error_param
-        self._detail: str = detail[:DETAIL_MAX_CHARS]
-        super().__init__(self.human)
 
-    def scrubbed(self, scrub: Callable[[str], str]) -> LlmRequestError:
-        """Та же ошибка с подробностью, пропущенной через `scrub` (вычёркивание ключа владельцем ключа)."""
-        return LlmRequestError(
-            self._kind,
-            backend=self._backend,
-            status_code=self._status_code,
-            api_error_code=self._api_error_code,
-            api_error_param=self._api_error_param,
-            detail=scrub(self._detail),
-        )
+@dataclass(frozen=True)
+class LlmFailure:
+    """Отказ нейросети — значение. `backend` — имя реализации (`LlmBackend.name`): по нему текст берёт название
+    нейросети для человека; `status_code` — код ответа, если он был; `detail` — подробность для лога."""
 
-    @property
-    def kind(self) -> LlmErrorKind:
-        return self._kind
+    kind: LlmErrorKind
+    backend: str
+    status_code: int | None = None
+    api_error_code: str = ""
+    api_error_param: str = ""
+    detail: str = ""
 
-    @property
-    def backend(self) -> str:
-        return self._backend
-
-    @property
-    def status_code(self) -> int | None:
-        return self._status_code
-
-    @property
-    def api_error_code(self) -> str:
-        return self._api_error_code
-
-    @property
-    def api_error_param(self) -> str:
-        return self._api_error_param
-
-    @property
-    def detail(self) -> str:
-        return self._detail
+    def cleaned(self, scrub: Callable[[str], str]) -> LlmFailure:
+        """Тот же отказ с подробностью, пропущенной через `scrub` (вычёркивание ключа владельцем ключа) и обрезанной."""
+        return replace(self, detail=scrub(self.detail)[:DETAIL_MAX_CHARS])
 
     @property
     def retryable(self) -> bool:
-        return self._kind.is_retryable
+        return self.kind.is_retryable
 
     @property
     def is_model_configuration(self) -> bool:
-        return self._kind.is_model_configuration
+        return self.kind.is_model_configuration
 
     @property
     def is_fallback_reason(self) -> bool:
         """Модель недоступна этому проекту — повод перейти на запасную (правило вида отказа)."""
-        return self._kind.is_fallback_reason
-
-    @property
-    def is_temperature_unsupported(self) -> bool:
-        """Модель не принимает температуру — запрос повторяется без неё (правило донора)."""
-        if self._kind is not LlmErrorKind.UNSUPPORTED_PARAMETER:
-            return False
-        return self._api_error_param == TEMPERATURE_PARAM or TEMPERATURE_PARAM in self._detail.lower()
+        return self.kind.is_fallback_reason
 
     @property
     def backend_title(self) -> str:
         """Название нейросети для человека; незнакомое имя реализации — как есть."""
-        return msg.LLM_BACKEND_TITLE.get(self._backend, self._backend)
+        return msg.LLM_BACKEND_TITLE.get(self.backend, self.backend)
 
     @property
-    def reason(self) -> str:
+    def human_reason(self) -> str:
         """Причина для человека без обрамления «запрос не удался»."""
-        return self._kind.human(self.backend_title)
+        return self.kind.human(self.backend_title)
 
     @property
     def human(self) -> str:
-        if self._status_code is None:
-            return msg.LLM_REQUEST_FAILED.format(reason=self.reason)
-        return msg.LLM_REQUEST_FAILED_STATUS.format(reason=self.reason, status=self._status_code)
+        if self.status_code is None:
+            return msg.LLM_REQUEST_FAILED.format(reason=self.human_reason)
+        return msg.LLM_REQUEST_FAILED_STATUS.format(reason=self.human_reason, status=self.status_code)
+
+    def extend(self, event: LogEvent) -> LogEvent:
+        """Строка лога `event` с полями отказа: чей, вид, код ответа, код и параметр ошибки, подробность."""
+        return event.extended(
+            backend=self.backend,
+            reason_code=self.kind,
+            status_code=self.status_code,
+            api_error_code=self.api_error_code,
+            api_error_param=self.api_error_param,
+            detail=self.detail,
+        )
 
     @property
     def log_line(self) -> str:
-        return (
-            f"backend={self._backend} reason_code={self._kind.value} "
-            f"status_code={self._status_code if self._status_code is not None else LogValue.EMPTY.value} "
-            f"api_error_code={self._api_error_code or LogValue.EMPTY.value} api_error_param={self._api_error_param or LogValue.EMPTY.value} "
-            f"detail={self._detail or LogValue.EMPTY.value}"
-        )
+        return self.extend(LogEvent.of(LlmEvent.REQUEST_FAILED)).text
+
+
+class LlmRequestError(Exception):
+    """Запрос к нейросети не удался: исключение разъёма со значением отказа `failure`.
+
+    Контракт ошибок (CLAUDE.md §11): `reason` — вид отказа, `human` — русская строка без секретов (она же текст
+    исключения), `log_line` — строка лога.
+    """
+
+    def __init__(self, failure: LlmFailure) -> None:
+        self.failure: LlmFailure = failure
+        super().__init__(failure.human)
+
+    @property
+    def reason(self) -> LlmErrorKind:
+        return self.failure.kind
+
+    @property
+    def human(self) -> str:
+        return self.failure.human
+
+    @property
+    def log_line(self) -> str:
+        return self.failure.log_line

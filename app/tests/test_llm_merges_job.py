@@ -9,12 +9,13 @@ import pytest
 
 from app.llm.errors import LlmErrorKind
 from app.llm.merges.description import MergedDescription
-from app.llm.merges.job import MergeOutcome, MergeSkipReason, ParagraphEnforcement
+from app.llm.merges.job import JobEvent, ParagraphEnforcement
 from app.llm.merges.merge_rules import MergeRules
+from app.llm.merges.outcome import MergeOutcome
 from app.llm.merges.prompt import MergePrompt
 from app.llm.merges.retry import RetryFacts, RetryProfile, RetrySignal
 from app.llm.merges.run import MergeStopReason, MergeTally
-from app.observability.log_event import LogArea
+from app.observability.log_event import LogArea, LogEvent
 from app.intake.builder import SlotGroup
 from app.slots.slot import SlotKey
 from app.slots.texts import SlotTextOrigin, SlotTexts
@@ -49,9 +50,7 @@ RULES: MergeRules = MergeRules.load()
 
 
 def first_prompt(group: SlotGroup) -> MergePrompt:
-    prompt: MergePrompt | object = MergePrompt.of("en", group.videos, RULES.texts)
-    assert isinstance(prompt, MergePrompt)
-    return prompt
+    return MergePrompt.of("en", group.videos, RULES.texts)
 
 
 @pytest.fixture
@@ -149,7 +148,7 @@ def test_a_rejected_attempt_is_retried_with_its_targeted_profile(
 
 
 def test_the_insufficient_bullet_retry_names_the_real_bullet_count() -> None:
-    """Донор подставлял 0 (диагностика не передавалась); здесь — пункты отвергнутой попытки."""
+    """Подсказка повтора называет, сколько пунктов было в отвергнутой попытке, и сколько нужно."""
     merge_run, backend = run_with(answer(THIN_ANSWER), answer(STRONG_ANSWER))
     job_of(group_of(), merge_run).run()
     retry_block: str = backend.prompts[1].rsplit("RETRY INSTRUCTION:", 1)[1]
@@ -209,7 +208,7 @@ def test_quota_stops_the_slot_and_every_later_slot_goes_without_a_request(llm_lo
     later: MergeOutcome = job_of(later_group, merge_run).run()
     assert merge_run.stop_reason is MergeStopReason.QUOTA and len(backend.requests) == 1
     assert first.attempts == 1 and first.reject_codes == ("quota_exhausted",) and first.is_final_failure
-    assert later.attempts == 0 and later.skipped_reason is MergeSkipReason.QUOTA_EXHAUSTED
+    assert later.attempts == 0 and later.skipped_reason is MergeStopReason.QUOTA
     assert later.reject_codes == ("quota_exhausted",) and not later.is_final_failure
     assert later.texts.origin is SlotTextOrigin.SOURCE_COMPOSED
     aborted: list[str] = lines_starting(llm_log, "merge_branch_aborted_quota_exhausted")
@@ -227,7 +226,7 @@ def test_a_model_configuration_error_stops_merge_until_the_end_of_the_run(llm_lo
     later: MergeOutcome = job_of(group_of(start=SLOT_START + timedelta(hours=1)), merge_run).run()
     assert merge_run.stop_reason is MergeStopReason.MODEL and len(backend.requests) == 1
     assert first.reject_codes == ("authentication_failed",) and first.texts.origin is SlotTextOrigin.SOURCE_COMPOSED
-    assert later.skipped_reason is MergeSkipReason.MODEL_CONFIGURATION and later.attempts == 0
+    assert later.skipped_reason is MergeStopReason.MODEL and later.attempts == 0
     assert len(lines_starting(llm_log, "merge_llm_fatal_model_error")) == 1
     assert lines_starting(llm_log, "merge_llm_response_invalid") == []
     assert len(lines_starting(llm_log, "merge_branch_aborted_model_error")) == 2
@@ -251,7 +250,7 @@ def test_fewer_than_two_described_sources_skip_the_model(llm_log: LogCapture) ->
     pairs: tuple[tuple[str, str], ...] = (EXPANDED_SOURCES[0], ("Kharkiv rail and drone update", "  "))
     group: SlotGroup = group_of(pairs)
     outcome: MergeOutcome = job_of(group, merge_run).run()
-    assert outcome.skipped_reason is MergeSkipReason.INSUFFICIENT_DESCRIPTIONS and backend.requests == []
+    assert outcome.skipped_reason is MergeStopReason.INSUFFICIENT_DESCRIPTIONS and backend.requests == []
     assert outcome.texts == SlotTexts.from_sources([video.text for video in group.videos]) and outcome.reject_codes == ()
     assert not outcome.is_candidate and not outcome.is_final_failure
     assert lines_starting(llm_log, "merge_skipped") == [
@@ -287,7 +286,7 @@ def test_enforcement_collapses_a_body_longer_than_four_paragraphs() -> None:
 def test_enforcement_of_an_empty_description_changes_nothing() -> None:
     enforcement: ParagraphEnforcement = ParagraphEnforcement.of(MergedDescription("  "))
     assert not enforcement.mutated and enforcement.note == "empty_description"
-    assert enforcement.log_line("slot=s language=en") == (
+    assert enforcement.extend(LogEvent.of(JobEvent.POST_ENFORCEMENT, slot="s", language="en")).text == (
         "merge_post_enforcement slot=s language=en body_paragraphs_before=0 body_paragraphs_after=0 mutated=no "
         "recovery_applied=no reason=empty_description"
     )
@@ -300,7 +299,7 @@ def test_the_outcome_line_has_counts_and_no_texts() -> None:
     merge_run, _ = run_with(NOT_JSON, answer(STRONG_ANSWER))
     group: SlotGroup = group_of()
     outcome: MergeOutcome = job_of(group, merge_run).run()
-    assert outcome.log_line == (
+    assert outcome.event.text == (
         f"merge_attempt_outcome slot={group.key.slot_id} language=en source_count=3 success=yes merge_success=1 "
         "validation_rejected=1 retry_used=1 final_failure=0 publish_blocked=no texts=merged reject_codes=- "
         "skipped=-"
@@ -366,6 +365,7 @@ def test_a_blocked_publication_gives_source_texts_and_still_counts_as_a_merge_su
         f"merge_publish_gate_blocked target=package slot={group.key.slot_id} language=uk "
         "has_publish_stage_duplicate=yes has_publish_stage_opener_cta=no fallback=nomerge"
     ]
-    assert "success=yes merge_success=1 " in outcome.log_line and "publish_blocked=yes texts=source_composed " in outcome.log_line
+    line: str = outcome.event.text
+    assert "success=yes merge_success=1 " in line and "publish_blocked=yes texts=source_composed " in line
     tally: MergeTally = merge_run.tally
     assert (tally.merge_success, tally.final_failure, tally.real_merge_blocks, tally.fallback_merge_blocks) == (1, 0, 1, 0)

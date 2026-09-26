@@ -1,41 +1,49 @@
 """Merge на весь запуск: модель, нейросеть, настройки, правила, счётчики и остановка (CLAUDE.md §14 решение 23).
 
-Счётчики — `merge_run_summary.py::MergeRunSummary` донора (restreamer): поля объекта `MergeTally`, строка лога
-`merge_run_summary` — с ключами донора. Считает их сам итог слота (`MergeTally.record(MergeOutcome)`): донор увеличивал
-счётчики по ходу попыток, суммы те же. «Полных» и «частичных» артефактов донор считал по документу дня; здесь — так же,
-по дате слота (`MergeDayBlocks`).
+Счётчики запуска — поля объекта `MergeTally`, строка лога `merge_run_summary`. Итог каждого слота добавляет к ним свой
+счёт (`SlotCount`); «полные» и «частичные» итоги считаются по дням — по дате слота (`MergeDayBlocks`).
 
-Остановка — решение Коворка к 3.13: квота нейросети исчерпана или виновата настройка модели — merge не делается до конца
-запуска, оставшиеся слоты получают тексты источников, запуск идёт дальше (у донора ошибка настройки модели роняла весь
-прогон — против инварианта 9). Модель выбирает не этот объект: он получает имя уже выбранной (`ModelChoice.chosen`).
+Остановка: квота нейросети исчерпана или виновата настройка модели — merge не делается до конца запуска, оставшиеся
+слоты получают тексты источников, запуск идёт дальше (инвариант 9). Почему merge не делается — одно перечисление
+`MergeStopReason`: для одного слота (мало описаний) или до конца запуска. Модель выбирает не этот объект: он получает
+имя уже выбранной (`ModelChoice.chosen`) и из неё строит запрос каждой попытки (`MergeRun.request`).
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING
 
-from app.observability.log_event import LogArea, LogValue, get_logger
-
-if TYPE_CHECKING:
-    from app.config.loader import LlmSettings
-    from app.llm.backend import LlmBackend
-    from app.llm.merges.merge_rules import MergeRules
-    from app.llm.merges.job import MergeOutcome
+from app.config.settings import LlmSettings
+from app.llm.backend import LlmBackend, LlmRequest
+from app.llm.merges.answer import MergeAnswer
+from app.llm.merges.merge_rules import MergeRules
+from app.observability.log_event import LogArea, LogEvent, get_logger
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
 
 class MergeStopReason(str, Enum):
-    """Почему merge остановлен до конца запуска."""
+    """Почему merge не делается: у слота мало описаний — только для него; квота или настройка модели — до конца запуска."""
 
-    QUOTA = "quota_exhausted"                  # квота нейросети исчерпана
-    MODEL = "model_configuration"              # ключ, модель или форма запроса не приняты
+    INSUFFICIENT_DESCRIPTIONS = "insufficient_descriptions"    # непустых описаний меньше двух
+    QUOTA = "quota_exhausted"                                  # квота нейросети исчерпана
+    MODEL = "model_configuration"                              # ключ, модель или форма запроса не приняты
+
+    @property
+    def stops_the_run(self) -> bool:
+        return self is not MergeStopReason.INSUFFICIENT_DESCRIPTIONS
+
+
+class RunEvent(str, Enum):
+    """События merge запуска в логе."""
+
+    SUMMARY = "merge_run_summary"
+    STOPPED = "merge_run_stopped"
 
 
 class MergeArtifactStatus(str, Enum):
-    """Итог merge по дню (`slot_processing.py::resolve_merge_artifact_status` донора)."""
+    """Итог merge по дню."""
 
     NONE = "none"
     FULL = "full"
@@ -60,9 +68,23 @@ class MergeDayBlocks:
         return MergeArtifactStatus.FALLBACK_ONLY if self.fallback > 0 else MergeArtifactStatus.NONE
 
 
+@dataclass(frozen=True)
+class SlotCount:
+    """Что итог одного слота добавляет к счётчикам запуска: дата слота, принят ли ответ модели, отвергнутые попытки,
+    повторы, провал merge, восстановления абзацев и нужен ли был слоту merge."""
+
+    date: str
+    answer_accepted: bool
+    rejected_attempts: int
+    retries: int
+    final_failure: bool
+    paragraph_recoveries: int
+    is_candidate: bool
+
+
 @dataclass
 class MergeTally:
-    """Счётчики merge запуска — поля `MergeRunSummary` донора; блоки слотов — по датам (`days`)."""
+    """Счётчики merge запуска; блоки слотов — по датам (`days`)."""
 
     merge_success: int = 0
     validation_rejected: int = 0
@@ -71,18 +93,18 @@ class MergeTally:
     paragraph_recovery_used: int = 0
     days: dict[str, MergeDayBlocks] = field(default_factory=dict)
 
-    def record(self, outcome: MergeOutcome) -> None:
+    def record(self, count: SlotCount) -> None:
         """Учесть итог одного слота."""
-        self.merge_success += int(outcome.answer_accepted)
-        self.validation_rejected += outcome.rejected_attempts
-        self.retry_used += outcome.retries
-        self.final_failure += int(outcome.is_final_failure)
-        self.paragraph_recovery_used += outcome.paragraph_recoveries
-        if not outcome.is_candidate:
+        self.merge_success += int(count.answer_accepted)
+        self.validation_rejected += count.rejected_attempts
+        self.retry_used += count.retries
+        self.final_failure += int(count.final_failure)
+        self.paragraph_recovery_used += count.paragraph_recoveries
+        if not count.is_candidate:
             return
-        day: MergeDayBlocks = self.days.setdefault(outcome.date, MergeDayBlocks())
+        day: MergeDayBlocks = self.days.setdefault(count.date, MergeDayBlocks())
         day.candidates += 1
-        if outcome.answer_accepted:
+        if count.answer_accepted:
             day.real += 1
         else:
             day.fallback += 1
@@ -112,15 +134,23 @@ class MergeTally:
         return self.real_merge_blocks > 0
 
     @property
-    def log_line(self) -> str:
-        """Строка `merge_run_summary` — ключи и порядок донора (`MergeRunSummary.log_summary`)."""
-        return (
-            f"merge_run_summary merge_success={self.merge_success} validation_rejected={self.validation_rejected} "
-            f"retry_used={self.retry_used} final_failure={self.final_failure} "
-            f"paragraph_recovery_used={self.paragraph_recovery_used} real_merge_blocks={self.real_merge_blocks} "
-            f"merge_candidate_blocks={self.merge_candidate_blocks} fallback_merge_blocks={self.fallback_merge_blocks} "
-            f"full_merge_artifacts={self.full_merge_artifacts} partial_merge_artifacts={self.partial_merge_artifacts} "
-            f"had_real_merge_blocks={LogValue.YES.value if self.had_real_merge_blocks else LogValue.NO.value}"
+    def event(self) -> LogEvent:
+        """Строка `merge_run_summary`: счётчики попыток, затем блоки и итоги по дням."""
+        attempts: LogEvent = LogEvent.of(
+            RunEvent.SUMMARY,
+            merge_success=self.merge_success,
+            validation_rejected=self.validation_rejected,
+            retry_used=self.retry_used,
+            final_failure=self.final_failure,
+            paragraph_recovery_used=self.paragraph_recovery_used,
+        )
+        return attempts.extended(
+            real_merge_blocks=self.real_merge_blocks,
+            merge_candidate_blocks=self.merge_candidate_blocks,
+            fallback_merge_blocks=self.fallback_merge_blocks,
+            full_merge_artifacts=self.full_merge_artifacts,
+            partial_merge_artifacts=self.partial_merge_artifacts,
+            had_real_merge_blocks=self.had_real_merge_blocks,
         )
 
 
@@ -135,15 +165,19 @@ class MergeRun:
     tally: MergeTally = field(default_factory=MergeTally)
     stop_reason: MergeStopReason | None = None
 
+    def request(self, prompt_text: str, label: str) -> LlmRequest:
+        """Запрос попытки: промт, выбранная модель, предел ответа и ожидание из настроек, схема ответа merge."""
+        return LlmRequest.from_settings(self.settings, self.model, prompt_text, label).with_schema(MergeAnswer.SCHEMA)
+
     def stop(self, reason: MergeStopReason) -> None:
         """Остановить merge до конца запуска; первая причина остаётся."""
         if self.stop_reason is not None:
             return
         self.stop_reason = reason
-        LOGGER.error("merge_run_stopped provider=%s model=%s reason=%s", self.backend.name, self.model, reason.value)
+        stopped: LogEvent = LogEvent.of(RunEvent.STOPPED, provider=self.backend.name, model=self.model, reason=reason)
+        stopped.emit(LOGGER, logging.ERROR)
 
     @property
-    def log_line(self) -> str:
-        """Итог запуска: строка донора и причина остановки."""
-        stop: str = self.stop_reason.value if self.stop_reason is not None else LogValue.EMPTY.value
-        return f"{self.tally.log_line} stop_reason={stop}"
+    def event(self) -> LogEvent:
+        """Итог запуска: строка счётчиков и причина остановки."""
+        return self.tally.event.extended(stop_reason=self.stop_reason)

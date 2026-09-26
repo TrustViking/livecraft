@@ -1,31 +1,47 @@
-"""Модель OpenAI: что она умеет в запросе и сколько стоит (CLAUDE.md §2 строки про llm\\). Только для OpenAI.
+"""Модель OpenAI: что она умеет в запросе, тарифы и цены (CLAUDE.md §2 строки про llm\\). Только для OpenAI.
 
-Правила перенесены из restreamer: семейство и возможности модели — `models\\model_compatibility.py`
-(`_openai_model_family`, `*_supported`, правило имён), цены и множители тарифов — `model_pricing.py`
-(`MODEL_PRICES`, `SERVICE_TIER_MULTIPLIERS`, `price_for_model`, `estimate_cost_usd`). Здесь они — поля и
-методы объектов `OpenAiModel` и `ServiceTierRule`, а не свободные функции.
+`OpenAiModel` — модель по имени: семейство и возможности запроса. `ServiceTierRule` — тариф (`service_tier`) запроса
+или ответа. `OpenAiTariffs` — цены моделей за миллион токенов по тарифу Standard, псевдонимы имён и множители тарифов:
+ресурс `openai_prices.json` (снимок страницы цен), читается один раз за процесс. Стоимость ответа считается по числам
+токенов разъёма (`TokenCounts`).
 """
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Final
+from functools import cache
+from typing import Any, Final
 
-from app.config.loader import ServiceTier
+from app.config.settings import ServiceTier
+from app.llm.usage import TokenCounts
+from app.resources.loader import TextResource
 
-if TYPE_CHECKING:      # только для аннотаций: openai_response.py сам импортирует этот модуль
-    from app.llm.backends.openai_response import OpenAiUsage
-
+PRICES_RESOURCE: Final[str] = "openai_prices.json"
 TOKENS_PER_PRICE_UNIT: Final[float] = 1_000_000.0       # цены — в долларах за миллион токенов
 COST_DIGITS: Final[int] = 6
+UNKNOWN_TIER_MULTIPLIER: Final[float] = 1.0              # незнакомый тариф считается по Standard
+TEMPERATURE_FREE_PREFIX: Final[str] = "gpt"              # моделям gpt-* температура не шлётся
 
 # Ответ OpenAI называет модель снимком с датой (`gpt-5.4-2026-03-05`) — цена у неё та же, что у имени без даты.
 SNAPSHOT_SUFFIX_PATTERN: Final[re.Pattern[str]] = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 
 
+class TariffKey(str, Enum):
+    """Разделы и поля ресурса цен."""
+
+    PRICES = "prices"
+    ALIASES = "aliases"
+    TIER_MULTIPLIERS = "tier_multipliers"
+    INPUT = "input_usd"
+    CACHED_INPUT = "cached_input_usd"
+    CACHE_WRITE = "cache_write_usd"
+    OUTPUT = "output_usd"
+
+
 class ModelFamily(str, Enum):
-    """Семейство модели по имени — правило `_openai_model_family` донора; порядок проверки важен."""
+    """Семейство модели по имени; порядок проверки префиксов важен."""
 
     GPT_5 = "gpt-5"
     GPT_4O = "gpt-4o"
@@ -68,43 +84,24 @@ class ModelPrice:
     cache_write_usd: float
     output_usd: float
 
-    def standard_cost(self, usage: OpenAiUsage) -> float:
-        """Стоимость ответа по тарифу Standard: кешированный вход и запись кеша — части входа, считаются отдельно."""
-        uncached_input: int = max(0, usage.input_tokens - usage.cached_input_tokens - usage.cache_write_tokens)
+    @classmethod
+    def of(cls, data: Mapping[str, Any]) -> ModelPrice:
+        return cls(
+            input_usd=float(data[TariffKey.INPUT]),
+            cached_input_usd=float(data[TariffKey.CACHED_INPUT]),
+            cache_write_usd=float(data[TariffKey.CACHE_WRITE]),
+            output_usd=float(data[TariffKey.OUTPUT]),
+        )
+
+    def standard_cost(self, tokens: TokenCounts) -> float:
+        """Стоимость по тарифу Standard: кешированный вход и запись кеша — части входа, считаются отдельно."""
         total: float = (
-            uncached_input * self.input_usd
-            + usage.cached_input_tokens * self.cached_input_usd
-            + usage.cache_write_tokens * self.cache_write_usd
-            + usage.output_tokens * self.output_usd
+            tokens.uncached_input_tokens * self.input_usd
+            + tokens.cached_input_tokens * self.cached_input_usd
+            + tokens.cache_write_tokens * self.cache_write_usd
+            + tokens.output_tokens * self.output_usd
         )
         return total / TOKENS_PER_PRICE_UNIT
-
-
-# Снимок страницы цен OpenAI (developers.openai.com/api/docs/pricing), тариф Standard, короткий контекст.
-# Перенесён из restreamer `app\llm\model_pricing.py::MODEL_PRICES` как есть — снимок сентября 2026.
-# Страница поменялась — правится руками здесь и только здесь.
-MODEL_PRICES: Final[dict[str, ModelPrice]] = {
-    "gpt-5.2": ModelPrice(input_usd=1.75, cached_input_usd=0.175, cache_write_usd=1.75, output_usd=14.00),
-    "gpt-5.4": ModelPrice(input_usd=2.50, cached_input_usd=0.25, cache_write_usd=2.50, output_usd=15.00),
-    "gpt-5.5": ModelPrice(input_usd=5.00, cached_input_usd=0.50, cache_write_usd=5.00, output_usd=30.00),
-    "gpt-5.6-sol": ModelPrice(input_usd=4.00, cached_input_usd=0.40, cache_write_usd=5.00, output_usd=20.00),
-    "gpt-5.6-terra": ModelPrice(input_usd=2.00, cached_input_usd=0.20, cache_write_usd=2.50, output_usd=12.00),
-    "gpt-5.6-luna": ModelPrice(input_usd=0.20, cached_input_usd=0.02, cache_write_usd=0.25, output_usd=1.20),
-    "gpt-6-astra": ModelPrice(input_usd=10.00, cached_input_usd=1.00, cache_write_usd=12.50, output_usd=50.00),
-}
-# Имя без версии OpenAI отправляет на Sol (так в доноре).
-MODEL_ALIASES: Final[dict[str, str]] = {"gpt-5.6": "gpt-5.6-sol"}
-
-# Множитель к цене Standard по тарифу, который назвал ответ (тот же снимок): Flex — половина цены,
-# Fast (бывший Priority, переименован в июле 2026, OpenAI принимает оба имени) — вдвое дороже.
-SERVICE_TIER_MULTIPLIERS: Final[dict[str, float]] = {
-    "default": 1.0,
-    "auto": 1.0,
-    "flex": 0.5,
-    "priority": 2.0,
-    "fast": 2.0,
-}
-UNKNOWN_TIER_MULTIPLIER: Final[float] = 1.0
 
 
 @dataclass(frozen=True)
@@ -123,23 +120,18 @@ class ServiceTierRule:
         return cls(value=text.strip().lower() or ServiceTier.DEFAULT.value)
 
     @property
-    def multiplier(self) -> float:
-        """Во сколько раз дороже Standard; незнакомый тариф считается по Standard."""
-        return SERVICE_TIER_MULTIPLIERS.get(self.value, UNKNOWN_TIER_MULTIPLIER)
-
-    @property
     def is_flex(self) -> bool:
         return self.value == ServiceTier.FLEX.value
 
     @property
     def request_value(self) -> str | None:
-        """Что слать в запросе: тариф по умолчанию не шлётся вовсе (правило донора)."""
+        """Что слать в запросе: тариф по умолчанию не шлётся вовсе."""
         return None if self.value == ServiceTier.DEFAULT.value else self.value
 
 
 @dataclass(frozen=True)
 class OpenAiModel:
-    """Модель по имени из настроек или из ответа: семейство, возможности запроса и цена."""
+    """Модель по имени из настроек или из ответа: семейство и возможности запроса."""
 
     name: str
 
@@ -152,31 +144,59 @@ class OpenAiModel:
         return ModelFamily.of(self.normalized)
 
     @property
+    def priced_name(self) -> str:
+        """Имя для поиска цены: без даты снимка."""
+        return SNAPSHOT_SUFFIX_PATTERN.sub("", self.normalized)
+
+    @property
     def supports_reasoning(self) -> bool:
         return self.family.supports_reasoning
 
     @property
     def supports_structured_output(self) -> bool:
-        """json_schema шлётся любой названной модели: несовместимость покажет ответ 400 (правило донора)."""
+        """json_schema шлётся любой названной модели: несовместимость покажет ответ 400."""
         return bool(self.normalized)
 
     @property
     def supports_temperature(self) -> bool:
-        """Температура не шлётся моделям gpt-*: у gpt-5 рассуждение вместо неё, gpt-4x — по замыслу донора.
+        """Температура не шлётся моделям gpt-*: у gpt-5 рассуждение вместо неё, у gpt-4x — по замыслу правила.
 
         Прочим моделям шлётся; отказ «unsupported parameter: temperature» снимает её повтором (openai.py).
         """
-        return not self.normalized.startswith("gpt")
+        return not self.normalized.startswith(TEMPERATURE_FREE_PREFIX)
 
-    @property
-    def price(self) -> ModelPrice | None:
-        """Цена из снимка: имя без даты снимка, псевдоним — на свою модель; нет в снимке — None."""
-        base: str = SNAPSHOT_SUFFIX_PATTERN.sub("", self.normalized)
-        return MODEL_PRICES.get(MODEL_ALIASES.get(base, base))
 
-    def cost(self, usage: OpenAiUsage, service_tier: ServiceTierRule) -> float | None:
+@dataclass(frozen=True)
+class OpenAiTariffs:
+    """Цены моделей (тариф Standard), псевдонимы имён и множители тарифов к цене Standard."""
+
+    prices: Mapping[str, ModelPrice]
+    aliases: Mapping[str, str]
+    tier_multipliers: Mapping[str, float]
+
+    @classmethod
+    @cache
+    def load(cls) -> OpenAiTariffs:
+        """Снимок цен из ресурса программы; один объект на процесс."""
+        data: Mapping[str, Any] = TextResource(PRICES_RESOURCE).data
+        return cls(
+            prices={name: ModelPrice.of(price) for name, price in data[TariffKey.PRICES].items()},
+            aliases=dict(data[TariffKey.ALIASES]),
+            tier_multipliers={tier: float(value) for tier, value in data[TariffKey.TIER_MULTIPLIERS].items()},
+        )
+
+    def price(self, model: OpenAiModel) -> ModelPrice | None:
+        """Цена модели: имя без даты снимка, псевдоним — на свою модель; нет в снимке — None."""
+        base: str = model.priced_name
+        return self.prices.get(self.aliases.get(base, base))
+
+    def multiplier(self, tier: ServiceTierRule) -> float:
+        """Во сколько раз тариф дороже Standard; незнакомый тариф считается по Standard."""
+        return self.tier_multipliers.get(tier.value, UNKNOWN_TIER_MULTIPLIER)
+
+    def cost(self, model: OpenAiModel, tokens: TokenCounts, tier: ServiceTierRule) -> float | None:
         """Стоимость одного ответа в долларах; модели нет в снимке цен — None (стоимость неизвестна)."""
-        price: ModelPrice | None = self.price
+        price: ModelPrice | None = self.price(model)
         if price is None:
             return None
-        return round(price.standard_cost(usage) * service_tier.multiplier, COST_DIGITS)
+        return round(price.standard_cost(tokens) * self.multiplier(tier), COST_DIGITS)

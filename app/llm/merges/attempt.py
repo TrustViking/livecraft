@@ -1,16 +1,16 @@
 """Одна попытка merge: запрос к модели → разбор → починка алфавита → нормализация → проверка (CLAUDE.md §14 решение 23).
 
-Перенесено из restreamer, поведение как есть: `merge_executor.py::MergeExecutor.execute` (строки 91–305). Шаги строго
-донорские: запрос со схемой ответа `MergeAnswer.SCHEMA` и температурой 0 → предварительная проверка переполнения абзацев и
-разбор ответа (`MergeAnswer.parse`, предел абзацев — из контракта промта этой попытки, решение Коворка к 3.13) → ссылки
-источников и ссылки ответа (`MergeCheckRequest.of`) → починка смешанного алфавита (строка `merge_script_mix_repaired`) →
-нормализация качества с числом источников → диагностика (две строки стиля) → проверка покрытия с восстановлением
-форматирования → строка `merge_llm_response_valid`. Строки донора о расхождении числа пунктов здесь нет: донор сравнивает
-число пунктов текста с числом пунктов того же текста по тому же правилу, и расхождения не бывает.
+Шаги по порядку: запрос merge запуска (`MergeRun.request`: схема ответа `MergeAnswer.SCHEMA`, температура 0) →
+предварительная проверка переполнения абзацев и разбор ответа (`MergeAnswer.parse`, предел абзацев — из контракта промта
+этой попытки) → починка смешанного алфавита (строка `merge_script_mix_repaired`) → проверка (`MergeCheck`: нормализация
+качества с названием и числом источников, диагностика — две строки стиля) → восстановление форматирования при отказе
+(`FormattingRecovery`: от трёх источников отказ «много эмодзи» снимается снятием эмодзи и повторной проверкой) →
+строка `merge_llm_response_valid`.
 
-Итог попытки — значение `MergeAttemptResult`: принятый ответ, отказ или сбой запроса. Сбой запроса — `LlmRequestError`,
-его разъём бросает; попытка перехватывает только его и возвращает значением. Какой повтор следующий, решает сам итог
-(`MergeAttemptResult.next_retry`): числа для подсказки модели берутся из отвергнутой попытки, а не нулём, как у донора.
+Итог попытки — значение `MergeAttemptResult` с одним исходом: принятый ответ, отказ или отказ нейросети (`LlmFailure`).
+Сбой запроса разъём бросает исключением `LlmRequestError`; попытка перехватывает только его и хранит значение отказа.
+Какой повтор следующий, решает сам итог (`MergeAttemptResult.next_retry`): числа для подсказки модели берутся из
+отвергнутой попытки.
 
 Модель merge видит только через разъём `LlmBackend` (решение 22). Текста ответа и описаний в строках лога нет.
 """
@@ -18,33 +18,33 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
 
-from app.llm.backend import LlmBackend, LlmRequest, LlmResponse
-from app.llm.errors import LlmErrorKind, LlmRequestError
-from app.config.settings import LlmSettings
+from app.llm.backend import LlmResponse
+from app.llm.errors import LlmErrorKind, LlmFailure, LlmRequestError
 from app.llm.merges.answer import MergeAnswer
 from app.llm.merges.check import MergeAttemptLabel, MergeCheck, MergeCheckPassed, MergeCheckRequest, MergeDiagnostics
 from app.llm.merges.contract import MergeContract
 from app.llm.merges.description import MergedDescription
-from app.llm.merges.merge_rules import MergeRules
+from app.llm.merges.emoji import EmojiCleanup, EmojiUsage
 from app.llm.merges.prompt import MergePrompt
 from app.llm.merges.prompt_texts import MergePromptTexts
 from app.llm.merges.quality import QualityNormalization, QualityRequest
 from app.llm.merges.reject import MergeReject, MergeRejectCode
 from app.llm.merges.retry import RetryFacts, RetryProfile
+from app.llm.merges.rules import FORMATTING_RECOVERY_MIN_SOURCES
+from app.llm.merges.run import MergeRun
 from app.llm.merges.script_mix import HomoglyphRepair
-from app.observability.log_event import LogArea, LogValue, get_logger
+from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.sources.video import SourceVideo
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
-REQUEST_LABEL: Final[str] = "merge_{language}_primary_{attempt}"
-# Сбой запроса, который не квота и не настройка модели: код донора «неожиданная ошибка», повтор — обычный.
+# Отказ нейросети, который не квота и не настройка модели: код «неожиданная ошибка», повтор — обычный.
 UNEXPECTED_CODE: Final[str] = MergeRejectCode.UNEXPECTED.value
-# Перегруженных пунктов, когда описания отвергнутой попытки нет, и абзацев перебора, когда число не известно (донор).
+# Перегруженных пунктов, когда описания отвергнутой попытки нет, и абзацев перебора, когда число не известно.
 OVERLOADED_COUNT_UNKNOWN: Final[int] = 1
 OVERFLOW_PARAGRAPHS_UNKNOWN: Final[int] = 8
 STAGE_PRIMARY: Final[str] = "primary"
@@ -54,10 +54,99 @@ class AttemptEvent(str, Enum):
     """События попытки в логе."""
 
     SCRIPT_MIX_REPAIRED = "merge_script_mix_repaired"
+    RESPONSE_VALID = "merge_llm_response_valid"
+    RESPONSE_INVALID = "merge_llm_response_invalid"
+    SALVAGE = "merge_llm_validation_salvage"
 
 
-def _flag(value: bool) -> str:
-    return LogValue.YES.value if value else LogValue.NO.value
+class RecoveryAction(str, Enum):
+    """Что восстановление форматирования сделало с текстом."""
+
+    REDUCED_EMOJI = "reduced_non_structural_emoji"
+    REAPPLIED_QUALITY = "reapplied_merge_quality_normalization"
+
+
+class RecoveryOutcome(str, Enum):
+    """Чем кончилось восстановление: ответ прошёл или открылся отказ не про форматирование."""
+
+    APPLIED = "applied"
+    REVEALED = "revealed_non_formatting_issue"
+
+
+@dataclass(frozen=True)
+class FormattedDraft:
+    """Описание отказа «много эмодзи» после снятия эмодзи и нормализации качества и что с ним сделано."""
+
+    description: MergedDescription
+    actions: tuple[RecoveryAction, ...]
+
+    @classmethod
+    def of(cls, check: MergeCheck) -> FormattedDraft:
+        """Эмодзи вне маркеров снимаются, затем качество нормализуется без названия и числа источников."""
+        trimmed: MergedDescription = MergedDescription(check.description.text.strip())
+        cleanup: EmojiCleanup = EmojiUsage(trimmed).cleaned()
+        description: MergedDescription = cleanup.description if cleanup.changed else trimmed
+        actions: list[RecoveryAction] = [RecoveryAction.REDUCED_EMOJI] if cleanup.changed else []
+        normalized: MergedDescription = QualityNormalization.of(
+            description, QualityRequest(language=check.request.label.language), check.lexicons
+        ).description
+        if normalized.text != description.text:
+            description = normalized
+            actions.append(RecoveryAction.REAPPLIED_QUALITY)
+        return cls(description=description, actions=tuple(actions))
+
+
+@dataclass(frozen=True)
+class FormattingRecovery:
+    """Восстановление форматирования после отказа: итог (`verdict` — прошедшая проверка или отказ) и что было
+    сделано с текстом (`actions`). Не применялось — итог есть исходный отказ."""
+
+    verdict: MergeCheckPassed | MergeReject
+    actions: tuple[RecoveryAction, ...]
+
+    @classmethod
+    def of(cls, check: MergeCheck, reject: MergeReject) -> FormattingRecovery:
+        """Только от трёх источников и только для отказа «много эмодзи»: снять эмодзи вне маркеров, дважды
+        нормализовать качество (сначала без названия и числа источников, затем с названием), построить диагностику
+        заново и проверить снова. Текст не изменился — исходный отказ без строки лога."""
+        if check.request.source_count < FORMATTING_RECOVERY_MIN_SOURCES:
+            return cls(verdict=reject, actions=())
+        if MergeRejectCode.EXCESSIVE_EMOJI_USAGE.value not in reject.reason_codes:
+            return cls(verdict=reject, actions=())
+        draft: FormattedDraft = FormattedDraft.of(check)
+        if draft.description.text == check.description.text or not draft.actions:
+            return cls(verdict=reject, actions=draft.actions)
+        request: MergeCheckRequest = check.request
+        normalization: QualityNormalization = QualityNormalization.of(
+            draft.description, QualityRequest(language=request.label.language, title=request.title), check.lexicons
+        )
+        recovered: MergeCheck = MergeCheck.normalized(request, normalization, check.lexicons)
+        outcome: FormattingRecovery = cls(verdict=recovered.run(), actions=draft.actions)
+        outcome.event(check, reject, recovered.diagnostics.emoji_count).emit(LOGGER)
+        return outcome
+
+    @property
+    def passed(self) -> MergeCheckPassed | None:
+        return self.verdict if isinstance(self.verdict, MergeCheckPassed) else None
+
+    @property
+    def reject(self) -> MergeReject | None:
+        return self.verdict if isinstance(self.verdict, MergeReject) else None
+
+    @property
+    def outcome(self) -> RecoveryOutcome:
+        return RecoveryOutcome.APPLIED if self.passed is not None else RecoveryOutcome.REVEALED
+
+    def event(self, check: MergeCheck, original: MergeReject, emoji_after: int) -> LogEvent:
+        """Строка `merge_llm_validation_salvage`; при новом отказе — его коды."""
+        salvage: LogEvent = check.request.label.event(AttemptEvent.SALVAGE).extended(
+            outcome=self.outcome, reason_codes=original.reason_codes
+        )
+        if self.reject is not None:
+            salvage = salvage.extended(replacement_reason_codes=self.reject.reason_codes)
+        return salvage.extended(
+            actions=self.actions, emoji_before=check.diagnostics.emoji_count, emoji_after=emoji_after
+        )
 
 
 @dataclass(frozen=True)
@@ -70,12 +159,13 @@ class AcceptedMerge:
     paragraph_count: int
     tail_recovery_applied: bool
 
-    @property
-    def log_fields(self) -> str:
-        """Поля строки `merge_llm_response_valid` донора — длины и счётчики, без текста."""
-        return (
-            f"title_length={len(self.title)} description_length={len(self.description.text)} "
-            f"paragraph_count={self.paragraph_count} youtube_links_in_llm_output={self.description.youtube_link_count}"
+    def extend(self, event: LogEvent) -> LogEvent:
+        """Поля строки `merge_llm_response_valid` — длины и счётчики, без текста."""
+        return event.extended(
+            title_length=len(self.title),
+            description_length=len(self.description.text),
+            paragraph_count=self.paragraph_count,
+            youtube_links_in_llm_output=self.description.youtube_link_count,
         )
 
 
@@ -90,7 +180,7 @@ class RejectedMerge:
 
     @property
     def overloaded_count(self) -> int:
-        """Перегруженных пунктов в отвергнутом описании; описания нет — 1 (донор)."""
+        """Перегруженных пунктов в отвергнутом описании; описания нет — 1."""
         if self.description is None or not self.description.text.strip():
             return OVERLOADED_COUNT_UNKNOWN
         return self.description.overloaded_bullet_count
@@ -113,39 +203,49 @@ class RejectedMerge:
 
 @dataclass(frozen=True)
 class MergeAttemptResult:
-    """Итог одной попытки: ровно одно из `accepted`, `rejected`, `error`. `raw_chars` — длина текста ответа модели
-    (сам текст в лог не идёт); сбой запроса ответа не имеет."""
+    """Итог одной попытки: метка, исход (принятый ответ, отказ или отказ нейросети), длина текста ответа модели
+    (сам текст в лог не идёт) и пришёл ли он; у отказа нейросети ответа нет."""
 
     label: MergeAttemptLabel
+    outcome: AcceptedMerge | RejectedMerge | LlmFailure
     raw_chars: int = 0
     raw_received: bool = False
-    accepted: AcceptedMerge | None = None
-    rejected: RejectedMerge | None = None
-    error: LlmRequestError | None = None
+
+    @property
+    def accepted(self) -> AcceptedMerge | None:
+        return self.outcome if isinstance(self.outcome, AcceptedMerge) else None
+
+    @property
+    def rejected(self) -> RejectedMerge | None:
+        return self.outcome if isinstance(self.outcome, RejectedMerge) else None
+
+    @property
+    def failure(self) -> LlmFailure | None:
+        return self.outcome if isinstance(self.outcome, LlmFailure) else None
 
     @property
     def is_quota(self) -> bool:
         """Квота нейросети исчерпана: дальше в этом запуске merge не делается."""
-        return self.error is not None and self.error.kind is LlmErrorKind.QUOTA
+        return self.failure is not None and self.failure.kind is LlmErrorKind.QUOTA
 
     @property
     def is_model_configuration(self) -> bool:
         """Виновата настройка модели или ключа: повтор не поможет, merge останавливается до конца запуска."""
-        return self.error is not None and not self.is_quota and self.error.is_model_configuration
+        return self.failure is not None and not self.is_quota and self.failure.is_model_configuration
 
     @property
     def code(self) -> str:
-        """Главная причина неудачи: код отказа; сбой запроса — его вид для квоты и настройки, иначе
-        `unexpected_error` (донор). У принятого ответа — пусто."""
+        """Главная причина неудачи: код отказа; отказ нейросети — его вид для квоты и настройки, иначе
+        `unexpected_error`. У принятого ответа — пусто."""
         if self.rejected is not None:
             return self.rejected.reject.reason_code
-        if self.error is None:
+        if self.failure is None:
             return ""
-        return self.error.kind.value if self.is_quota or self.is_model_configuration else UNEXPECTED_CODE
+        return self.failure.kind.value if self.is_quota or self.is_model_configuration else UNEXPECTED_CODE
 
     @property
     def codes(self) -> tuple[str, ...]:
-        """Все причины неудачи (донор: `last_reason_codes`)."""
+        """Все причины неудачи."""
         if self.rejected is not None:
             return self.rejected.reject.signals
         return (self.code,) if self.code else ()
@@ -165,75 +265,65 @@ class MergeAttemptResult:
 
     @property
     def reason(self) -> str:
-        """Причина для строки лога: подробность отказа или сбоя без текста ответа, иначе код."""
+        """Причина для строки лога: подробность отказа или отказа нейросети без текста ответа, иначе код."""
         detail: str = ""
         if self.rejected is not None:
             detail = self.rejected.reject.detail
-        elif self.error is not None:
-            detail = self.error.detail
+        elif self.failure is not None:
+            detail = self.failure.detail
         return json.dumps(detail or self.code, ensure_ascii=False)
 
-    def invalid_line(self, backend_name: str) -> str:
-        """Строка `merge_llm_response_invalid` с ключами донора."""
-        return (
-            f"merge_llm_response_invalid {self.label.prefix} provider={backend_name} stage={STAGE_PRIMARY} "
-            f"code={self.code} raw_response_received={_flag(self.raw_received)} reason={self.reason} "
-            f"raw_chars={self.raw_chars}"
+    def invalid_event(self, backend_name: str) -> LogEvent:
+        """Строка `merge_llm_response_invalid`."""
+        return self.label.event(AttemptEvent.RESPONSE_INVALID).extended(
+            provider=backend_name,
+            stage=STAGE_PRIMARY,
+            code=self.code,
+            raw_response_received=self.raw_received,
+            reason=self.reason,
+            raw_chars=self.raw_chars,
         )
 
 
 @dataclass(frozen=True)
 class MergeAttempt:
-    """Одна попытка merge слота: промт (с профилем повтора или без), метка, источники слота, нейросеть, настройки, правила."""
+    """Одна попытка merge слота: промт (с профилем повтора или без), метка, источники слота, merge запуска."""
 
     prompt: MergePrompt
     label: MergeAttemptLabel
     sources: tuple[SourceVideo, ...] = field(repr=False)
-    backend: LlmBackend = field(repr=False)
-    settings: LlmSettings = field(repr=False)
-    rules: MergeRules = field(repr=False)
-
-    @property
-    def request(self) -> LlmRequest:
-        """Запрос попытки: промт, модель метки, предел ответа и ожидание из настроек, схема merge, температура 0."""
-        label: str = REQUEST_LABEL.format(language=self.label.language, attempt=self.label.attempt)
-        return LlmRequest.from_settings(self.settings, self.label.model, self.prompt.text, label, MergeAnswer.SCHEMA)
+    merge_run: MergeRun = field(repr=False)
 
     def run(self) -> MergeAttemptResult:
-        """Запрос и все шаги донора; сбой запроса — итог со сбоем, отказ на любом шаге — итог с отказом."""
+        """Запрос и все шаги попытки; отказ нейросети — итог с отказом нейросети, отказ на любом шаге — итог с отказом."""
         try:
-            response: LlmResponse = self.backend.complete(self.request)
+            response: LlmResponse = self.merge_run.backend.complete(
+                self.merge_run.request(self.prompt.text, self.label.request_label)
+            )
         except LlmRequestError as error:
-            return MergeAttemptResult(label=self.label, error=error)
+            return MergeAttemptResult(label=self.label, outcome=error.failure)
         parsed: MergeAnswer | MergeReject = MergeAnswer.parse(
-            response, self.prompt.contract.max_body_paragraphs, self.rules.lexicons.cta
+            response, self.prompt.contract.max_body_paragraphs, self.merge_run.rules.lexicons.cta
         )
-        result: MergeAttemptResult = MergeAttemptResult(
-            label=self.label, raw_chars=len(response.text), raw_received=bool(response.text.strip())
+        outcome: AcceptedMerge | RejectedMerge = (
+            RejectedMerge(parsed) if isinstance(parsed, MergeReject) else self._checked(parsed)
         )
-        if isinstance(parsed, MergeReject):
-            return replace(result, rejected=RejectedMerge(parsed))
-        return self._checked(parsed, result)
+        return MergeAttemptResult(self.label, outcome, len(response.text), bool(response.text.strip()))
 
-    def _checked(self, answer: MergeAnswer, result: MergeAttemptResult) -> MergeAttemptResult:
-        """Починка алфавита, нормализация, диагностика и проверка разобранного ответа."""
-        request: MergeCheckRequest = MergeCheckRequest.of(
-            self.label, answer.title, answer.description, self.sources, self.rules.lexicons
-        )
+    def _checked(self, answer: MergeAnswer) -> AcceptedMerge | RejectedMerge:
+        """Починка алфавита, проверка с нормализацией и восстановление форматирования разобранного ответа."""
+        request: MergeCheckRequest = MergeCheckRequest.of(self.label, answer.title, answer.description, self.sources)
         repair: HomoglyphRepair = HomoglyphRepair.of(answer.description, self.label.language)
         if repair.tokens_repaired > 0:
             repair.extend(self.label.event(AttemptEvent.SCRIPT_MIX_REPAIRED)).emit(LOGGER)
-        normalization: QualityNormalization = QualityNormalization.of(
-            repair.description,
-            QualityRequest(language=self.label.language, title=answer.title, source_count=len(self.sources)),
-            self.rules.lexicons,
-        )
-        check: MergeCheck = MergeCheck.of(request, normalization, self.rules.lexicons)
-        self._log_diagnostics(check)
-        verdict: MergeCheckPassed | MergeReject = check.run_with_recovery()
+        check: MergeCheck = MergeCheck.of(request, repair.description, self.merge_run.rules.lexicons)
+        for event in check.diagnostics.events(self.label):
+            event.emit(LOGGER)
+        verdict: MergeCheckPassed | MergeReject = check.run()
         if isinstance(verdict, MergeReject):
-            rejected: RejectedMerge = RejectedMerge(verdict, check.description, check.diagnostics.bullet_points_count)
-            return replace(result, rejected=rejected)
+            verdict = FormattingRecovery.of(check, verdict).verdict
+        if isinstance(verdict, MergeReject):
+            return RejectedMerge(verdict, check.description, check.diagnostics.bullet_points_count)
         accepted: AcceptedMerge = AcceptedMerge(
             title=answer.title,
             description=verdict.description,
@@ -241,11 +331,5 @@ class MergeAttempt:
             paragraph_count=answer.paragraph_count,
             tail_recovery_applied=answer.tail_recovery_applied,
         )
-        LOGGER.info("merge_llm_response_valid %s %s", self.label.prefix, accepted.log_fields)
-        return replace(result, accepted=accepted)
-
-    def _log_diagnostics(self, check: MergeCheck) -> None:
-        """Строки стиля и semantic gate."""
-        for line in check.diagnostics.log_lines(self.label):
-            LOGGER.info("%s", line)
-
+        accepted.extend(self.label.event(AttemptEvent.RESPONSE_VALID)).emit(LOGGER)
+        return accepted

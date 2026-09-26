@@ -1,5 +1,4 @@
-"""Санация принятого merge перед публикацией (донор: test_merged_publish_payload_sanitation.py,
-test_post_llm_sanitation_tail.py, test_no_cta_in_published_output.py, test_sanitizer_quality_gate.py)."""
+"""Санация принятого merge перед публикацией: хвост, официальные ссылки, сборка описания и проверка перед публикацией."""
 from __future__ import annotations
 
 import logging
@@ -8,7 +7,7 @@ from collections.abc import Iterator
 import pytest
 
 from app.llm.merges.merge_rules import MergeRules
-from app.llm.merges.publication import PRIMARY_SOURCE_LABEL, MergePublication, SanitizedDescription
+from app.llm.merges.publication import PRIMARY_SOURCE_LABEL, MergePublication, PublicationSlot, SanitizedDescription
 from app.observability.log_event import LogArea
 from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.sources.video import SourceVideo
@@ -35,11 +34,12 @@ def source(description: str = "", row: int = 2) -> SourceVideo:
 
 
 def publish(description: str, sources: tuple[SourceVideo, ...] | None = None, language: str = "en") -> MergePublication:
-    return MergePublication.of(TITLE, description, (source(),) if sources is None else sources, language, RULES)
+    slot: PublicationSlot = PublicationSlot(language, (source(),) if sources is None else sources, RULES)
+    return MergePublication.of(TITLE, description, slot)
 
 
 def sanitize(text: str, language: str = "en") -> SanitizedDescription:
-    return SanitizedDescription.of(text, language, "merge", CTA)
+    return SanitizedDescription.of(text, language, CTA)
 
 
 def applied_line(log: LogCapture) -> str:
@@ -60,10 +60,9 @@ def test_embedded_hashtags_are_split_from_the_cta(llm_log: LogCapture) -> None:
     assert sanitized.cta_text == "Join us tonight and share if you find these scientific findings important."
     assert sanitized.hashtags_line == "#nanoplastics #microplastics" and sanitized.hashtags_split_from_cta
     assert llm_log.messages() == [
-        "tail_parse lang=en source=merge cta_found=yes hashtags_found=yes hashtags_split_from_cta=yes",
-        "tail_layout lang=en source=merge layout=body_blank_cta_blank_hashtags",
-        "publish_cta_gate_dropped lang=en source=merge cta_chars=74",
-        "post_llm_sanitation lang=en source=merge urls_normalized=0 tail_separated=yes tail_cta_found=yes "
+        "tail_parse lang=en source=primary_success cta_found=yes hashtags_found=yes hashtags_split_from_cta=yes",
+        "tail_layout lang=en source=primary_success layout=body_blank_cta_blank_hashtags",
+        "post_llm_sanitation lang=en source=primary_success urls_normalized=0 tail_separated=yes tail_cta_found=yes "
         "hashtags_found=yes source_urls_found=0 malformed_source_urls_dropped=0",
     ]
 
@@ -102,7 +101,13 @@ def test_a_final_cta_paragraph_left_by_the_tail_is_removed(llm_log: LogCapture) 
     """Абзац из одной строки с хештегом без подсказки призыва хвост не снимает — его снимает проверка тела."""
     sanitized: SanitizedDescription = sanitize("Budget decision and what it means for the regions.\n \n#stream \U0001F3AF")
     assert sanitized.body == "Budget decision and what it means for the regions."
-    assert "removed_final_body_cta=yes lang=en source=merge removed_chars=9" in llm_log.messages()
+    assert "removed_final_body_cta=yes lang=en source=primary_success removed_chars=9" in llm_log.messages()
+
+
+def test_a_kept_final_paragraph_is_a_debug_line_with_the_reason() -> None:
+    with LogCapture.on(LogArea.LLM, logging.DEBUG) as capture:
+        sanitize("Budget decision and what it means for the regions.")
+    assert "removed_final_body_cta=no lang=en source=primary_success reason=single_paragraph" in capture.messages()
 
 
 def test_a_bullet_block_with_a_cta_word_is_kept() -> None:
@@ -142,9 +147,13 @@ def test_embedded_hashtags_are_split_in_the_publication(llm_log: LogCapture) -> 
     line: str = applied_line(llm_log)
     assert f"lang=en source={PRIMARY_SOURCE_LABEL} " in line
     assert "hashtags_split_from_cta=yes tail_layout=body_blank_hashtags " in line
-    assert [message for message in llm_log.messages() if message.startswith("publish_cta_gate_dropped")] == [
+    # Призыв отбрасывается один раз — при сборке описания, и строка о нём одна: после строк санации и ссылок.
+    messages: list[str] = llm_log.messages()
+    assert [message for message in messages if message.startswith("publish_cta_gate_dropped")] == [
         "publish_cta_gate_dropped lang=en source=primary_success cta_chars=40"
-    ] * 2
+    ]
+    dropped: int = messages.index("publish_cta_gate_dropped lang=en source=primary_success cta_chars=40")
+    assert messages[dropped - 1].startswith("merged_source_urls_built ") and messages[dropped + 1] == line
 
 
 @pytest.mark.parametrize(
@@ -244,16 +253,16 @@ def test_the_links_heading_follows_the_language(language: str, heading: str) -> 
 
 
 def test_the_title_is_collapsed_to_single_spaces() -> None:
-    publication: MergePublication = MergePublication.of("  Title \t with\n spaces ", "Body.", (source(),), "en", RULES)
+    publication: MergePublication = MergePublication.of("  Title \t with\n spaces ", "Body.", PublicationSlot("en", (source(),), RULES))
     assert publication.title == "Title with spaces"
     assert publication.slot_texts == SlotTexts(title="Title with spaces", description="Body.", origin=SlotTextOrigin.MERGED)
 
 
 def test_a_duplicate_paragraph_blocks_the_publication(llm_log: LogCapture) -> None:
-    """Без источников тело не нормализуется повторно (правило донора) — повтор доходит до проверки как есть."""
+    """Без источников тело не нормализуется повторно — повтор доходит до проверки как есть."""
     paragraph: str = "Budget amendments passed after the long commission session in Brussels today."
     publication: MergePublication = publish(f"{paragraph}\n\nMiddle facts.\n\n{paragraph}", sources=())
-    assert publication.has_duplicate and publication.is_blocked and publication.slot_texts is None
+    assert publication.verdict.has_duplicate and publication.is_blocked and publication.slot_texts is None
     errors: list[str] = llm_log.messages(logging.ERROR)
     assert errors == [
         f"publish_duplicate_paragraph_detected lang=en source=primary_success description_chars={len(publication.description)}"
@@ -265,7 +274,7 @@ def test_a_cta_opener_blocks_the_publication(llm_log: LogCapture) -> None:
     publication: MergePublication = publish(
         "Subscribe to our channel for updates and facts. Budget amendments passed.\n\nFacts about the vote.", sources=()
     )
-    assert publication.has_opener_cta and publication.slot_texts is None
+    assert publication.verdict.has_opener_cta and publication.slot_texts is None
     assert llm_log.messages(logging.ERROR)[0].startswith("publish_opener_cta_detected lang=en source=primary_success ")
 
 

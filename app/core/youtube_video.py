@@ -55,12 +55,6 @@ class YouTubeVideoId:
             return cls(earliest.group(ID_GROUP))
         return cls(cleaned) if VIDEO_ID_PATTERN.fullmatch(cleaned) else None
 
-    @classmethod
-    def watch_url_of(cls, text: str) -> str | None:
-        """Адрес `watch?v=<id>` видео из текста; id нет — None."""
-        video: YouTubeVideoId | None = cls.of(text)
-        return video.watch_url if video is not None else None
-
     @property
     def short_url(self) -> str:
         """`https://youtu.be/<id>` — вид ссылки на видео в описаниях и в плане."""

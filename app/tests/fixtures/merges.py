@@ -9,12 +9,16 @@ from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from zoneinfo import ZoneInfo
 
+from app.config.settings import LlmSettings
 from app.intake.builder import SlotGroup
 from app.llm.backend import LlmRequest, LlmResponse
-from app.llm.errors import LlmErrorKind, LlmRequestError
+from app.llm.errors import LlmErrorKind, LlmFailure, LlmRequestError
+from app.llm.merges.check import MergeAttemptLabel, MergeCheck, MergeCheckRequest
+from app.llm.merges.description import MergedDescription
 from app.llm.merges.job import MergeJob
 from app.llm.merges.merge_rules import MergeRules
 from app.llm.merges.prompt_texts import MergeContractMode, MergePromptTexts
+from app.llm.merges.quality import QualityGateStatus, QualityNormalization, QualityReasonCode
 from app.llm.merges.run import MergeRun
 from app.llm.usage import RunUsage
 from app.slots.slot import SlotKey
@@ -110,7 +114,8 @@ def answer(description: str, title: str = TITLE) -> str:
 
 
 def error(kind: LlmErrorKind) -> LlmRequestError:
-    return LlmRequestError(kind, backend=FAKE_BACKEND, detail=kind.value)
+    """Отказ нейросети за разъёмом: исключение с отказом этого вида."""
+    return LlmRequestError(LlmFailure(kind, FAKE_BACKEND, detail=kind.value))
 
 
 @dataclass
@@ -139,8 +144,8 @@ class QueueBackend:
             model=request.model_name,
         )
 
-    def probe(self, model_name: str) -> LlmResponse | LlmRequestError:
-        return error(LlmErrorKind.FAILED)
+    def probe(self, model_name: str) -> LlmResponse | LlmFailure:
+        return error(LlmErrorKind.FAILED).failure
 
     @property
     def prompts(self) -> list[str]:
@@ -164,6 +169,56 @@ def run_with(*replies: str | LlmRequestError) -> tuple[MergeRun, QueueBackend]:
     """Merge запуска на нейросети с этой очередью ответов."""
     backend: QueueBackend = QueueBackend(replies=list(replies))
     return MergeRun(backend=backend, model=MODEL, settings=LLM_SETTINGS, rules=RULES), backend
+
+
+# Метка проверки в тестах: слот, язык en, модель тестов, вторая попытка.
+CHECK_LABEL: MergeAttemptLabel = MergeAttemptLabel(slot_id="16-10-2026_1900_en", language="en", model=MODEL, attempt=2)
+# Десять разных эмодзи вне маркеров пунктов: одиннадцатое — уже «много эмодзи».
+EMOJI: tuple[str, ...] = tuple(
+    chr(code) for code in (0x1F525, 0x1F6A8, 0x1F3AF, 0x1F9ED, 0x2728, 0x1F514, 0x1F4A5, 0x1F31F, 0x1F396, 0x1F3F3)
+)
+TWO_SOURCES: tuple[tuple[str, str], ...] = (
+    ("Source one", "Source one paragraph with concrete facts."),
+    ("Source two", "Source two paragraph with concrete facts."),
+)
+
+
+def label_in(language: str) -> MergeAttemptLabel:
+    """Метка проверки тестов с другим языком блока."""
+    return MergeAttemptLabel(CHECK_LABEL.slot_id, language, CHECK_LABEL.model, CHECK_LABEL.attempt)
+
+
+def check_request(title: str, answer: str, pairs: tuple[tuple[str, str], ...], language: str = "en") -> MergeCheckRequest:
+    """Запрос проверки по ответу и источникам-парам «название, описание»."""
+    return MergeCheckRequest.of(label_in(language), title, MergedDescription(answer), sources_of(pairs))
+
+
+def merge_check(
+    answer: str, pairs: tuple[tuple[str, str], ...] = EXPANDED_SOURCES, title: str = "Title", language: str = "en"
+) -> MergeCheck:
+    """Проверка ответа путём программы: нормализация качества с названием и числом источников, затем диагностика."""
+    return MergeCheck.of(check_request(title, answer, pairs, language), MergedDescription(answer), RULES.lexicons)
+
+
+def check_as_is(answer: str, pairs: tuple[tuple[str, str], ...] = (), title: str = "Title") -> MergeCheck:
+    """Проверка текста как есть: диагностика качества — от нормализации, текст — не нормализованный."""
+    request: MergeCheckRequest = check_request(title, answer, pairs)
+    normalized: QualityNormalization = QualityNormalization.of(MergedDescription(answer), request.quality, RULES.lexicons)
+    kept: QualityNormalization = QualityNormalization(MergedDescription(answer), normalized.diagnostics)
+    return MergeCheck.normalized(request, kept, RULES.lexicons)
+
+
+def check_with_gate(
+    check: MergeCheck, status: QualityGateStatus, codes: tuple[QualityReasonCode, ...] | None = None
+) -> MergeCheck:
+    """Та же проверка с другим итогом проверки качества: статус и (если даны) коды причин."""
+    reasons: tuple[QualityReasonCode, ...] = check.quality.semantic_gate_reason_codes if codes is None else codes
+    return replace(check, quality=replace(check.quality, semantic_gate_status=status, semantic_gate_reason_codes=reasons))
+
+
+def llm_settings(**changes: object) -> LlmSettings:
+    """Настройки `llm` тестов с другими значениями полей по имени."""
+    return replace(LLM_SETTINGS, **changes)
 
 
 def texts_with(

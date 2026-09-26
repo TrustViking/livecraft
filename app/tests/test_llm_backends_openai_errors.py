@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.llm.backends.openai_errors import OpenAiFailure
-from app.llm.errors import DETAIL_MAX_CHARS, LlmErrorKind, LlmRequestError
+from app.llm.backends.openai_errors import OpenAiFailure, OpenAiParam
+from app.llm.errors import DETAIL_MAX_CHARS, LlmErrorKind, LlmFailure
 from app.tests.conftest import api_error, connection_error, timeout_error
 from app.ui import messages_ru as msg
 
@@ -35,26 +35,38 @@ from app.ui import messages_ru as msg
         (ValueError("что-то иное"), LlmErrorKind.FAILED),
     ],
 )
-def test_classification_follows_the_donor(error: Exception, kind: LlmErrorKind) -> None:
+def test_classification_follows_the_order_of_checks(error: Exception, kind: LlmErrorKind) -> None:
     assert OpenAiFailure.of(error).kind is kind
-    assert OpenAiFailure.of(error).to_error("openai").kind is kind
+    assert OpenAiFailure.of(error).to_failure("openai").kind is kind
 
 
 def test_fields_of_a_classified_error() -> None:
-    error: LlmRequestError = OpenAiFailure.of(
+    error: LlmFailure = OpenAiFailure.of(
         api_error(400, "Unsupported parameter: 'temperature'", code="unsupported_parameter", param="temperature")
-    ).to_error("openai")
+    ).to_failure("openai")
     assert (error.status_code, error.api_error_code, error.api_error_param) == (400, "unsupported_parameter", "temperature")
-    assert error.is_temperature_unsupported and error.is_model_configuration and not error.retryable
+    assert OpenAiParam.TEMPERATURE.is_refused_in(error) and error.is_model_configuration and not error.retryable
     assert "backend=openai reason_code=unsupported_parameter status_code=400" in error.log_line
 
 
+def test_temperature_refusal_is_recognised_by_param_or_text() -> None:
+    by_param: LlmFailure = LlmFailure(LlmErrorKind.UNSUPPORTED_PARAMETER, "openai", api_error_param="temperature")
+    by_text: LlmFailure = LlmFailure(
+        LlmErrorKind.UNSUPPORTED_PARAMETER, "openai", detail="Unsupported parameter: 'Temperature'"
+    )
+    other: LlmFailure = LlmFailure(LlmErrorKind.BAD_REQUEST, "openai", api_error_param="temperature")
+    assert OpenAiParam.TEMPERATURE.is_refused_in(by_param) and OpenAiParam.TEMPERATURE.is_refused_in(by_text)
+    assert not OpenAiParam.TEMPERATURE.is_refused_in(other)
+
+
 def test_the_message_names_openai_and_hides_the_key() -> None:
-    error: LlmRequestError = OpenAiFailure.of(api_error(401, "Incorrect API key provided: sk-proj-****abcd")).to_error("openai")
-    assert str(error) == msg.LLM_REQUEST_FAILED_STATUS.format(reason=error.reason, status=401)
-    assert "OpenAI не принял ключ" in str(error) and "sk-" not in str(error)
+    error: LlmFailure = OpenAiFailure.of(api_error(401, "Incorrect API key provided: sk-proj-****abcd")).to_failure("openai")
+    assert error.human == msg.LLM_REQUEST_FAILED_STATUS.format(reason=error.human_reason, status=401)
+    assert "OpenAI не принял ключ" in error.human and "sk-" not in error.human
 
 
-def test_the_detail_is_cut_to_the_limit() -> None:
-    error: LlmRequestError = OpenAiFailure.of(api_error(500, "x" * 1000 + "SECRET")).to_error("openai")
-    assert len(error.detail) == DETAIL_MAX_CHARS and "SECRET" not in error.detail
+def test_the_detail_is_cut_to_the_limit_when_cleaned() -> None:
+    error: LlmFailure = OpenAiFailure.of(api_error(500, "x" * 1000 + "SECRET")).to_failure("openai")
+    assert error.detail.endswith("SECRET")                   # подробность вычищает и обрезает владелец ключа
+    cleaned: LlmFailure = error.cleaned(lambda text: text)
+    assert len(cleaned.detail) == DETAIL_MAX_CHARS and "SECRET" not in cleaned.detail

@@ -1,27 +1,25 @@
 """Хвост ответа модели: призывы, хештеги и ссылки в конце описания и в конце абзацев (CLAUDE.md §14 решение 23).
 
-Перенесено из restreamer, поведение как есть: `app\\publish\\sanitizers\\tail_parser.py::TailParser`.
-- `TrailingTail.of(lines, cta)` — `split_tail`: с конца текста по строкам снимаются строки-ссылки, затем строки
-  хештегов, затем строки-призывы (хештеги в конце строки-призыва уходят к хештегам); `body_end_index` — где кончается тело.
-- `EmbeddedTail.of(text, cta)` — `extract_embedded`: в каждом абзаце тела с конца снимаются ссылки, хештеги и последнее
-  предложение-призыв.
-Правила строк и абзацев — методы `TailReader`: призыв узнаётся по лексикону `CtaLexicon` (подсказки донора
-`CTA_HINTS` — `CtaLexicon.hints`). Итоги — объекты-значения, без кортежей между функциями.
+- `TrailingTail.of(lines, cta)`: с конца текста по строкам снимаются строки-ссылки, затем строки хештегов, затем
+  строки-призывы (хештеги в конце строки-призыва уходят к хештегам); `body_end_index` — где кончается тело.
+- `EmbeddedTail.of(text, cta)`: в каждом абзаце тела с конца снимаются ссылки, хештеги и последнее предложение-призыв.
+Снятое копит один накопитель — `TailCollector`; итог — значение `TailFragments`. Призыв узнаёт лексикон `CtaLexicon`
+(строка-призыв, последнее предложение-призыв), ссылки и хештеги в конце абзаца — `TailParagraph`.
 Свободные функции модуля — чистые преобразования строк без знания о предметных объектах.
 """
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Final
 
 from app.core.sequence import unique_in_order
 from app.core.text_format import PARAGRAPH_BREAK, SPACE
 from app.core.web_link import URL_LINE_PATTERN, WebLink
-from app.texts.description_marks import ALLOWED_BULLET_MARKERS, CtaLexicon
+from app.texts.description_marks import ALLOWED_BULLET_MARKERS, CtaLexicon, TextTail
 from app.texts.hashtags import HASHTAG_TAIL_PATTERN, HASHTAG_WORD_PATTERN, is_hashtags_line
-from app.texts.paragraphs import SENTENCE_BREAK_PATTERN, collapse_spaces, split_paragraphs
+from app.texts.paragraphs import collapse_spaces, split_paragraphs
 from app.texts.source_link import SourceLink
 
 _MARKER_ALTERNATIVES: Final[str] = "|".join(re.escape(marker) for marker in ALLOWED_BULLET_MARKERS)
@@ -29,12 +27,11 @@ _MARKER_ALTERNATIVES: Final[str] = "|".join(re.escape(marker) for marker in ALLO
 DOUBLE_BULLET_PATTERN: Final[re.Pattern[str]] = re.compile(
     rf"^(\s*)({_MARKER_ALTERNATIVES})((?:\s+(?:{_MARKER_ALTERNATIVES}))+)\s*", re.MULTILINE
 )
+DOUBLE_BULLET_REPLACEMENT: Final[str] = r"\1\2 "          # отступ и первый маркер, затем пробел
 # Ссылки в конце абзаца: после начала, пробела или открывающей скобки — одна или несколько через пробел.
 URL_TAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?is)(?:^|[\s\(\[])(https?://\S+(?:\s+https?://\S+)*)\s*$")
+TAIL_GROUP: Final[int] = 1
 HASHTAG_PREFIX_TRIM: Final[str] = " ,;"
-CTA_LINE_LEAD_CHARS: Final[str] = "-*•> "
-# Строка-призыв без подсказки в начале — не длиннее 200 знаков (длинный абзац со словом «комментарий» — не призыв).
-STANDALONE_CTA_MAX_CHARS: Final[int] = 200
 
 
 def is_source_url_line(line: str) -> bool:
@@ -42,36 +39,9 @@ def is_source_url_line(line: str) -> bool:
     return URL_LINE_PATTERN.fullmatch(WebLink.of(line).unwrapped.text) is not None
 
 
-def merge_hashtag_lines(lines: Iterable[str]) -> str:
-    """Хештеги всех строк одной строкой: без повторов без учёта регистра, в порядке первого появления."""
-    tokens: list[str] = []
-    seen: set[str] = set()
-    for line in lines:
-        for token in (line or "").split():
-            cleaned: str = token.strip()
-            if not cleaned or not HASHTAG_WORD_PATTERN.fullmatch(cleaned) or cleaned.lower() in seen:
-                continue
-            seen.add(cleaned.lower())
-            tokens.append(cleaned)
-    return SPACE.join(tokens)
-
-
-def dedupe_cta_lines(lines: Iterable[str]) -> tuple[str, ...]:
-    """Строки-призывы с схлопнутыми пробелами, без пустых и повторов без учёта регистра."""
-    kept: list[str] = []
-    seen: set[str] = set()
-    for line in lines:
-        cleaned: str = collapse_spaces(line)
-        if not cleaned or cleaned.lower() in seen:
-            continue
-        seen.add(cleaned.lower())
-        kept.append(cleaned)
-    return tuple(kept)
-
-
 def clean_double_bullet_markers(text: str) -> str:
     """Сдвоенные маркеры пункта в начале строки — один, первый."""
-    return DOUBLE_BULLET_PATTERN.sub(r"\1\2 ", text)
+    return DOUBLE_BULLET_PATTERN.sub(DOUBLE_BULLET_REPLACEMENT, text)
 
 
 @dataclass(frozen=True)
@@ -87,10 +57,15 @@ class TailFragments:
     malformed_urls_dropped: int = 0
 
     def followed_by(self, later: TailFragments) -> TailFragments:
-        """Фрагменты этого хвоста, затем `later` (у санации донора — сначала внутренние, потом хвост в конце):
-        призывы и ссылки — без повторов, в порядке первого появления; флаг — «или»; счётчики — сумма."""
+        """Фрагменты этого хвоста, затем `later` (у санации — сначала внутренние, потом хвост в конце): призывы
+        (пробелы схлопнуты, без пустых) и ссылки — без повторов без учёта регистра, в порядке первого появления;
+        флаг — «или»; счётчики — сумма."""
+        cta_lines: tuple[str, ...] = tuple(collapse_spaces(line) for line in (*self.cta_lines, *later.cta_lines))
+        by_case: dict[str, str] = {}
+        for line in cta_lines:
+            by_case.setdefault(line.lower(), line)
         return TailFragments(
-            cta_lines=dedupe_cta_lines((*self.cta_lines, *later.cta_lines)),
+            cta_lines=tuple(line for line in by_case.values() if line),
             hashtag_lines=(*self.hashtag_lines, *later.hashtag_lines),
             hashtags_split_from_cta=self.hashtags_split_from_cta or later.hashtags_split_from_cta,
             source_urls=unique_in_order((*self.source_urls, *later.source_urls)),
@@ -100,8 +75,13 @@ class TailFragments:
 
     @property
     def hashtags_line(self) -> str:
-        """Хештеги всех строк одной строкой (`merge_hashtag_lines`)."""
-        return merge_hashtag_lines(self.hashtag_lines)
+        """Хештеги всех строк одной строкой: без повторов без учёта регистра, в порядке первого появления."""
+        words: tuple[str, ...] = tuple(word for line in self.hashtag_lines for word in line.split())
+        by_case: dict[str, str] = {}
+        for word in words:
+            if HASHTAG_WORD_PATTERN.fullmatch(word):
+                by_case.setdefault(word.lower(), word)
+        return SPACE.join(by_case.values())
 
 
 @dataclass(frozen=True)
@@ -115,88 +95,63 @@ class UrlTail:
 
 
 @dataclass(frozen=True)
-class TextTail:
-    """Абзац без хвоста одного вида (хештеги или призыв): текст до хвоста и сам хвост; хвоста нет — пусто."""
+class TailParagraph:
+    """Абзац без краевых пробелов и хвосты в его конце: ссылки и хештеги."""
 
     text: str
-    tail: str = ""
+
+    @classmethod
+    def of(cls, paragraph: str) -> TailParagraph:
+        return cls(paragraph.strip())
+
+    @property
+    def url_tail(self) -> UrlTail:
+        """Ссылки в конце абзаца: неполные отброшены, остальные почищены и без повторов."""
+        match: re.Match[str] | None = URL_TAIL_PATTERN.search(self.text)
+        if match is None:
+            return UrlTail(text=self.text)
+        taken: TailCollector = TailCollector()
+        for raw in match.group(TAIL_GROUP).split():
+            taken.add_url_line(raw)
+        before: str = self.text[: match.start(TAIL_GROUP)].rstrip()
+        return UrlTail(before, unique_in_order(taken.urls), taken.url_changes, taken.malformed)
+
+    @property
+    def hashtag_tail(self) -> TextTail:
+        """Хештеги в конце абзаца; текст до них — без пробелов, запятых и `;` в конце."""
+        match: re.Match[str] | None = HASHTAG_TAIL_PATTERN.search(self.text)
+        candidate: str = match.group(TAIL_GROUP).strip() if match is not None else ""
+        if match is None or not is_hashtags_line(candidate):
+            return TextTail(self.text)
+        return TextTail(text=self.text[: match.start(TAIL_GROUP)].rstrip(HASHTAG_PREFIX_TRIM), tail=candidate)
 
 
 @dataclass(frozen=True)
-class TailReader:
-    """Правила хвоста над строками и абзацами; призыв узнаётся по лексикону."""
+class CtaTailLine:
+    """Строка хвоста глазами призыва: строка-призыв целиком или строка-призыв с хештегами в конце."""
 
+    line: str
     cta: CtaLexicon
 
-    def is_standalone_cta_line(self, line: str) -> bool:
-        """Строка-призыв: начинается с подсказки (после «-», «*», «•», «>») или короткая строка с подсказкой."""
-        normalized_line: str = collapse_spaces(line).lower()
-        if not normalized_line:
-            return False
-        cleaned_line: str = normalized_line.lstrip(CTA_LINE_LEAD_CHARS)
-        if any(cleaned_line.startswith(hint) for hint in self.cta.hints):
-            return True
-        return len(normalized_line) <= STANDALONE_CTA_MAX_CHARS and self.cta.looks_like_cta_line(line)
+    @property
+    def hashtags(self) -> TextTail:
+        return TailParagraph.of(self.line).hashtag_tail
 
-    def url_tail(self, paragraph: str) -> UrlTail:
-        """Ссылки в конце абзаца: неполные отброшены, остальные почищены и без повторов."""
-        normalized: str = str(paragraph or "").strip()
-        if not normalized:
-            return UrlTail(text="")
-        match: re.Match[str] | None = URL_TAIL_PATTERN.search(normalized)
-        if match is None:
-            return UrlTail(text=normalized)
-        urls: list[str] = []
-        changes: int = 0
-        malformed: int = 0
-        for raw_url in (item for item in match.group(1).split() if item):
-            cleaned: SourceLink = SourceLink.of(raw_url)
-            if cleaned.url is None:
-                malformed += 1
-                continue
-            changes += int(cleaned.url != raw_url)
-            urls.append(cleaned.url)
-        return UrlTail(normalized[: match.start(1)].rstrip(), unique_in_order(urls), changes, malformed)
+    @property
+    def has_split_hashtags(self) -> bool:
+        """Хештеги в конце строки-призыва: они уходят к хештегам, призыв — без них."""
+        return bool(self.hashtags.tail) and self.cta.is_standalone_line(self.hashtags.text)
 
-    def hashtag_tail(self, paragraph: str) -> TextTail:
-        """Хештеги в конце абзаца; текст до них — без пробелов, запятых и `;` в конце."""
-        normalized: str = str(paragraph or "").strip()
-        if not normalized:
-            return TextTail(text="")
-        match: re.Match[str] | None = HASHTAG_TAIL_PATTERN.search(normalized)
-        if match is None:
-            return TextTail(text=normalized)
-        candidate: str = match.group(1).strip()
-        if not is_hashtags_line(candidate):
-            return TextTail(text=normalized)
-        return TextTail(text=normalized[: match.start(1)].rstrip(HASHTAG_PREFIX_TRIM), tail=candidate)
-
-    def cta_tail(self, paragraph: str) -> TextTail:
-        """Последнее предложение абзаца — призыв; абзац из одного предложения-призыва уходит в хвост целиком."""
-        normalized: str = str(paragraph or "").strip()
-        if not normalized:
-            return TextTail(text="")
-        sentences: list[str] = SENTENCE_BREAK_PATTERN.split(normalized)
-        if len(sentences) < 2:
-            if self.cta.looks_like_cta_line(normalized):
-                return TextTail(text="", tail=normalized)
-            return TextTail(text=normalized)
-        candidate: str = sentences[-1].strip()
-        if not self.cta.looks_like_cta_line(candidate):
-            return TextTail(text=normalized)
-        body: str = " ".join(sentences[:-1]).strip()
-        if not body:
-            return TextTail(text=normalized)
-        return TextTail(text=body, tail=candidate)
+    @property
+    def is_cta(self) -> bool:
+        return self.has_split_hashtags or self.cta.is_standalone_line(self.line)
 
 
 @dataclass
-class TailScan:
-    """Проход по строкам с конца: где сейчас кончается тело и что уже снято."""
+class TailCollector:
+    """Снятое с хвоста по мере прохода: призывы, хештеги, отделялись ли хештеги от призыва, ссылки, сколько ссылок
+    изменила чистка и сколько неполных отброшено."""
 
-    lines: Sequence[str]
-    reader: TailReader
-    end: int
     cta_lines: list[str] = field(default_factory=list)
     hashtag_lines: list[str] = field(default_factory=list)
     hashtags_split_from_cta: bool = False
@@ -204,113 +159,106 @@ class TailScan:
     url_changes: int = 0
     malformed: int = 0
 
-    def take_urls(self) -> None:
-        """Строки-ссылки с конца; неполная ссылка отбрасывается и считается."""
-        while self.end > 0:
-            candidate: str = self.lines[self.end - 1].strip()
-            if candidate and not is_source_url_line(candidate):
-                return
-            self.end -= 1
-            if not candidate:
-                continue
-            cleaned: SourceLink = SourceLink.of(candidate)
-            if cleaned.url is None:
-                self.malformed += 1
-                continue
-            self.url_changes += int(cleaned.url != candidate)
-            self.urls.insert(0, cleaned.url)
+    def add_url_line(self, line: str) -> None:
+        """Строка-ссылка: неполная отбрасывается и считается, прочая чистится; изменённая чисткой — считается."""
+        link: SourceLink = SourceLink.of(line)
+        if link.url is None:
+            self.malformed += 1
+            return
+        self.url_changes += int(link.url != line)
+        self.urls.append(link.url)
 
-    def take_hashtags(self) -> None:
-        """Строки хештегов перед ссылками."""
-        while self.end > 0:
-            candidate: str = self.lines[self.end - 1].strip()
-            if candidate and not is_hashtags_line(candidate):
-                return
-            self.end -= 1
-            if candidate:
-                self.hashtag_lines.insert(0, candidate)
+    def add_urls(self, tail: UrlTail) -> None:
+        self.urls.extend(tail.urls)
+        self.url_changes += tail.change_count
+        self.malformed += tail.malformed
 
-    def take_cta(self) -> None:
-        """Строки-призывы перед хештегами; хештеги в конце строки-призыва уходят к хештегам."""
-        while self.end > 0:
-            candidate: str = self.lines[self.end - 1].strip()
-            if candidate:
-                split: TextTail = self.reader.hashtag_tail(candidate)
-                if split.tail and self.reader.is_standalone_cta_line(split.text):
-                    self.hashtag_lines.insert(0, split.tail)
-                    self.hashtags_split_from_cta = True
-                    candidate = split.text
-            if candidate and not self.reader.is_standalone_cta_line(candidate):
-                return
-            self.end -= 1
-            if candidate:
-                self.cta_lines.insert(0, candidate)
+    def add_hashtags(self, line: str) -> None:
+        if line:
+            self.hashtag_lines.append(line)
 
-    @property
-    def fragments(self) -> TailFragments:
+    def add_cta(self, line: str) -> None:
+        if line:
+            self.cta_lines.append(line)
+
+    def add_cta_line(self, line: CtaTailLine) -> None:
+        """Строка-призыв хвоста; хештеги в её конце — к хештегам."""
+        if line.has_split_hashtags:
+            self.add_hashtags(line.hashtags.tail)
+            self.hashtags_split_from_cta = True
+        self.add_cta(line.hashtags.text if line.has_split_hashtags else line.line)
+
+    def fragments(self, backward: bool) -> TailFragments:
+        """Итог; `backward` — снималось с конца текста: порядок строк возвращается к порядку текста."""
+        step: int = -1 if backward else 1
+        urls: tuple[str, ...] = tuple(self.urls[::step])
         return TailFragments(
-            cta_lines=tuple(self.cta_lines),
-            hashtag_lines=tuple(self.hashtag_lines),
+            cta_lines=tuple(self.cta_lines[::step]),
+            hashtag_lines=tuple(self.hashtag_lines[::step]),
             hashtags_split_from_cta=self.hashtags_split_from_cta,
-            source_urls=tuple(self.urls),
+            source_urls=urls if backward else unique_in_order(urls),
             url_change_count=self.url_changes,
             malformed_urls_dropped=self.malformed,
         )
 
 
+@dataclass
+class BackwardLines:
+    """Строки текста с конца: `end` — где сейчас кончается тело."""
+
+    lines: Sequence[str]
+    end: int
+
+    def take_while(self, accepts: Callable[[str], bool]) -> Iterable[str]:
+        """Строки с конца, пока подходят (пустые между ними — тоже снимаются); отдаёт непустые без краёв."""
+        while self.end > 0:
+            candidate: str = self.lines[self.end - 1].strip()
+            if candidate and not accepts(candidate):
+                return
+            self.end -= 1
+            if candidate:
+                yield candidate
+
+
 @dataclass(frozen=True)
 class TrailingTail:
-    """Хвост в конце текста: строки с `body_end_index` и дальше — ссылки, хештеги, призывы (`split_tail` донора)."""
+    """Хвост в конце текста: строки с `body_end_index` и дальше — ссылки, хештеги, призывы."""
 
     body_end_index: int
     fragments: TailFragments
 
     @classmethod
     def of(cls, lines: Sequence[str], cta: CtaLexicon) -> TrailingTail:
-        scan: TailScan = TailScan(lines=lines, reader=TailReader(cta), end=len(lines))
-        scan.take_urls()
-        scan.take_hashtags()
-        scan.take_cta()
-        return cls(body_end_index=scan.end, fragments=scan.fragments)
+        rest: BackwardLines = BackwardLines(lines=lines, end=len(lines))
+        collector: TailCollector = TailCollector()
+        for line in rest.take_while(is_source_url_line):
+            collector.add_url_line(line)
+        for line in rest.take_while(is_hashtags_line):
+            collector.add_hashtags(line)
+        for line in rest.take_while(lambda candidate: CtaTailLine(candidate, cta).is_cta):
+            collector.add_cta_line(CtaTailLine(line, cta))
+        return cls(body_end_index=rest.end, fragments=collector.fragments(backward=True))
 
 
 @dataclass(frozen=True)
 class EmbeddedTail:
-    """Тело без хвостов внутри абзацев (`extract_embedded` донора): текст тела и снятые фрагменты."""
+    """Тело без хвостов внутри абзацев: текст тела и снятые фрагменты."""
 
     body_text: str
     fragments: TailFragments
 
     @classmethod
     def of(cls, text: str, cta: CtaLexicon) -> EmbeddedTail:
-        reader: TailReader = TailReader(cta)
+        collector: TailCollector = TailCollector()
         kept: list[str] = []
-        cta_lines: list[str] = []
-        hashtag_lines: list[str] = []
-        split_hashtags: bool = False
-        urls: list[str] = []
-        changes: int = 0
-        malformed: int = 0
         for paragraph in split_paragraphs(text):
-            url_tail: UrlTail = reader.url_tail(paragraph.strip())
-            hashtags: TextTail = reader.hashtag_tail(url_tail.text)
-            cta_tail: TextTail = reader.cta_tail(hashtags.text)
-            split_hashtags = split_hashtags or bool(hashtags.tail and cta_tail.tail)
+            url_tail: UrlTail = TailParagraph.of(paragraph).url_tail
+            hashtags: TextTail = TailParagraph.of(url_tail.text).hashtag_tail
+            cta_tail: TextTail = cta.split_final_sentence(hashtags.text)
+            collector.hashtags_split_from_cta |= bool(hashtags.tail and cta_tail.tail)
             if cta_tail.text:
                 kept.append(cta_tail.text)
-            urls.extend(url_tail.urls)
-            changes += url_tail.change_count
-            malformed += url_tail.malformed
-            if hashtags.tail:
-                hashtag_lines.append(hashtags.tail)
-            if cta_tail.tail:
-                cta_lines.append(cta_tail.tail)
-        fragments: TailFragments = TailFragments(
-            cta_lines=tuple(cta_lines),
-            hashtag_lines=tuple(hashtag_lines),
-            hashtags_split_from_cta=split_hashtags,
-            source_urls=unique_in_order(urls),
-            url_change_count=changes,
-            malformed_urls_dropped=malformed,
-        )
-        return cls(body_text=PARAGRAPH_BREAK.join(kept).strip(), fragments=fragments)
+            collector.add_urls(url_tail)
+            collector.add_hashtags(hashtags.tail)
+            collector.add_cta(cta_tail.tail)
+        return cls(body_text=PARAGRAPH_BREAK.join(kept).strip(), fragments=collector.fragments(backward=False))

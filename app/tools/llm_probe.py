@@ -31,7 +31,7 @@ from app.llm.backend import LlmBackend, LlmRequest, LlmResponse
 from app.llm.backends.openai import OpenAiClient
 from app.llm.errors import LlmRequestError
 from app.llm.selection import ModelChoice
-from app.llm.usage import COST_FORMAT, RunUsage
+from app.llm.usage import COST_FORMAT, RunUsage, TokenCounts
 from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.resources.loader import TextResource
 from app.run.exit_code import ExitCode
@@ -56,7 +56,7 @@ class LlmProbeEvent(str, Enum):
 
 @dataclass(frozen=True)
 class StartupPing:
-    """Проверочный промт донора: модель отвечает строгим JSON о себе. Подставляются модель и момент UTC."""
+    """Проверочный промт: модель отвечает строгим JSON о себе. Подставляются модель и момент UTC."""
 
     resource: TextResource = TextResource(PING_RESOURCE)
 
@@ -85,15 +85,15 @@ class LlmProbeReport:
 
     @property
     def _tokens_line(self) -> str:
-        usage: RunUsage = self.usage
-        if not usage.tokens_known:
+        if not self.usage.tokens_known:
             return msg.LLM_PROBE_TOKENS_UNKNOWN
+        tokens: TokenCounts = self.usage.tokens
         return msg.LLM_PROBE_TOKENS.format(
-            input=usage.input_tokens,
-            cached=usage.cached_input_tokens,
-            output=usage.output_tokens,
-            thinking=usage.thinking_tokens,
-            total=usage.tokens,
+            input=tokens.input_tokens,
+            cached=tokens.cached_input_tokens,
+            output=tokens.output_tokens,
+            thinking=tokens.thinking_tokens,
+            total=tokens.total_tokens,
         )
 
     @property
@@ -156,9 +156,7 @@ class LlmProbe:
         try:
             response: LlmResponse = backend.complete(request)
         except LlmRequestError as error:
-            failed: LogEvent = LogEvent.of(LlmProbeEvent.FAILED, backend=error.backend, reason_code=error.kind)
-            failed = failed.extended(status_code=error.status_code, api_error_code=error.api_error_code)
-            failed.extended(api_error_param=error.api_error_param, detail=error.detail).emit(LOGGER, logging.ERROR)
+            error.failure.extend(LogEvent.of(LlmProbeEvent.FAILED)).emit(LOGGER, logging.ERROR)
             self.console.say(error.human)
             return self._finish(backend.run_usage, None, ExitCode.ERRORS)
         return self._finish(backend.run_usage, response, ExitCode.OK)
@@ -166,7 +164,7 @@ class LlmProbe:
     def _finish(self, usage: RunUsage, response: LlmResponse | None, code: ExitCode) -> int:
         """Строки отчёта и строка расхода запуска (у неё своё имя события) с кодом выхода."""
         self.console.say_lines(LlmProbeReport(usage=usage, response=response).lines)
-        LogEvent.of(usage.log_line, exit=code).emit(LOGGER)
+        usage.event.extended(exit=code).emit(LOGGER)
         return int(code)
 
     def _settings_line(self, llm: LlmSettings) -> str:

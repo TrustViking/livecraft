@@ -9,7 +9,7 @@ from app.config.files import SettingsFile
 from app.config.settings import LivecraftSettings
 from app.llm.errors import LlmErrorKind
 from app.llm.selection import ChoiceReason
-from app.llm.usage import RequestUsage, RunUsage
+from app.llm.usage import RequestUsage, RunUsage, TokenCounts
 from app.paths import ROOT_ENV_VAR, LivecraftPaths
 from app.run.exit_code import ExitCode
 from app.secretsafe.field import SecretField
@@ -134,10 +134,8 @@ def test_main_on_an_empty_root_is_code_2(monkeypatch: pytest.MonkeyPatch, livecr
 
 def test_the_tier_line_names_each_request_and_unknown_labels_as_is() -> None:
     def spent(label: str, tier: str) -> RequestUsage:
-        return RequestUsage(
-            input_tokens=1, cached_input_tokens=0, cache_write_tokens=0, output_tokens=1, thinking_tokens=0,
-            total_tokens=2, response_id="", model="gpt-5.4", tier=tier, label=label, cost_usd=0.0,
-        )
+        tokens: TokenCounts = TokenCounts(input_tokens=1, output_tokens=1, total_tokens=2)
+        return RequestUsage(tokens, response_id="", model="gpt-5.4", tier=tier, label=label, cost_usd=0.0)
 
     run: RunUsage = RunUsage()
     for label, tier in (("model_probe", "default"), ("merge", "flex")):

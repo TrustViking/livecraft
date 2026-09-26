@@ -1,42 +1,38 @@
 """Санация принятого merge перед публикацией: окончательные название и описание слота (CLAUDE.md §3 шаг 5).
 
-Перенесено из restreamer, поведение как есть (§14 решение 23): `app\\publish\\post_llm_sanitation.py`
-(`build_sanitized_merged_publication_payload`, `sanitize_post_llm_text`, `sanitize_post_llm_title`,
-`_strip_final_body_cta_paragraph`, `_apply_publish_cta_gate`) и `app\\publish\\sanitizers\\quality_gate.py`
-(`PublishQualityGate`). Порядок шагов донора:
+Шаги санации (`PublicationBody.of`):
 1. блоки «🌐 …:» с ссылками снимаются из текста (`OfficialLinksBlocks`);
 2. санация текста (`SanitizedDescription`): хвост в конце и внутри абзацев (ссылки, хештеги, призывы), чистка ссылок,
    сдвоенные маркеры пунктов, абзац-призыв в конце тела; строки `tail_parse`, `tail_layout`, `post_llm_sanitation`;
 3. официальные ссылки из источников и из текста (`AuthoritativeLinks`), рекомендуемые видео — задача 3.14b;
-4. повторная нормализация качества тела (без названия и без числа источников — как у донора);
-5. призыв не публикуется никогда (`publish_cta_gate_dropped` — у донора строка пишется дважды: при санации и здесь);
-6. сборка описания (`DescriptionParts`) и проверка перед публикацией (`PublishGate`): повтор абзацев или призыв
-   в начале — блок не публикуется, слот получает тексты источников;
-7. строка `publish_sanitation_applied=yes` с ключами донора.
+4. повторная нормализация качества тела (без названия и без числа источников);
+5. сборка описания (`PublicationBody.compose`): призыв не публикуется никогда — здесь он отбрасывается и здесь же
+   пишется строка `publish_cta_gate_dropped`;
+6. проверка перед публикацией (`GateVerdict`): повтор абзацев или призыв в начале — блок не публикуется, слот получает
+   тексты источников;
+7. строка `publish_sanitation_applied=yes` — итог шагов.
 
-Метка источника в строках лога — `primary_success`: так донор помечает успешный merge (`_PRIMARY_PUBLISH_SOURCE`).
-Описание, собранное донором из санации без официальных ссылок (`PostLlmSanitizationResult.full_text`), в боевом пути
-не используется — не собирается. Текста описания в строках лога нет.
+Метка источника в строках лога — `primary_success`: так помечается успешный merge. Текста описания в строках лога нет.
 """
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Final
 
 from app.core.sequence import unique_in_order
 from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
 from app.core.web_link import WebLink
 from app.llm.merges.description import MergedDescription
-from app.llm.merges.links import AuthoritativeLinks
-from app.llm.merges.merge_rules import MergeRules
+from app.llm.merges.links import AuthoritativeLinks, TextLinks
+from app.llm.merges.merge_rules import MergeRules, PublishGate
 from app.llm.merges.quality import QualityNormalization, QualityRequest
-from app.observability.log_event import LogArea, LogValue, get_logger
+from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.sources.video import SourceVideo
-from app.texts.composer import LAYOUT_EMPTY, DescriptionParts
-from app.texts.description_marks import BulletLine, CtaLexicon
+from app.texts.composer import LAYOUT_EMPTY, DescriptionParts, PublishHeadings
+from app.texts.description_marks import CtaLexicon, FinalParagraph
 from app.texts.official_links import OfficialLinksBlocks
 from app.texts.paragraphs import collapse_spaces, has_duplicate_paragraphs, normalize_multiline_text, split_paragraphs
 from app.texts.source_link import LinkedText
@@ -44,26 +40,40 @@ from app.texts.tail import EmbeddedTail, TailFragments, TrailingTail, clean_doub
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
-# Метка успешного merge в строках санации (`merge_orchestrator.py::_PRIMARY_PUBLISH_SOURCE` донора).
-PRIMARY_SOURCE_LABEL: Final[str] = "primary_success"
-BLOCK_EMITTED: Final[str] = "emitted"
-BLOCK_SUPPRESSED: Final[str] = "suppressed"
-BLOCK_ABSENT: Final[str] = "absent"
-BLOCK_SKIPPED: Final[str] = "skipped"
+PRIMARY_SOURCE_LABEL: Final[str] = "primary_success"      # метка успешного merge в строках санации
 
 
-def _flag(value: bool) -> str:
-    return LogValue.YES.value if value else LogValue.NO.value
+class SanitationEvent(str, Enum):
+    """События санации в логе."""
+
+    TAIL_PARSE = "tail_parse"
+    TAIL_LAYOUT = "tail_layout"
+    FINAL_CTA_KEPT = "removed_final_body_cta=no"
+    FINAL_CTA_REMOVED = "removed_final_body_cta=yes"
+    CTA_DROPPED = "publish_cta_gate_dropped"
+    SANITIZED = "post_llm_sanitation"
+    DUPLICATE = "publish_duplicate_paragraph_detected"
+    OPENER_CTA = "publish_opener_cta_detected"
+    APPLIED = "publish_sanitation_applied=yes"
+
+
+class LinksBlock(str, Enum):
+    """Итог блока ссылок в строке `publish_sanitation_applied`."""
+
+    EMITTED = "emitted"
+    SUPPRESSED = "suppressed"
+    ABSENT = "absent"
+    SKIPPED = "skipped"
 
 
 @dataclass(frozen=True)
 class SanitizedDescription:
     """Текст ответа после санации: тело, призыв, хештеги, ссылки хвоста, сколько ссылок изменено, раскладка хвоста.
 
-    Поля — `PostLlmSanitizationResult` донора без `full_text` (в боевом пути не используется). Тексты в `repr`
-    не печатаются.
+    Тексты в `repr` не печатаются.
     """
 
+    language: str
     body: str = field(repr=False)
     cta_text: str = field(default="", repr=False)
     hashtags_line: str = field(default="", repr=False)
@@ -74,78 +84,62 @@ class SanitizedDescription:
     malformed_source_urls_dropped: int = 0
 
     @classmethod
-    def of(cls, text: str, language: str, source_label: str, cta: CtaLexicon) -> SanitizedDescription:
-        """Санация текста (`sanitize_post_llm_text` донора) и её строки лога."""
+    def of(cls, text: str, language: str, cta: CtaLexicon) -> SanitizedDescription:
+        """Санация текста и её строки лога."""
         normalized: str = normalize_multiline_text(text)
         if not normalized:
-            empty: SanitizedDescription = cls(body="")
-            LOGGER.info("%s", empty.summary_line(language, source_label))
+            empty: SanitizedDescription = cls(language=language, body="")
+            empty.summary_event.emit(LOGGER)
             return empty
         lines: list[str] = normalized.split(NEWLINE)
         trailing: TrailingTail = TrailingTail.of(lines, cta)
         embedded: EmbeddedTail = EmbeddedTail.of(NEWLINE.join(lines[: trailing.body_end_index]).strip(), cta)
-        linked_body: LinkedText = LinkedText.of(embedded.body_text)
-        body: str = cls._without_final_cta(clean_double_bullet_markers(linked_body.text), cta, language, source_label)
         fragments: TailFragments = embedded.fragments.followed_by(trailing.fragments)
-        linked_cta: LinkedText = LinkedText.of(NEWLINE.join(fragments.cta_lines).strip())
-        text_changes: int = linked_body.change_count + linked_cta.change_count
-        sanitized: SanitizedDescription = cls._assembled(body, linked_cta.text, fragments, text_changes)
-        for line in sanitized.tail_lines(language, source_label):
-            LOGGER.info("%s", line)
-        sanitized.drop_cta(language, source_label)
-        LOGGER.info("%s", sanitized.summary_line(language, source_label))
+        sanitized: SanitizedDescription = cls._assembled(language, LinkedText.of(embedded.body_text), fragments, cta)
+        for event in (*sanitized.tail_events, sanitized.summary_event):
+            event.emit(LOGGER)
         return sanitized
 
     @classmethod
-    def _assembled(cls, body: str, cta_text: str, fragments: TailFragments, text_changes: int) -> SanitizedDescription:
-        """Итог санации из тела, призыва и снятого хвоста; `text_changes` — ссылки, изменённые в теле и призыве."""
+    def _assembled(
+        cls, language: str, linked_body: LinkedText, fragments: TailFragments, cta: CtaLexicon
+    ) -> SanitizedDescription:
+        """Итог санации из тела с почищенными ссылками и снятого хвоста: сдвоенные маркеры и абзац-призыв в конце
+        тела уходят; ссылки, изменённые чисткой, считаются в теле, в призыве и в хвосте."""
+        body: str = cls._without_final_cta(clean_double_bullet_markers(linked_body.text), language, cta)
+        linked_cta: LinkedText = LinkedText.of(NEWLINE.join(fragments.cta_lines).strip())
         urls: tuple[str, ...] = fragments.source_urls
         parts: DescriptionParts = DescriptionParts(
             body=body,
             hashtags_line=fragments.hashtags_line,
             recommended_urls=tuple(url for url in urls if WebLink.of(url).unwrapped.is_youtube),
             official_urls=tuple(url for url in urls if not WebLink.of(url).unwrapped.is_youtube),
-            cta=cta_text,
+            cta=linked_cta.text,
         )
         return cls(
+            language=language,
             body=body,
-            cta_text=cta_text,
+            cta_text=linked_cta.text,
             hashtags_line=fragments.hashtags_line,
             source_urls=urls,
-            url_change_count=fragments.url_change_count + text_changes,
+            url_change_count=fragments.url_change_count + linked_body.change_count + linked_cta.change_count,
             hashtags_split_from_cta=fragments.hashtags_split_from_cta,
             tail_layout=parts.layout,
             malformed_source_urls_dropped=fragments.malformed_urls_dropped,
         )
 
-    @staticmethod
-    def _without_final_cta(body: str, cta: CtaLexicon, language: str, source_label: str) -> str:
-        """Последний абзац тела — призыв, который хвост не снял: убирается, если тело остаётся (абзацев от двух).
-        Абзац-призыв узнаётся по лексикону; одна строка без маркера пункта — ещё и по подсказке в строке."""
-        normalized: str = str(body or "").strip()
-        if not normalized:
-            LOGGER.debug("removed_final_body_cta=no lang=%s source=%s reason=empty", language, source_label)
+    @classmethod
+    def _without_final_cta(cls, body: str, language: str, cta: CtaLexicon) -> str:
+        """Последний абзац тела — призыв, который хвост не снял: убирается, если тело остаётся (абзацев от двух)."""
+        final: FinalParagraph = cta.final_paragraph(body)
+        if final is not FinalParagraph.CTA:
+            kept: LogEvent = LogEvent.of(SanitationEvent.FINAL_CTA_KEPT, lang=language, source=PRIMARY_SOURCE_LABEL)
+            kept.extended(reason=final).emit(LOGGER, logging.DEBUG)
             return body
-        paragraphs: list[str] = split_paragraphs(normalized)
-        if len(paragraphs) < 2:
-            LOGGER.debug("removed_final_body_cta=no lang=%s source=%s reason=single_paragraph", language, source_label)
-            return body
-        last: str = paragraphs[-1]
-        last_lines: list[str] = [line.strip() for line in last.splitlines() if line.strip()]
-        is_cta: bool = cta.looks_like_cta_paragraph(last)
-        if not is_cta and len(last_lines) == 1 and not BulletLine.of(last_lines[0]).is_bullet:
-            is_cta = cta.looks_like_cta_line(last)
-        if not is_cta:
-            LOGGER.debug("removed_final_body_cta=no lang=%s source=%s reason=not_cta", language, source_label)
-            return body
-        LOGGER.info("removed_final_body_cta=yes lang=%s source=%s removed_chars=%d", language, source_label, len(last))
+        paragraphs: list[str] = split_paragraphs(body)
+        removed: LogEvent = LogEvent.of(SanitationEvent.FINAL_CTA_REMOVED, lang=language, source=PRIMARY_SOURCE_LABEL)
+        removed.extended(removed_chars=len(paragraphs[-1])).emit(LOGGER)
         return PARAGRAPH_BREAK.join(paragraphs[:-1])
-
-    def drop_cta(self, language: str, source_label: str) -> None:
-        """Призыв не публикуется никогда (`_apply_publish_cta_gate` донора): только строка лога, если он был."""
-        cta_text: str = self.cta_text.strip()
-        if cta_text:
-            LOGGER.info("publish_cta_gate_dropped lang=%s source=%s cta_chars=%d", language, source_label, len(cta_text))
 
     @property
     def cta_found(self) -> bool:
@@ -159,79 +153,177 @@ class SanitizedDescription:
     def tail_was_separated(self) -> bool:
         return bool(self.cta_text or self.hashtags_line or self.source_urls)
 
-    def tail_lines(self, language: str, source_label: str) -> tuple[str, str]:
-        """Строки `tail_parse` и `tail_layout` с ключами донора."""
-        return (
-            f"tail_parse lang={language} source={source_label} cta_found={_flag(self.cta_found)} "
-            f"hashtags_found={_flag(self.hashtags_found)} hashtags_split_from_cta={_flag(self.hashtags_split_from_cta)}",
-            f"tail_layout lang={language} source={source_label} layout={self.tail_layout}",
-        )
+    def event(self, name: SanitationEvent) -> LogEvent:
+        """Строка лога санации: язык и метка источника."""
+        return LogEvent.of(name, lang=self.language, source=PRIMARY_SOURCE_LABEL)
 
-    def summary_line(self, language: str, source_label: str) -> str:
-        """Строка `post_llm_sanitation` с ключами донора."""
-        return (
-            f"post_llm_sanitation lang={language} source={source_label} urls_normalized={self.url_change_count} "
-            f"tail_separated={_flag(self.tail_was_separated)} tail_cta_found={_flag(self.cta_found)} "
-            f"hashtags_found={_flag(self.hashtags_found)} source_urls_found={len(self.source_urls)} "
-            f"malformed_source_urls_dropped={self.malformed_source_urls_dropped}"
+    @property
+    def tail_events(self) -> tuple[LogEvent, ...]:
+        """Строки `tail_parse` и `tail_layout`."""
+        parse: LogEvent = self.event(SanitationEvent.TAIL_PARSE).extended(
+            cta_found=self.cta_found,
+            hashtags_found=self.hashtags_found,
+            hashtags_split_from_cta=self.hashtags_split_from_cta,
+        )
+        return parse, self.event(SanitationEvent.TAIL_LAYOUT).extended(layout=self.tail_layout)
+
+    @property
+    def summary_event(self) -> LogEvent:
+        """Строка `post_llm_sanitation`."""
+        return self.event(SanitationEvent.SANITIZED).extended(
+            urls_normalized=self.url_change_count,
+            tail_separated=self.tail_was_separated,
+            tail_cta_found=self.cta_found,
+            hashtags_found=self.hashtags_found,
+            source_urls_found=len(self.source_urls),
+            malformed_source_urls_dropped=self.malformed_source_urls_dropped,
         )
 
 
 @dataclass(frozen=True)
-class MergePublication:
-    """Название и описание принятого merge после санации и итог проверки перед публикацией.
-
-    `sanitized`, `blocks`, `links`, `text_urls` — шаги санации: из них строится строка лога `publish_sanitation_applied`.
-    """
+class PublicationSlot:
+    """Что нужно санации о слоте: язык блока, источники в порядке рядов, правила merge."""
 
     language: str
-    title: str = field(repr=False)
-    description: str = field(repr=False)
-    has_duplicate: bool
-    has_opener_cta: bool
-    layout: str
-    sanitized: SanitizedDescription = field(repr=False)
+    sources: tuple[SourceVideo, ...] = field(repr=False)
+    rules: MergeRules = field(repr=False)
+
+
+@dataclass(frozen=True)
+class PublicationBody:
+    """Описание после санации, до сборки: тело, блоки «🌐 …:», санация текста, ссылки текста и официальные ссылки."""
+
+    language: str
+    text: str = field(repr=False)
     blocks: OfficialLinksBlocks = field(repr=False)
+    sanitized: SanitizedDescription = field(repr=False)
     links: AuthoritativeLinks = field(repr=False)
-    text_urls: tuple[str, ...] = field(repr=False)
 
     @classmethod
-    def of(
-        cls, title: str, description: str, sources: Sequence[SourceVideo], language: str, rules: MergeRules
-    ) -> MergePublication:
-        """Шаги `build_sanitized_merged_publication_payload` донора; строки лога — по ходу, итог — в конце."""
-        cta: CtaLexicon = rules.lexicons.cta
+    def of(cls, description: str, slot: PublicationSlot) -> PublicationBody:
+        """Шаги санации 1–4; строки лога — по ходу."""
         blocks: OfficialLinksBlocks = OfficialLinksBlocks.of(description.strip())
-        sanitized: SanitizedDescription = SanitizedDescription.of(blocks.cleaned_text, language, PRIMARY_SOURCE_LABEL, cta)
+        sanitized: SanitizedDescription = SanitizedDescription.of(blocks.cleaned_text, slot.language, slot.rules.lexicons.cta)
         text_urls: tuple[str, ...] = unique_in_order((*blocks.source_urls, *sanitized.source_urls))
+        text_links: TextLinks = TextLinks(text_urls, sanitized.malformed_source_urls_dropped)
         links: AuthoritativeLinks = AuthoritativeLinks.of(
-            language, sources, text_urls, sanitized.malformed_source_urls_dropped
+            slot.language, slot.sources, text_links, slot.rules.lexicons.link_hints
         )
         body: str = sanitized.body
-        if sources:
-            body = QualityNormalization.of(MergedDescription(body), QualityRequest(language=language), rules.lexicons).description.text
-        sanitized.drop_cta(language, PRIMARY_SOURCE_LABEL)
-        parts: DescriptionParts = DescriptionParts(body=body, hashtags_line=sanitized.hashtags_line, official_urls=links.urls)
-        final: str = parts.compose(language, rules.headings)
+        if slot.sources:
+            request: QualityRequest = QualityRequest(language=slot.language)
+            body = QualityNormalization.of(MergedDescription(body), request, slot.rules.lexicons).description.text
+        return cls(language=slot.language, text=body, blocks=blocks, sanitized=sanitized, links=links)
+
+    @property
+    def parts(self) -> DescriptionParts:
+        """Части описания без призыва: тело, хештеги, официальные ссылки."""
+        return DescriptionParts(body=self.text, hashtags_line=self.sanitized.hashtags_line, official_urls=self.links.urls)
+
+    def compose(self, headings: PublishHeadings) -> str:
+        """Описание для публикации. Призыв не публикуется никогда: он отбрасывается здесь — строкой лога."""
+        cta_text: str = self.sanitized.cta_text.strip()
+        if cta_text:
+            self.sanitized.event(SanitationEvent.CTA_DROPPED).extended(cta_chars=len(cta_text)).emit(LOGGER)
+        return self.parts.compose(self.language, headings)
+
+    @property
+    def links_block(self) -> LinksBlock:
+        if self.links.urls:
+            return LinksBlock.EMITTED
+        return LinksBlock.SUPPRESSED if self.blocks.empty_blocks_suppressed > 0 else LinksBlock.ABSENT
+
+    def extend(self, event: LogEvent) -> LogEvent:
+        """Поля строки `publish_sanitation_applied` о хвосте, ссылках текста и официальных ссылках."""
+        links: AuthoritativeLinks = self.links
+        text_youtube: int = links.text.youtube_count
+        tail: LogEvent = event.extended(
+            cta_found=self.sanitized.cta_found,
+            hashtags_found=self.sanitized.hashtags_found,
+            hashtags_split_from_cta=self.sanitized.hashtags_split_from_cta,
+            tail_layout=self.parts.layout,
+            recommended_materials_text_candidates_ignored=text_youtube,
+        )
+        youtube: LogEvent = tail.extended(
+            raw_youtube_urls_found=links.raw_youtube_urls_found,
+            deduped_youtube_candidates=links.deduped_youtube_candidates,
+            repeated_youtube_candidates=links.repeated_youtube_candidates,
+            recommended_materials_final_count=0,
+            recommended_materials_block=LinksBlock.SKIPPED,
+        )
+        return youtube.extended(
+            official_links_heading_found=self.blocks.heading_found,
+            official_links_text_links=len(links.text.urls) - text_youtube,
+            official_links_source_links=links.emitted_source_video_urls,
+            official_links_final_count=len(links.urls),
+            official_links_block=self.links_block,
+            official_links_dedup_applied=links.duplicate_urls_removed > 0,
+            official_links_non_youtube_only=True,
+            empty_official_links_suppressed=self.blocks.empty_blocks_suppressed,
+            ignored_llm_youtube_urls=links.text.youtube_count,
+        )
+
+
+@dataclass(frozen=True)
+class GateVerdict:
+    """Проверка описания перед публикацией: повтор абзацев, призыв или негодный тезис в начале."""
+
+    has_duplicate: bool
+    has_opener_cta: bool
+
+    @classmethod
+    def of(cls, description: str, gate: PublishGate) -> GateVerdict:
+        return cls(has_duplicate=has_duplicate_paragraphs(description), has_opener_cta=gate.has_opener_cta(description))
+
+    @property
+    def is_blocked(self) -> bool:
+        """Повтор абзацев или призыв в начале: блок не публикуется."""
+        return self.has_duplicate or self.has_opener_cta
+
+    def extend(self, event: LogEvent) -> LogEvent:
+        """Поля строки о блоке, не прошедшем проверку: что нашла проверка."""
+        return event.extended(
+            has_publish_stage_duplicate=self.has_duplicate, has_publish_stage_opener_cta=self.has_opener_cta
+        )
+
+    @property
+    def found(self) -> tuple[SanitationEvent, ...]:
+        """События найденного: повтор абзацев, затем призыв в начале."""
+        pairs: tuple[tuple[bool, SanitationEvent], ...] = (
+            (self.has_duplicate, SanitationEvent.DUPLICATE),
+            (self.has_opener_cta, SanitationEvent.OPENER_CTA),
+        )
+        return tuple(event for is_found, event in pairs if is_found)
+
+
+@dataclass(frozen=True)
+class MergePublication:
+    """Название и описание принятого merge после санации, сама санация, итог проверки и раскладка описания."""
+
+    title: str = field(repr=False)
+    description: str = field(repr=False)
+    body: PublicationBody = field(repr=False)
+    verdict: GateVerdict
+    layout: str
+
+    @classmethod
+    def of(cls, title: str, description: str, slot: PublicationSlot) -> MergePublication:
+        """Санация, сборка и проверка перед публикацией; строки лога — по ходу, итог — в конце."""
+        body: PublicationBody = PublicationBody.of(description, slot)
+        final: str = body.compose(slot.rules.headings)
         publication: MergePublication = cls(
-            language=language,
             title=collapse_spaces(title),
             description=final,
-            has_duplicate=has_duplicate_paragraphs(final),
-            has_opener_cta=rules.gate.has_opener_cta(final),
-            layout=parts.layout,
-            sanitized=sanitized,
-            blocks=blocks,
-            links=links,
-            text_urls=text_urls,
+            body=body,
+            verdict=GateVerdict.of(final, slot.rules.gate),
+            layout=body.parts.layout,
         )
         publication.log()
         return publication
 
     @property
     def is_blocked(self) -> bool:
-        """Повтор абзацев или призыв в начале: блок не публикуется."""
-        return self.has_duplicate or self.has_opener_cta
+        return self.verdict.is_blocked
 
     @property
     def slot_texts(self) -> SlotTexts | None:
@@ -241,45 +333,13 @@ class MergePublication:
         return SlotTexts(title=self.title, description=self.description, origin=SlotTextOrigin.MERGED)
 
     def log(self) -> None:
-        """Строки проверки (ERROR, как у донора) и итог санации."""
-        if self.has_duplicate:
-            LOGGER.error(
-                "publish_duplicate_paragraph_detected lang=%s source=%s description_chars=%d",
-                self.language, PRIMARY_SOURCE_LABEL, len(self.description),
-            )
-        if self.has_opener_cta:
-            LOGGER.error(
-                "publish_opener_cta_detected lang=%s source=%s description_chars=%d",
-                self.language, PRIMARY_SOURCE_LABEL, len(self.description),
-            )
-        LOGGER.info("%s", self.log_line)
+        """Строки проверки (ERROR) и итог санации."""
+        for name in self.verdict.found:
+            found: LogEvent = self.body.sanitized.event(name).extended(description_chars=len(self.description))
+            found.emit(LOGGER, logging.ERROR)
+        self.event.emit(LOGGER)
 
     @property
-    def official_links_block(self) -> str:
-        if self.links.urls:
-            return BLOCK_EMITTED
-        return BLOCK_SUPPRESSED if self.blocks.empty_blocks_suppressed > 0 else BLOCK_ABSENT
-
-    @property
-    def log_line(self) -> str:
-        """Строка `publish_sanitation_applied=yes` — ключи и порядок донора; рекомендуемых видео до 3.14b нет."""
-        sanitized: SanitizedDescription = self.sanitized
-        links: AuthoritativeLinks = self.links
-        text_youtube: int = sum(1 for url in self.text_urls if WebLink.of(url).unwrapped.is_youtube)
-        return (
-            f"publish_sanitation_applied=yes lang={self.language} source={PRIMARY_SOURCE_LABEL} "
-            f"cta_found={_flag(sanitized.cta_found)} hashtags_found={_flag(sanitized.hashtags_found)} "
-            f"hashtags_split_from_cta={_flag(sanitized.hashtags_split_from_cta)} tail_layout={self.layout} "
-            f"recommended_materials_text_candidates_ignored={text_youtube} "
-            f"raw_youtube_urls_found={links.raw_youtube_urls_found} "
-            f"deduped_youtube_candidates={links.deduped_youtube_candidates} "
-            f"repeated_youtube_candidates={links.repeated_youtube_candidates} recommended_materials_final_count=0 "
-            f"recommended_materials_block={BLOCK_SKIPPED} "
-            f"official_links_heading_found={_flag(self.blocks.heading_found)} "
-            f"official_links_text_links={len(self.text_urls) - text_youtube} "
-            f"official_links_source_links={links.emitted_source_video_urls} "
-            f"official_links_final_count={len(links.urls)} official_links_block={self.official_links_block} "
-            f"official_links_dedup_applied={_flag(links.duplicate_urls_removed > 0)} official_links_non_youtube_only=yes "
-            f"empty_official_links_suppressed={self.blocks.empty_blocks_suppressed} "
-            f"ignored_llm_youtube_urls={links.ignored_llm_youtube_urls}"
-        )
+    def event(self) -> LogEvent:
+        """Строка `publish_sanitation_applied=yes`; рекомендуемых видео до 3.14b нет."""
+        return self.body.extend(self.body.sanitized.event(SanitationEvent.APPLIED))

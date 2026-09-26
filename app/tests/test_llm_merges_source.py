@@ -18,7 +18,7 @@ def test_empty_description_prepares_to_nothing() -> None:
 
 
 def test_description_keeps_full_text_without_links_hashtags_or_truncation() -> None:
-    """Донор: test_merge_prompt_uses_clean_full_source_text_without_urls_hashtags_or_truncation (подготовка)."""
+    """В промт идёт полный текст источника: без ссылок, хештегов и служебного хвоста, но и без обрезки."""
     text: str = (
         "Hook paragraph with concrete facts and named people. " + "A" * 2600 + "\n\n"
         "Main stream link https://youtu.be/aaaaaaaaaaa\n"
@@ -73,7 +73,7 @@ def test_description_that_cleans_to_nothing_falls_back_in_prompt() -> None:
 
 def test_log_line_has_counters_and_no_source_text() -> None:
     source: MergeSource = MergeSource.of(merge_video(9, "Secret title", "Private body https://x.example #tag"), TEXTS)
-    line: str = source.log_line(1, "en")
+    line: str = source.event(1, "en").text
     assert line == (
         "merge_source_text_prepared language=en source_index=1 row=9 raw_chars=35 cleaned_chars=12 "
         "urls_removed=1 hashtags_removed=1 service_paragraphs_dropped=0 hard_truncation=disabled"

@@ -1,15 +1,12 @@
 """Блоки «🌐 …:» с официальными ссылками в ответе модели: снимаются из текста, ссылки идут в общий блок описания.
 
-Перенесено из restreamer, поведение как есть: `app\\publish\\sanitizers\\description_composer.py`
-(`DescriptionComposer.extract_official_links`, `_extract_official_links_url_lines`,
-`_extract_official_links_from_heading_paragraph`). Абзац с заголовком и строками-ссылками снимается целиком; заголовок
-без ссылок забирает следующий абзац, если тот — одни ссылки; иначе пустой заголовок подавляется и считается.
-Ссылки YouTube и неполные в блок не идут. Абзац, где после заголовка есть не-ссылка, ссылок не даёт.
+Абзац с заголовком и строками-ссылками снимается целиком; заголовок без ссылок забирает следующий абзац, если тот —
+одни ссылки; иначе пустой заголовок подавляется и считается. Ссылки блока — правило `LinkLines`: все непустые строки
+— ссылки, иначе ни одной; YouTube и неполные в блок не идут. Проход по абзацам — `HeadingScan`.
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.core.sequence import unique_in_order
 from app.core.text_format import PARAGRAPH_BREAK
@@ -19,20 +16,20 @@ from app.texts.source_link import SourceLink
 from app.texts.tail import is_source_url_line
 
 
-def official_link_urls(lines: Sequence[str]) -> tuple[str, ...]:
-    """Ссылки строк блока: все непустые строки — ссылки, иначе ни одной; YouTube и неполные пропускаются."""
-    urls: list[str] = []
-    for line in lines:
-        normalized: str = str(line or "").strip()
-        if not normalized:
-            continue
-        if not is_source_url_line(normalized):
+@dataclass(frozen=True)
+class LinkLines:
+    """Строки под заголовком «🌐 …:» или абзац после него."""
+
+    lines: tuple[str, ...]
+
+    @property
+    def urls(self) -> tuple[str, ...]:
+        """Ссылки строк: все непустые строки — ссылки, иначе ни одной; YouTube и неполные пропускаются."""
+        filled: tuple[str, ...] = tuple(line.strip() for line in self.lines if line.strip())
+        if not all(is_source_url_line(line) for line in filled):
             return ()
-        cleaned: SourceLink = SourceLink.of(normalized)
-        if cleaned.url is None or cleaned.is_youtube:
-            continue
-        urls.append(cleaned.url)
-    return unique_in_order(urls)
+        cleaned: tuple[SourceLink, ...] = tuple(SourceLink.of(line) for line in filled)
+        return unique_in_order(link.url for link in cleaned if link.url is not None and not link.is_youtube)
 
 
 @dataclass(frozen=True)
@@ -46,38 +43,50 @@ class OfficialLinksBlocks:
 
     @classmethod
     def of(cls, text: str) -> OfficialLinksBlocks:
-        paragraphs: list[str] = split_paragraphs(text)
-        kept: list[str] = []
-        urls: list[str] = []
-        suppressed: int = 0
-        heading_found: bool = False
-        index: int = 0
-        while index < len(paragraphs):
-            paragraph: str = str(paragraphs[index] or "").strip()
-            index += 1
-            if not cls._starts_with_heading(paragraph):
-                kept.append(paragraph)
-                continue
-            heading_found = True
-            own: tuple[str, ...] = official_link_urls(nonempty_lines(paragraph)[1:])
-            if own:
-                urls.extend(own)
-                continue
-            following: str = str(paragraphs[index] or "").strip() if index < len(paragraphs) else ""
-            following_urls: tuple[str, ...] = official_link_urls(following.splitlines())
-            if following_urls:
-                urls.extend(following_urls)
-                index += 1
-                continue
-            suppressed += 1
-        return cls(
-            cleaned_text=PARAGRAPH_BREAK.join(item for item in kept if item).strip(),
-            heading_found=heading_found,
-            source_urls=unique_in_order(urls),
-            empty_blocks_suppressed=suppressed,
+        return HeadingScan(tuple(split_paragraphs(text))).run()
+
+
+@dataclass
+class HeadingScan:
+    """Проход по абзацам текста: абзацы, которые остаются, ссылки блоков, подавленные заголовки."""
+
+    paragraphs: tuple[str, ...]
+    index: int = 0
+    kept: list[str] = field(default_factory=list)
+    urls: list[str] = field(default_factory=list)
+    suppressed: int = 0
+    heading_found: bool = False
+
+    def run(self) -> OfficialLinksBlocks:
+        while self.index < len(self.paragraphs):
+            self._take(self._next())
+        return OfficialLinksBlocks(
+            cleaned_text=PARAGRAPH_BREAK.join(item for item in self.kept if item).strip(),
+            heading_found=self.heading_found,
+            source_urls=unique_in_order(self.urls),
+            empty_blocks_suppressed=self.suppressed,
         )
 
-    @classmethod
-    def _starts_with_heading(cls, paragraph: str) -> bool:
+    def _next(self) -> str:
+        paragraph: str = self.paragraphs[self.index].strip()
+        self.index += 1
+        return paragraph
+
+    def _take(self, paragraph: str) -> None:
+        """Абзац без заголовка остаётся; с заголовком — отдаёт свои ссылки или забирает следующий абзац ссылок."""
         lines: list[str] = nonempty_lines(paragraph)
-        return bool(lines) and is_official_links_heading(lines[0])
+        if not lines or not is_official_links_heading(lines[0]):
+            self.kept.append(paragraph)
+            return
+        self.heading_found = True
+        own: tuple[str, ...] = LinkLines(tuple(lines[1:])).urls
+        following: tuple[str, ...] = () if own or self.index >= len(self.paragraphs) else self._following_urls
+        self.urls.extend(own or following)
+        if following:
+            self.index += 1
+        elif not own:
+            self.suppressed += 1
+
+    @property
+    def _following_urls(self) -> tuple[str, ...]:
+        return LinkLines(tuple(self.paragraphs[self.index].strip().splitlines())).urls

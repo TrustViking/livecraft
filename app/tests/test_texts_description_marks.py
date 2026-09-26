@@ -10,6 +10,8 @@ from app.texts.description_marks import (
     CTA_PREFIXES_RESOURCE,
     BulletLine,
     CtaLexicon,
+    FinalParagraph,
+    TextTail,
     extract_named_entities,
     is_official_links_heading,
 )
@@ -176,3 +178,55 @@ def test_named_entities() -> None:
     text: str = "John Smith met Віталій Орлов and Anna Karenina Lee; Al Bo is too short, Kyiv alone too."
     assert extract_named_entities(text) == {"john smith", "віталій орлов", "anna karenina lee"}
     assert extract_named_entities("") == set()
+
+
+# --- правила хвоста-призыва
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Напишите в комментариях, какие вопросы вы считаете ключевыми.",
+        "Напишіть у коментарях, що ви думаєте про це.",
+        "Write a comment and share your thoughts on this topic.",
+        "- Subscribe to our channel",
+        "Watch the full stream here",
+    ],
+)
+def test_standalone_cta_lines(line: str) -> None:
+    assert LEXICON.is_standalone_line(line)
+
+
+def test_long_factual_text_with_a_comment_word_is_not_a_standalone_cta() -> None:
+    long_text: str = (
+        "Юрист прокомментировал ситуацию и дал развёрнутый комментарий о позиции защиты, "
+        "включая анализ доказательной базы, свидетельских показаний и процедурных нарушений, "
+        "которые были допущены в ходе следствия по делу обвиняемого."
+    )
+    assert not LEXICON.is_standalone_line(long_text)
+    assert not LEXICON.is_standalone_line("   ")
+
+
+def test_the_last_cta_sentence_or_the_whole_cta_paragraph_goes_to_the_tail() -> None:
+    assert LEXICON.split_final_sentence("Facts come first. Join us tonight and share your thoughts.") == TextTail(
+        text="Facts come first.", tail="Join us tonight and share your thoughts."
+    )
+    assert LEXICON.split_final_sentence("Subscribe to our channel") == TextTail(text="", tail="Subscribe to our channel")
+    assert LEXICON.split_final_sentence("Facts come first. More facts arrive later.") == TextTail(
+        text="Facts come first. More facts arrive later."
+    )
+    assert LEXICON.split_final_sentence("  ") == TextTail(text="")
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("", FinalParagraph.EMPTY),
+        ("Subscribe to our channel", FinalParagraph.SINGLE_PARAGRAPH),
+        ("Facts about the vote.\n\nSubscribe to our channel", FinalParagraph.CTA),
+        ("Facts about the vote.\n\nMore facts arrive later.", FinalParagraph.NOT_CTA),
+        ("Facts about the vote.\n\n\U0001F539 Subscribe to our channel", FinalParagraph.NOT_CTA),
+    ],
+)
+def test_the_final_paragraph_of_the_body(body: str, expected: FinalParagraph) -> None:
+    assert LEXICON.final_paragraph(body) is expected

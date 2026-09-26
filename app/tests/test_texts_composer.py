@@ -1,4 +1,4 @@
-"""Сборка описания после санации и заголовки блоков (донор: test_heading_resolver.py, description_composer.py)."""
+"""Сборка описания после санации и заголовки блоков."""
 from __future__ import annotations
 
 import logging
@@ -12,8 +12,8 @@ from app.tests.fixtures.logs import LogCapture
 from app.texts.composer import HEADINGS_RESOURCE, DescriptionParts, HeadingKind, PublishHeadings
 
 HEADINGS: PublishHeadings = PublishHeadings.load()
-# `_HARDCODED_SEED` restreamer `app\resources\heading_resolver.py` (35324e5) — строки без правки.
-DONOR_SEED: dict[str, dict[str, str]] = {
+# Заголовки блоков трёх основных языков — стартовые данные ресурса.
+STARTING_HEADINGS: dict[str, dict[str, str]] = {
     "official_links": {"uk": "🌐 Офіційні ресурси:", "en": "🌐 Official links:", "ru": "🌐 Официальные ссылки:"},
     "recommended_materials": {
         "uk": "Рекомендовані матеріали:",
@@ -32,8 +32,8 @@ def texts_log() -> Iterator[LogCapture]:
 # --- заголовки
 
 
-def test_headings_resource_is_the_donor_seed() -> None:
-    assert {kind: dict(values) for kind, values in TextResource(HEADINGS_RESOURCE).data.items()} == DONOR_SEED
+def test_headings_resource_holds_the_starting_headings() -> None:
+    assert {kind: dict(values) for kind, values in TextResource(HEADINGS_RESOURCE).data.items()} == STARTING_HEADINGS
 
 
 @pytest.mark.parametrize(("language", "expected"), [("uk", "🌐 Офіційні ресурси:"), ("en", "🌐 Official links:"),
@@ -65,7 +65,7 @@ def test_a_language_outside_the_file_gives_english_and_a_log_line(texts_log: Log
 # --- раскладка и сборка
 
 
-def test_layout_names_the_parts_in_donor_order() -> None:
+def test_layout_names_the_parts_in_order() -> None:
     parts: DescriptionParts = DescriptionParts(
         body="Body.", hashtags_line="#a", recommended_urls=("https://youtu.be/aaaaaaaaaaa",),
         official_urls=("https://example.org",), cta="Join us.",
