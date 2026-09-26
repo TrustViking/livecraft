@@ -256,7 +256,7 @@ class MergeJob:
     @property
     def descriptions(self) -> tuple[str, ...]:
         """Описания источников без краёв; видео без данных — пустое."""
-        return tuple(video.metadata.description.strip() if video.metadata is not None else "" for video in self.videos)
+        return tuple(video.text.description.strip() for video in self.videos)
 
     @property
     def described_sources(self) -> int:
@@ -437,9 +437,7 @@ class MergeJob:
     def input_summary_line(self) -> str:
         """Строка `merge_input_summary` донора — счётчики источников, без текста."""
         descriptions: tuple[str, ...] = self.descriptions
-        titles: int = sum(
-            1 for video in self.videos if video.metadata is not None and video.metadata.title.strip()
-        )
+        titles: int = sum(1 for video in self.videos if video.text.title.strip())
         expected: bool = self.described_sources >= MIN_DESCRIBED_SOURCES
         return (
             f"merge_input_summary {self.context} source_count={len(self.videos)} "

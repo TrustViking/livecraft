@@ -44,7 +44,7 @@ def test_unknown_flags_are_a_parse_error(argv: list[str]) -> None:
 def test_every_run_flag_is_understood() -> None:
     request: RunRequest = RunRequest.from_argv(["--dry-run", "--no-llm", "--debug"])
     assert request == RunRequest(mode=RunMode.ALL, auth_handle=None, dry_run=True, no_llm=True, debug=True)
-    assert not request.is_service_run
+    assert not request.mode.is_service
 
 
 def test_a_request_without_flags_is_the_full_cycle() -> None:
@@ -70,7 +70,6 @@ def test_the_flag_chooses_the_mode(argv: list[str], mode: RunMode) -> None:
     request: RunRequest = RunRequest.from_argv(argv)
     assert request.mode is mode
     assert request.log_fields["mode"] is mode
-    assert request.is_service_run is mode.is_service
 
 
 def test_auth_keeps_the_handle_even_when_it_is_empty() -> None:

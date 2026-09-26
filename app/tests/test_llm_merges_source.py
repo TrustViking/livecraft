@@ -5,10 +5,8 @@ from zoneinfo import ZoneInfo
 
 from app.llm.merges.prompt_texts import MergePromptTexts
 from app.llm.merges.source import MergeSource, PreparedSourceDescription
-from app.sheets.plan import SheetRow
-from app.sheets.rows import PlanRow
 from app.sources.video import SourceVideo
-from app.tests.conftest import ready_source
+from app.tests.fixtures.sources import admitted_row, ready_source
 
 KYIV: ZoneInfo = ZoneInfo("Europe/Kyiv")
 START: datetime = datetime(2026, 10, 16, 19, 0, tzinfo=KYIV)
@@ -18,9 +16,7 @@ HINTS: tuple[str, ...] = TEXTS.service_hints
 
 def merge_video(row_number: int, title: str, description: str, language: str = "en") -> SourceVideo:
     """Годный источник слота без сети; ссылка своя на каждый ряд."""
-    link: str = f"https://youtu.be/{row_number:011d}"
-    row: SheetRow = SheetRow(row_number=row_number, link=link, date_raw="16.10.2026", time_raw="19:00")
-    return ready_source(PlanRow.admitted(row, START, link), title, description, language)
+    return ready_source(admitted_row(row_number, f"https://youtu.be/{row_number:011d}", START), title, description, language)
 
 
 # --- подготовка описания

@@ -31,6 +31,17 @@ class SlotTextOrigin(str, Enum):
     MERGED = "merged"                        # одно название и одно описание от модели на весь слот (merge)
 
 
+class SlotProblem(str, Enum):
+    """Почему слот дальше не идёт."""
+
+    EMPTY_TITLE = "empty_title"      # название пустое после подгонки под правила YouTube
+
+    @property
+    def human(self) -> str:
+        """Русская строка причины; текст — в messages_ru (§11)."""
+        return msg.SLOT_PROBLEMS[self.value]
+
+
 class SlotTextsEvent(str, Enum):
     """События текстов слота в логе."""
 
@@ -85,11 +96,9 @@ class SlotTexts:
         return fitted
 
     @property
-    def problem(self) -> str | None:
+    def problem(self) -> SlotProblem | None:
         """Почему с этими текстами эфир не ставится; None — годны. Пустое описание — не проблема."""
-        if not self.title.strip():
-            return msg.SLOT_EMPTY_TITLE
-        return None
+        return SlotProblem.EMPTY_TITLE if not self.title.strip() else None
 
     @property
     def title_chars(self) -> int:

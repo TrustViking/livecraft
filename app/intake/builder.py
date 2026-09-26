@@ -9,23 +9,20 @@
 from __future__ import annotations
 
 import logging
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Final
 from zoneinfo import ZoneInfo
 
-from app.core.youtube_video import YouTubeVideoId
+from app.core.counts import Counts
 from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.slots.preview import Preview
 from app.slots.slot import SlotKey, StreamSlot
 from app.slots.texts import SlotTexts
 from app.sources.video import SourceVideo
+from app.ui import messages_ru as msg
 
 LOGGER = get_logger(LogArea.SLOTS)
-
-LANGUAGE_COUNT_TEMPLATE: Final[str] = "{code}:{count}"
 
 
 class SlotsEvent(str, Enum):
@@ -50,8 +47,8 @@ class SlotGroup:
 
     @property
     def sources(self) -> tuple[str, ...]:
-        """Ссылки источников `watch?v=<id>` в порядке рядов; ссылка без id видео — как есть."""
-        return tuple(YouTubeVideoId.watch_url_of(video.link) or video.link for video in self.videos)
+        """Ссылки источников `watch?v=<id>` в порядке рядов."""
+        return tuple(video.watch_url for video in self.videos)
 
     @property
     def source_texts(self) -> SlotTexts:
@@ -60,7 +57,7 @@ class SlotGroup:
 
     def slot(self, texts: SlotTexts) -> StreamSlot:
         """Слот группы с окончательными текстами."""
-        return StreamSlot.of(self.key, texts, self.previews, self.sources)
+        return StreamSlot(key=self.key, texts=texts, previews=self.previews, sources=self.sources)
 
 
 @dataclass(frozen=True)
@@ -86,16 +83,25 @@ class SlotBuild:
         return build
 
     @property
-    def languages(self) -> Counter[str]:
+    def languages(self) -> Counts[str]:
         """Годные слоты по языкам в порядке первого появления."""
-        return Counter(slot.language for slot in self.slots)
+        return Counts.of(slot.language for slot in self.slots)
+
+    @property
+    def has_errors(self) -> bool:
+        """Слот с проблемой — ошибка запуска (§10)."""
+        return bool(self.refused)
 
     @property
     def log_fields(self) -> Mapping[str, object]:
-        languages: tuple[str, ...] = tuple(
-            LANGUAGE_COUNT_TEMPLATE.format(code=code, count=count) for code, count in self.languages.items()
-        )
-        return dict(slots=len(self.slots), refused=len(self.refused), languages=languages)
+        return dict(slots=len(self.slots), refused=len(self.refused), languages=self.languages.log_value)
+
+    @property
+    def console_line(self) -> str:
+        """Строка для оператора: сколько слотов, по языкам, и сколько отказано (причины — в логе)."""
+        languages: str = self.languages.wrapped(msg.INTAKE_SLOTS_LANGUAGES, msg.INTAKE_COUNT_ITEM, msg.LIST_JOINER, str)
+        refused: str = msg.INTAKE_SLOTS_REFUSED.format(count=len(self.refused)) if self.refused else ""
+        return msg.INTAKE_SLOTS_LINE.format(count=len(self.slots), languages=languages, refused=refused)
 
 
 @dataclass(frozen=True)

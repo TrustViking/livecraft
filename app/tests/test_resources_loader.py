@@ -13,6 +13,8 @@ SERVICE_HINTS: str = "merge_service_hints.txt"
 # Стартовые данные (CLAUDE.md §14 решение 23): меняются только задачей продукта с названной причиной — тогда и здесь.
 STARTING_DATA_DIGESTS: dict[str, str] = {
     "canonical_service_lines.json": "b2b5f82762308ad1",
+    "language_aliases.txt": "356b90461236788a",
+    "language_prefixes.txt": "35dc29fde824e932",
     "lexicon_cta_hints.txt": "60a2f00b77f5b753",
     "lexicon_cta_prefix_hints.txt": "308a0dec35b909bf",
     "lexicon_cta_prefixes.txt": "3c847f9aced85bf1",
@@ -21,6 +23,8 @@ STARTING_DATA_DIGESTS: dict[str, str] = {
     "sheet_header_date.txt": "ff5500f9e955479a",
     "sheet_header_link.txt": "65ea718ff245bae9",
     "sheet_header_time.txt": "498d18d524ae7fab",
+    "ytdlp_private_markers.txt": "ce117f2c87f7fa73",
+    "ytdlp_unavailable_markers.txt": "9b92d43d669d53e4",
 }
 
 

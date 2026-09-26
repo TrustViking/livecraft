@@ -28,12 +28,13 @@ from app.secretsafe.store import VaultStore
 from app.secretsafe.value import SecretField, SecretValue
 from app.secretsafe.vault import Vault, VaultOrigin
 from app.packages.package import PackageResult
-from app.sheets.plan import SheetRow
-from app.sheets.rows import PlanRow
-from app.sources.video import SourceVideo
-from app.tests.conftest import FORM_URL, REPO_ROOT, SUPPLIED_VALUES, ready_source, write_supplied_vault
+from app.sheets.plan import SheetPlan
+from app.sheets.rows import AdmittedRow, PlannedRows
+from app.sources.video import PreparedSources, SourceVideo
+from app.tests.conftest import FORM_URL, REPO_ROOT, SUPPLIED_VALUES, write_supplied_vault
 from app.tests.fixtures.settings import set_form_url
 from app.tests.fixtures.slots import build_slots
+from app.tests.fixtures.sources import admitted_row, ready_source
 from app.ui import messages_ru as msg
 from app.ui.console import Console
 from app.version import APP_VERSION
@@ -46,15 +47,16 @@ INTAKE_TITLE: str = "Название видео для прогона"
 
 def _ok_intake_result() -> IntakeResult:
     """Итог прогона «всё сделано»: один ряд, годный источник, один слот, записанный пакет."""
-    row: PlanRow = PlanRow.admitted(SheetRow(2, INTAKE_LINK, "16.10.2026", "19:00"), INTAKE_START, INTAKE_LINK)
+    row: AdmittedRow = admitted_row(2, INTAKE_LINK, INTAKE_START)
     video: SourceVideo = ready_source(row, INTAKE_TITLE, "Описание видео", "uk")
     package: PackageResult = PackageResult(
         path=Path("bcast") / "plan.bcast", problem=None, slots=1, previews=0, size_bytes=1
     )
     return IntakeResult(
-        rows=(row,), videos=(video,), build=build_slots((video,), ZoneInfo("Europe/Kyiv")), package=package,
-        sheets_error=None, plan_problem=None,
-        stopped_at=None,
+        rows=PlannedRows(admitted=(row,), skipped=()),
+        sources=PreparedSources((video,)),
+        build=build_slots((video,), ZoneInfo("Europe/Kyiv")),
+        package=package,
     )
 
 
@@ -670,8 +672,8 @@ def test_a_fully_configured_root_runs_every_built_part(
 @pytest.mark.parametrize(
     ("result", "code"),
     [
-        (IntakeResult.stopped((), IntakeStage.TABLE), ExitCode.NO_FUTURE_SLOTS),
-        (IntakeResult.plan_failed("шапка не распознана"), ExitCode.ERRORS),
+        (IntakeResult(rows=PlannedRows(admitted=(), skipped=()), stopped_at=IntakeStage.TABLE), ExitCode.NO_FUTURE_SLOTS),
+        (IntakeResult(plan=SheetPlan.from_values([["шапка"]]), stopped_at=IntakeStage.TABLE), ExitCode.ERRORS),
     ],
 )
 def test_the_run_code_is_the_code_of_the_table_run(
@@ -693,7 +695,7 @@ def test_a_blocked_part_and_no_future_rows_give_code_3(
     intake: _IntakeStub,
 ) -> None:
     """Пакет не готов (нет формы) — это 1, но будущих рядов нет — 3 важнее (§10)."""
-    intake.result = IntakeResult.stopped((), IntakeStage.TABLE)
+    intake.result = IntakeResult(rows=PlannedRows(admitted=(), skipped=()), stopped_at=IntakeStage.TABLE)
     assert run_cli([]) == int(ExitCode.NO_FUTURE_SLOTS)
 
 

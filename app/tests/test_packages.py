@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import dataclasses
 import json
 import logging
 import zipfile
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -19,19 +18,21 @@ from app.packages import package as package_module
 from app.packages.package import (
     MANIFEST_NAME,
     SCHEMA_VERSION,
+    ManifestKey,
+    PackagePeriod,
     PackageProblem,
     PackageResult,
     SlotPackage,
 )
 from app.paths import LivecraftPaths
-from app.sheets.plan import SheetPlan
-from app.sheets.rows import PlanRow
+from app.sheets.rows import AdmittedRow
 from app.slots.preview import Preview
 from app.slots.slot import StreamSlot
 from app.sources.video import SourceVideo
-from app.tests.conftest import SHIPPED_SETTINGS, ready_source
 from app.tests.fixtures import slots as slot_fixtures
 from app.tests.fixtures.logs import LogCapture
+from app.tests.fixtures.packages import package_settings
+from app.tests.fixtures.sources import planned_rows, ready_source
 from app.ui import messages_ru as msg
 from app.version import APP_VERSION
 
@@ -40,9 +41,8 @@ NOW: datetime = datetime(2026, 10, 1, 12, 0, tzinfo=KYIV)
 GENERATED_AT: datetime = datetime(2026, 10, 1, 9, 5, tzinfo=timezone.utc)     # 12:05 по Киеву
 PACKAGE_ID: str = "01-10-2026_120500"
 FORM_URL: str = "https://docs.google.com/forms/d/e/1FAIpQLSf-package-test/viewform"
-HEADER: list[str] = ["Links", "Date", "Time"]
 IDS: tuple[str, ...] = ("dQw4w9WgXcQ", "aB3_-xYz012", "Zx9_8yW7v6U", "Qw3_rTy8uI0")
-# Верхний уровень манифеста — ровно схема донора (restreamer _build_manifest_payload), в том же порядке.
+# Верхний уровень манифеста — ровно то, что читает planers _ManifestParser, в том же порядке.
 MANIFEST_KEYS: list[str] = [
     "schema_version", "package_id", "generated_at", "generator", "timezone", "period", "form", "slots",
 ]
@@ -57,22 +57,20 @@ def link(index: int) -> str:
 
 def settings(url: str = FORM_URL) -> LivecraftSettings:
     """Поставочные настройки, разобранные боевым загрузчиком, с заданной ссылкой на форму."""
-    shipped: LivecraftSettings = SHIPPED_SETTINGS.settings
-    return dataclasses.replace(shipped, form=dataclasses.replace(shipped.form, url=url))
+    return package_settings(url)
 
 
 def build_slots() -> tuple[StreamSlot, ...]:
     """Три слота настоящим путём 3.1 → 3.5: 16.10 19:00 uk (две обложки), 16.10 19:00 en (без обложки),
     18.10 20:00 uk (одна обложка)."""
-    rows: tuple[PlanRow, ...] = SheetPlan.from_values(
-        [
-            HEADER,
-            [link(0), "16.10.2026", "19:00"],
-            [link(1), "16.10.2026", "19:00"],
-            [link(2), "16.10.2026", "19:00"],
-            [link(3), "18.10.2026", "20:00"],
-        ]
-    ).plan_rows(KYIV, NOW)
+    rows: tuple[AdmittedRow, ...] = planned_rows(
+        [link(0), "16.10.2026", "19:00"],
+        [link(1), "16.10.2026", "19:00"],
+        [link(2), "16.10.2026", "19:00"],
+        [link(3), "18.10.2026", "20:00"],
+        zone=KYIV,
+        now=NOW,
+    ).admitted
     first, second, third, fourth = rows
     videos: tuple[SourceVideo, ...] = (
         ready_source(first, "Эфир один", "Описание один", "uk", PREVIEW_A),
@@ -122,11 +120,11 @@ def test_the_package_lands_in_bcast_under_the_template_name(
     assert [item.name for item in livecraft_paths.bcast_dir.iterdir()] == [written.path.name]
 
 
-def test_manifest_is_the_first_entry_and_follows_the_donor_schema(written: PackageResult) -> None:
+def test_manifest_is_the_first_entry_and_follows_the_reader_schema(written: PackageResult) -> None:
     assert written.path is not None
     names, manifest, _ = read_archive(written.path)
     assert names[0] == MANIFEST_NAME
-    assert list(manifest) == MANIFEST_KEYS
+    assert list(manifest) == MANIFEST_KEYS == [key.value for key in ManifestKey]
     assert type(manifest["schema_version"]) is int and manifest["schema_version"] == SCHEMA_VERSION == 1
     assert manifest["package_id"] == PACKAGE_ID
     assert manifest["generated_at"] == "01-10-2026 12:05"          # местное время, DD-MM-YYYY HH:MM
@@ -194,9 +192,25 @@ def test_preview_names_are_one_per_preview_numbered_from_one() -> None:
 
 def test_period_comes_from_the_earliest_and_latest_start() -> None:
     package: SlotPackage = make_package()
-    assert (package.period_from, package.period_to) == ("16-10-2026", "18-10-2026")
+    assert package.period == PackagePeriod(first=date(2026, 10, 16), last=date(2026, 10, 18))
+    assert (package.period.first_text, package.period.last_text) == ("16-10-2026", "18-10-2026")
+    assert package.period.manifest_value == {"from": "16-10-2026", "to": "18-10-2026"}
     only_first: SlotPackage = make_package(package.slots[:1])
-    assert (only_first.period_from, only_first.period_to) == ("16-10-2026", "16-10-2026")
+    assert only_first.period == PackagePeriod(first=date(2026, 10, 16), last=date(2026, 10, 16))
+
+
+def test_the_period_is_counted_in_the_zone_of_the_package_moment() -> None:
+    """Старт 16.10 в 23:30 UTC — это уже 17.10 по Киеву: период — по местному времени сборки."""
+    late: datetime = datetime(2026, 10, 16, 23, 30, tzinfo=timezone.utc)
+    assert PackagePeriod.of((late.astimezone(KYIV),)) == PackagePeriod(first=date(2026, 10, 17), last=date(2026, 10, 17))
+
+
+def test_slots_are_ordered_by_start_then_language_code() -> None:
+    slots: tuple[StreamSlot, ...] = build_slots()
+    assert [slot.slot_id for slot in slots] == ["16-10-2026_1900_uk", "16-10-2026_1900_en", "18-10-2026_2000_uk"]
+    assert [slot.slot_id for slot in make_package(slots[::-1]).slots] == [
+        "16-10-2026_1900_en", "16-10-2026_1900_uk", "18-10-2026_2000_uk",
+    ]
 
 
 def test_generated_at_is_taken_in_the_program_zone() -> None:
@@ -236,24 +250,6 @@ def test_every_problem_has_a_text() -> None:
         assert problem.human == msg.PACKAGE_PROBLEMS[problem.value]
 
 
-def test_a_slot_with_a_problem_does_not_get_into_the_package(package_log: LogCapture) -> None:
-    good, *_ = build_slots()
-    empty: StreamSlot = dataclasses.replace(good, slot_id="17-10-2026_1900_uk", title="  ")
-    package: SlotPackage = make_package((good, empty))
-    assert package.slots == (good,)
-    assert any(line.startswith("package_slot_refused ") for line in package_log.messages(logging.WARNING))
-
-
-def test_a_repeated_slot_id_keeps_the_later_slot(package_log: LogCapture) -> None:
-    good, *_ = build_slots()
-    later: StreamSlot = dataclasses.replace(good, title="Позднее название")
-    package: SlotPackage = make_package((good, later))
-    assert package.slots == (later,)
-    assert package_log.messages(logging.WARNING) == [
-        f"package_slot_duplicate slot={good.slot_id} resolution=later_wins"
-    ]
-
-
 # --- сбой записи и замена
 
 
@@ -277,7 +273,7 @@ def test_failed_replace_removes_the_temp_file(livecraft_paths: LivecraftPaths) -
 
 def test_writing_the_same_name_again_replaces_the_package(livecraft_paths: LivecraftPaths) -> None:
     first: PackageResult = make_package().write(livecraft_paths.bcast_dir)
-    again: SlotPackage = dataclasses.replace(make_package(), package_id="another-run")
+    again: SlotPackage = SlotPackage.of(build_slots(), settings(), GENERATED_AT, "another-run")
     second: PackageResult = again.write(livecraft_paths.bcast_dir)
     assert first.path == second.path and second.path is not None
     assert read_archive(second.path)[1]["package_id"] == "another-run"
@@ -287,12 +283,10 @@ def test_writing_the_same_name_again_replaces_the_package(livecraft_paths: Livec
 # --- что видят лог и консоль
 
 
-def test_log_line_has_no_form_url_and_no_slot_texts(written: PackageResult) -> None:
+def test_log_fields_have_no_form_url_and_no_slot_texts(written: PackageResult) -> None:
     assert written.path is not None
-    assert written.log_line == (
-        f"path={written.path} slots=3 previews=3 size_bytes={written.size_bytes}"
-    )
-    for text in (written.log_line, written.console_line):
+    assert dict(written.log_fields) == dict(path=written.path, slots=3, previews=3, size_bytes=written.size_bytes)
+    for text in (str(dict(written.log_fields)), written.console_line):
         assert FORM_URL not in text
         assert "Эфир" not in text and "Описание" not in text
 
@@ -302,8 +296,15 @@ def test_writing_logs_one_line_without_the_form_url(
 ) -> None:
     result: PackageResult = make_package().write(livecraft_paths.bcast_dir)
     (line,) = package_log.messages(logging.INFO)
-    assert line == f"package_written package_id={PACKAGE_ID} {result.log_line}"
+    assert line == (
+        f"package_written package_id={PACKAGE_ID} path={result.path} slots=3 previews=3 size_bytes={result.size_bytes}"
+    )
     assert FORM_URL not in line
+
+
+def test_only_an_unwritten_package_is_an_error(written: PackageResult) -> None:
+    assert not written.has_errors
+    assert PackageResult(path=None, problem=PackageProblem.NO_SLOTS, slots=0, previews=0, size_bytes=0).has_errors
 
 
 def test_console_line_names_the_path_and_counts(written: PackageResult) -> None:

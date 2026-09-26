@@ -2,7 +2,6 @@
 test_post_llm_sanitation_tail.py, test_no_cta_in_published_output.py, test_sanitizer_quality_gate.py)."""
 from __future__ import annotations
 
-import dataclasses
 import logging
 from collections.abc import Iterator
 
@@ -30,13 +29,9 @@ def llm_log() -> Iterator[LogCapture]:
         yield capture
 
 
-def source(metadata_url: str = "", description: str = "", row: int = 2) -> SourceVideo:
-    """Источник как `_video` донорских тестов: без ссылки ряда; ссылка метаданных — своя."""
-    video: SourceVideo = merge_video(row, "Source title", description)
-    assert video.metadata is not None
-    return dataclasses.replace(
-        video, row=dataclasses.replace(video.row, link=""), metadata=dataclasses.replace(video.metadata, url=metadata_url)
-    )
+def source(description: str = "", row: int = 2) -> SourceVideo:
+    """Годный источник слота: ссылка ряда — видео YouTube, данные видео спрошены по ней."""
+    return merge_video(row, "Source title", description)
 
 
 def publish(description: str, sources: tuple[SourceVideo, ...] | None = None, language: str = "en") -> MergePublication:
@@ -211,16 +206,17 @@ def test_a_non_empty_official_links_block_stays_cohesive(llm_log: LogCapture) ->
         assert fragment in line
 
 
-def test_text_and_source_links_are_deduped_into_one_block(llm_log: LogCapture) -> None:
+def test_the_own_video_links_of_the_sources_add_no_official_link(llm_log: LogCapture) -> None:
+    """Ссылка самого видео источника — всегда YouTube: в блок официальных ссылок идёт только ссылка ответа."""
     publication: MergePublication = publish(
         f"Body paragraph.\n\n{HEADING}\n\nhttps://example.org/official?utm_source=yt\n\n"
         "Join us tonight and share your thoughts.\n\n#nanoplastics #microplastics",
-        sources=(source("https://example.org/official"), source("https://example.org/second-source", row=3)),
+        sources=(source(), source(row=3)),
     )
     assert publication.description == f"Body paragraph.\n\n{HEADING}\nhttps://example.org\n\n#nanoplastics #microplastics"
     line: str = applied_line(llm_log)
-    for fragment in ("official_links_text_links=1", "official_links_source_links=1", "official_links_final_count=1",
-                     "official_links_dedup_applied=yes"):
+    for fragment in ("official_links_text_links=1", "official_links_source_links=0", "official_links_final_count=1",
+                     "official_links_dedup_applied=no"):
         assert fragment in line
 
 
@@ -229,7 +225,7 @@ def test_youtube_links_of_the_answer_are_ignored_and_not_recommended(llm_log: Lo
         f"Body paragraph.\n\n{HEADING}\n\nhttps://example.org/official?utm_source=yt\n\n{HEADING}\n"
         f"https://example.org/official\nhttps://example.org/second\n\n{HEADING}\n\nhttps://youtu.be/ccccccccccc\n\n"
         "Join us tonight and share your thoughts.\n\n#nanoplastics #microplastics",
-        sources=(source("https://example.org/second"), source(row=3)),
+        sources=(source(), source(row=3)),
     )
     assert publication.description.count(HEADING) == 1 and publication.description.count("https://example.org") == 1
     assert "youtu" not in publication.description and "Recommended materials:" not in publication.description
@@ -251,7 +247,7 @@ def test_without_sources_the_body_is_not_normalized_again() -> None:
 def test_source_youtube_links_are_not_injected() -> None:
     publication: MergePublication = publish(
         "Body paragraph.\n\nJoin us tonight and share your thoughts.",
-        sources=(source("https://youtu.be/aaaaaaaaaaa"), source("https://www.youtube.com/watch?v=bbbbbbbbbbb", row=3)),
+        sources=(source(), source(row=3)),
     )
     assert "youtu" not in publication.description
 

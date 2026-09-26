@@ -4,7 +4,7 @@
 Сети и yt-dlp в тестах нет — получатель и скачивание подменяются; боевой прогон делает Артур.
 
 Ссылка нормализуется так же, как ссылка ряда таблицы (`https://youtu.be/<id>`), и идёт тем же путём, что
-в боевом запуске: `YtDlpFetcher` и `PreviewDownloader`. Сейф пробнику не нужен: ссылки на видео — не секрет.
+в боевом запуске: `SourceCatalog.facts` — yt-dlp, язык, обложка. Сейф пробнику не нужен: ссылки на видео — не секрет.
 Коды: 0 — все источники получены и язык каждого определился; 1 — есть отказы или язык не определился;
 2 — нет tools\\yt-dlp.exe или не указано ни одной ссылки.
 """
@@ -22,11 +22,10 @@ from app.core.youtube_video import YouTubeVideoId
 from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.run.exit_code import ExitCode
 from app.slots.preview import Preview
-from app.sources.fetcher import MetadataFetcher, SourceFailureReason, SourceFetch
-from app.sources.language import LanguageDecision, LanguageResolver
-from app.sources.metadata import SourceMetadata
-from app.sources.preview import PreviewDownloader, PreviewResult
-from app.sources.ytdlp import YtDlpFetcher
+from app.sources.language import LanguageDecision
+from app.sources.metadata import SourceFailureReason, SourceMetadata
+from app.sources.preview import PreviewResult
+from app.sources.video import SourceCatalog, SourceFacts
 from app.tools.probe import ProbeConsole, ProbeLauncher, ProbeSession
 from app.ui import messages_ru as msg
 
@@ -48,19 +47,17 @@ class SourceProbeEvent(str, Enum):
 class SourceProbeReport:
     """Что показать человеку об одном источнике: поля yt-dlp, язык и обложка либо причина отказа."""
 
-    fetched: SourceFetch
-    preview: PreviewResult | None
-    decision: LanguageDecision | None       # None — язык не решался: данных видео нет
+    facts: SourceFacts
 
     @property
     def is_ok(self) -> bool:
         """Источник годится так же, как в боевом запуске: данные видео есть и язык определился."""
-        return self.fetched.is_ok and self.decision is not None and self.decision.is_resolved
+        return self.facts.is_ready
 
     @property
     def lines(self) -> tuple[str, ...]:
-        metadata: SourceMetadata | None = self.fetched.metadata
-        head: tuple[str, ...] = (msg.SOURCE_PROBE_SOURCE.format(link=self.fetched.url),)
+        metadata: SourceMetadata | None = self.facts.fetch.metadata
+        head: tuple[str, ...] = (msg.SOURCE_PROBE_SOURCE.format(link=self.facts.fetch.url),)
         fields: tuple[str, ...] = self._metadata_lines(metadata) if metadata is not None else ()
         return (*head, *fields, *self._outcome_lines)
 
@@ -97,34 +94,33 @@ class SourceProbeReport:
     @property
     def _outcome_lines(self) -> tuple[str, ...]:
         """Отказ — причина и подробность yt-dlp; удача — строка языка и строка обложки (или почему её нет)."""
-        failure: SourceFailureReason | None = self.fetched.failure
+        failure: SourceFailureReason | None = self.facts.fetch.failure
         if failure is not None:
             return (
                 msg.SOURCE_PROBE_FAILED.format(reason=failure.human),
-                msg.SOURCE_PROBE_DETAIL.format(detail=self.fetched.detail),
+                msg.SOURCE_PROBE_DETAIL.format(detail=self.facts.fetch.detail),
             )
         return (*self._language_lines, *self._preview_lines)
 
     @property
     def _preview_lines(self) -> tuple[str, ...]:
         """Язык не определился — обложку не качали, как в боевом запуске; иначе — строка обложки, если она есть."""
-        if self.decision is not None and not self.decision.is_resolved:
+        decision: LanguageDecision | None = self.facts.language
+        if decision is not None and not decision.is_resolved:
             return (msg.SOURCE_PROBE_PREVIEW_SKIPPED,)
-        if self.preview is None:
+        if self.facts.preview is None:
             return ()
-        return (self._preview_line(self.preview),)
+        return (self._preview_line(self.facts.preview),)
 
     @property
     def _language_lines(self) -> tuple[str, ...]:
         """Решённый язык и правило; не определился — строка об этом; не решался — ничего."""
-        if self.decision is None:
+        decision: LanguageDecision | None = self.facts.language
+        if decision is None:
             return ()
-        if self.decision.language is None:
+        if decision.language is None:
             return (msg.SOURCE_PROBE_SOURCE_LANGUAGE_NONE,)
-        line: str = msg.SOURCE_PROBE_SOURCE_LANGUAGE.format(
-            code=self.decision.language, source=self.decision.source.value
-        )
-        return (line,)
+        return (msg.SOURCE_PROBE_SOURCE_LANGUAGE.format(code=decision.language, source=decision.source.value),)
 
     def _preview_line(self, result: PreviewResult) -> str:
         """Размеры и вес готовой обложки либо причина, почему её нет."""
@@ -138,22 +134,15 @@ class SourceProbeReport:
 
 @dataclass(frozen=True)
 class SourceProbe:
-    """Один прогон пробника: получатель, скачивание обложек, язык и вывод — полями, в тестах свои."""
+    """Один прогон пробника: источники и вывод — полями, в тестах свои."""
 
-    fetcher: MetadataFetcher
-    downloader: PreviewDownloader
-    resolver: LanguageResolver
+    catalog: SourceCatalog
     console: ProbeConsole
 
     @classmethod
     def of(cls, session: ProbeSession) -> SourceProbe:
-        """Боевые зависимости корня сессии: yt-dlp из tools\\, скачивание обложек, язык по ресурсам."""
-        return cls(
-            fetcher=YtDlpFetcher.from_paths(session.paths),
-            downloader=PreviewDownloader(),
-            resolver=LanguageResolver.from_resources(),
-            console=session.console,
-        )
+        """Боевые зависимости корня сессии: источники так же, как в боевом запуске (yt-dlp из tools\\)."""
+        return cls(catalog=SourceCatalog.from_paths(session.paths), console=session.console)
 
     def run(self, raw_links: Sequence[str]) -> int:
         self.console.say(msg.SOURCE_PROBE_TITLE)
@@ -163,7 +152,7 @@ class SourceProbe:
         failed: int = 0
         for raw in raw_links:
             report: SourceProbeReport | None = self._probe(raw)
-            if report is not None and report.fetched.failure is SourceFailureReason.TOOL_MISSING:
+            if report is not None and report.facts.fetch.failure is SourceFailureReason.TOOL_MISSING:
                 return int(ExitCode.CONFIG)
             if report is None or not report.is_ok:
                 failed += 1
@@ -172,24 +161,16 @@ class SourceProbe:
         return int(ExitCode.ERRORS if failed else ExitCode.OK)
 
     def _probe(self, raw: str) -> SourceProbeReport | None:
-        """Одна ссылка: нормализовать, спросить yt-dlp, решить язык, скачать обложку, напечатать; не YouTube — None.
-
-        Обложка качается только источнику с решённым языком — так же, как `SourceCatalog` в боевом запуске.
-        """
+        """Одна ссылка: нормализовать, собрать факты о видео тем же путём, что в боевом запуске, напечатать;
+        не YouTube — None."""
         video: YouTubeVideoId | None = YouTubeVideoId.of(raw)
         if video is None:
             LogEvent.of(SourceProbeEvent.BAD_LINK, raw=raw).emit(LOGGER, logging.WARNING)
             self.console.say(msg.SOURCE_PROBE_BAD_LINK.format(raw=raw))
             return None
-        fetched: SourceFetch = self.fetcher.fetch(video.short_url)
-        preview: PreviewResult | None = None
-        decision: LanguageDecision | None = None
-        if fetched.is_ok and fetched.metadata is not None:
-            decision = self.resolver.resolve(fetched.metadata)
-            if decision.is_resolved:
-                preview = self.downloader.preview(fetched.metadata.thumbnail_url)
-        LogEvent.of(SourceProbeEvent.PROBED, link=video.short_url, result=fetched.log_line).emit(LOGGER)
-        report: SourceProbeReport = SourceProbeReport(fetched=fetched, preview=preview, decision=decision)
+        facts: SourceFacts = self.catalog.facts(video.short_url)
+        LogEvent.of(SourceProbeEvent.PROBED, link=video.short_url, **facts.log_fields).emit(LOGGER)
+        report: SourceProbeReport = SourceProbeReport(facts=facts)
         self.console.say_lines(report.lines)
         return report
 

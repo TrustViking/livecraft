@@ -67,11 +67,6 @@ class RunRequest:
         return parser
 
     @property
-    def is_service_run(self) -> bool:
-        """Служебный запуск (--setup, --check, --auth, --status), а не работа режима."""
-        return self.mode.is_service
-
-    @property
     def log_fields(self) -> Mapping[str, object]:
         """Поля строки лога о запуске: секретов в ключах нет, ник канала — в кавычках (CLAUDE.md §11)."""
         handle: str | None = None if self.auth_handle is None else HANDLE_LOG_TEMPLATE.format(handle=self.auth_handle)

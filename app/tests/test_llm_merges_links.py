@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import logging
 import pathlib
@@ -113,11 +112,8 @@ def test_selection_for_slot_sources_reads_raw_video_descriptions() -> None:
 # --- официальные ссылки после санации (донор: url_selector.py::select_authoritative_non_youtube, build_authoritative)
 
 
-def source_with(description: str, row: int = 2, metadata_url: str | None = None, title: str = "Source title") -> SourceVideo:
-    video: SourceVideo = merge_video(row, title, description)
-    if metadata_url is None or video.metadata is None:
-        return video
-    return dataclasses.replace(video, metadata=dataclasses.replace(video.metadata, url=metadata_url))
+def source_with(description: str, row: int = 2, title: str = "Source title") -> SourceVideo:
+    return merge_video(row, title, description)
 
 
 @pytest.fixture
@@ -158,15 +154,10 @@ def test_at_most_three_source_links_then_every_new_tail_link() -> None:
     assert links.ignored_llm_youtube_urls == 1 and links.malformed_dropped == 3
 
 
-def test_a_non_youtube_video_link_is_a_candidate_with_the_title_as_context() -> None:
-    """Первая полная ссылка видео решает: ссылка ряда YouTube — кандидата нет; без неё — ссылка метаданных."""
-    video: SourceVideo = source_with("", metadata_url="https://example.org/official", title="Official conference")
-    assert AuthoritativeLinks.of("en", (video,), (), 0).urls == ()
-    without_row_link: SourceVideo = dataclasses.replace(video, row=dataclasses.replace(video.row, link=""))
-    links: AuthoritativeLinks = AuthoritativeLinks.of("en", (without_row_link,), (), 0)
-    assert links.urls == ("https://example.org",) and links.emitted_source_video_urls == 1
-    youtube_only: AuthoritativeLinks = AuthoritativeLinks.of("en", (source_with(""),), (), 0)
-    assert youtube_only.urls == ()
+def test_the_own_video_link_of_a_source_is_youtube_and_never_an_official_link() -> None:
+    """Ссылка ряда — всегда видео YouTube: ссылка самого видео в официальные не идёт."""
+    links: AuthoritativeLinks = AuthoritativeLinks.of("en", (source_with("", title="Official conference"),), (), 0)
+    assert links.urls == () and links.emitted_source_video_urls == 0
 
 
 def test_youtube_links_of_descriptions_are_counted_for_recommended_materials() -> None:

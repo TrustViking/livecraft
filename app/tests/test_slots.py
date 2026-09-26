@@ -6,8 +6,8 @@ from zoneinfo import ZoneInfo
 from app.core.dates import parse_iso_start
 from app.slots.preview import Preview
 from app.slots.slot import SlotKey, SlotRecordKey, StreamSlot
-from app.slots.texts import SlotTextOrigin, SlotTexts
-from app.ui import messages_ru as msg
+from app.observability.log_event import LogEvent
+from app.slots.texts import SlotProblem, SlotTextOrigin, SlotTexts
 
 KYIV: ZoneInfo = ZoneInfo("Europe/Kyiv")
 START: datetime = datetime(2026, 10, 16, 19, 0, tzinfo=KYIV)
@@ -27,7 +27,7 @@ def texts(title: str = "Эфир ‹live›", description: str = "Опис") -> 
 
 
 def slot(key: SlotKey = SlotKey(START, "uk"), title: str = "Эфир ‹live›") -> StreamSlot:
-    return StreamSlot.of(key, texts(title), (PREVIEW, OTHER_PREVIEW), SOURCES)
+    return StreamSlot(key=key, texts=texts(title), previews=(PREVIEW, OTHER_PREVIEW), sources=SOURCES)
 
 
 # --- ключ слота
@@ -63,11 +63,13 @@ def test_the_slot_takes_the_key_texts_previews_and_sources_as_given() -> None:
     assert made.start == START
     assert (made.title, made.description, made.text_origin) == ("Эфир ‹live›", "Опис", SlotTextOrigin.SOURCE_COMPOSED)
     assert made.previews == (PREVIEW, OTHER_PREVIEW) and made.sources == SOURCES
+    assert (made.key, made.texts) == (SlotKey(START, "uk"), texts())
 
 
 def test_a_slot_with_an_empty_title_has_a_problem_and_an_empty_description_does_not() -> None:
-    assert slot(title="   ").problem == msg.SLOT_EMPTY_TITLE
-    assert StreamSlot.of(SlotKey(START, "uk"), texts(description=""), (), SOURCES).problem is None
+    assert slot(title="   ").problem is SlotProblem.EMPTY_TITLE
+    assert slot(title="   ").problem is texts("   ").problem
+    assert StreamSlot(SlotKey(START, "uk"), texts(description=""), (), SOURCES).problem is None
 
 
 def test_record_follows_the_slot_schema() -> None:
@@ -98,15 +100,16 @@ def test_record_passes_the_rules_of_the_package_reader() -> None:
         assert "text_origin" not in record
 
 
-def test_log_line_has_no_texts() -> None:
-    made: StreamSlot = StreamSlot.of(
+def test_log_fields_have_no_texts() -> None:
+    made: StreamSlot = StreamSlot(
         SlotKey(START, "uk"),
         SlotTexts(title="Секретное название", description="Длинное описание", origin=SlotTextOrigin.SOURCE_SINGLE),
         (),
         SOURCES[:1],
     )
-    assert "Секретное" not in made.log_line and "Длинное" not in made.log_line
-    assert made.log_line == (
-        "slot=16-10-2026_1900_uk start=2026-10-16T19:00:00+03:00 language=uk sources=1 previews=0 "
+    line: str = LogEvent.of("slot", **made.log_fields).text
+    assert "Секретное" not in line and "Длинное" not in line
+    assert line == (
+        "slot slot=16-10-2026_1900_uk start=2026-10-16T19:00:00+03:00 language=uk sources=1 previews=0 "
         "texts=source_single title_chars=18 description_chars=16 description_bytes=31"
     )

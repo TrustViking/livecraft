@@ -136,7 +136,7 @@ class OfficialLinkSelection:
     @classmethod
     def for_sources(cls, sources: Sequence[SourceVideo], hints: OfficialLinkHints) -> OfficialLinkSelection:
         """Отбор по описаниям видео слота; видео без данных даёт пустое описание."""
-        return cls.of([source.metadata.description if source.metadata is not None else "" for source in sources], hints)
+        return cls.of([source.text.description for source in sources], hints)
 
     @staticmethod
     def _candidates(descriptions: Sequence[str]) -> list[OfficialLinkCandidate]:
@@ -182,8 +182,7 @@ class SourceDescriptionLinks:
     def of(cls, sources: Sequence[SourceVideo]) -> SourceDescriptionLinks:
         links: list[DescriptionLink] = []
         for index, source in enumerate(sources):
-            description: str = source.metadata.description if source.metadata is not None else ""
-            for raw_line in normalize_newlines(description).split(NEWLINE):
+            for raw_line in normalize_newlines(source.text.description).split(NEWLINE):
                 line: str = raw_line.strip()
                 for match in URL_PATTERN.finditer(line):
                     cleaned: SourceLink = SourceLink.of(match.group(0).strip())
@@ -317,7 +316,7 @@ class AuthoritativeLinks:
             video_url: str | None = cls._video_url(source)
             if not video_url or WebLink.of(video_url).unwrapped.is_youtube:
                 continue
-            title: str = source.metadata.title.strip() if source.metadata is not None else ""
+            title: str = source.text.title.strip()
             candidates.append(AuthoritativeCandidate(url=video_url, context=title, index=len(candidates)))
         domain_counts: Counter[str] = Counter(WebLink.of(link.url).host for link in links.non_youtube)
         ranked: list[tuple[int, int, str]] = sorted(
@@ -330,9 +329,8 @@ class AuthoritativeLinks:
     def _video_url(source: SourceVideo) -> str | None:
         """Ссылка самого видео (`_normalize_authoritative_video_url` донора): нормализованная ссылка ряда, ссылка
         метаданных, исходная ссылка ряда — первая полная; не YouTube — очищенная, YouTube — короткая ссылка."""
-        metadata_url: str = source.metadata.url if source.metadata is not None else ""
-        for candidate in (source.row.link or "", metadata_url, source.row.row.link):
-            link: SourceLink = SourceLink.of_video(candidate or "")
+        for candidate in (source.link, source.metadata_url, source.table_link):
+            link: SourceLink = SourceLink.of_video(candidate)
             if link.url is not None:
                 return link.url
         return None

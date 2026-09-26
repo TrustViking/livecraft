@@ -18,13 +18,13 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
 from app.config.loader import ConfigError, LivecraftSettings, load_settings
+from app.core.counts import CountItem
 from app.google.auth import AuthError, GoogleLogin
 from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.run.exit_code import ExitCode
@@ -34,7 +34,7 @@ from app.secretsafe.store import VaultLoad, VaultStore
 from app.secretsafe.value import SecretField
 from app.sheets.client import SheetsReader, SheetsReadError, SheetsReadReason, SheetsTarget
 from app.sheets.plan import SheetColumns, SheetPlan
-from app.sheets.rows import PlanRow, RowSkipReason
+from app.sheets.rows import PlannedRows, RowSkipReason
 from app.tools.probe import ProbeConsole, ProbeLauncher, ProbeSession
 from app.ui import messages_ru as msg
 
@@ -55,14 +55,14 @@ class SheetsProbeReport:
     """Что показать человеку о прочитанном плане: колонки, счётчики, проблема. Ни одного значения ряда."""
 
     plan: SheetPlan
-    rows: tuple[PlanRow, ...]
+    rows: PlannedRows
 
     @property
     def lines(self) -> tuple[str, ...]:
-        problem: str | None = self.plan.problem
+        """Проблема плана — одной строкой; иначе колонки, счётчики рядов и отсеянные по причинам."""
         columns: SheetColumns | None = self.plan.columns
-        if problem is not None or columns is None:
-            return (problem,) if problem is not None else ()
+        if columns is None:
+            return (self.plan.problem_text,)
         return (self._columns_line(columns), self._rows_line, *self._skip_lines)
 
     def _columns_line(self, columns: SheetColumns) -> str:
@@ -72,21 +72,18 @@ class SheetsProbeReport:
 
     def _column(self, index: int) -> str:
         """Заголовок колонки и её номер в диапазоне (с 1): буквы листа без значения диапазона не восстановить."""
-        return msg.SHEETS_PROBE_COLUMN.format(name=self.plan.header[index], number=index + 1)
+        return msg.SHEETS_PROBE_COLUMN.format(name=self.plan.header.names[index], number=index + 1)
 
     @property
     def _rows_line(self) -> str:
-        admitted: int = sum(1 for row in self.rows if row.is_admitted)
-        return msg.SHEETS_PROBE_ROWS.format(rows=len(self.rows), admitted=admitted, skipped=len(self.rows) - admitted)
+        rows: PlannedRows = self.rows
+        return msg.SHEETS_PROBE_ROWS.format(rows=rows.total, admitted=len(rows.admitted), skipped=len(rows.skipped))
 
     @property
     def _skip_lines(self) -> tuple[str, ...]:
-        counts: Counter[RowSkipReason] = Counter(row.skip for row in self.rows if row.skip is not None)
-        return tuple(
-            msg.SHEETS_PROBE_SKIP_LINE.format(reason=reason.human, count=counts[reason])
-            for reason in RowSkipReason
-            if counts[reason]
-        )
+        """По строке на причину отсева в порядке проверок."""
+        items: tuple[CountItem[RowSkipReason], ...] = self.rows.counts.items
+        return tuple(item.text(msg.SHEETS_PROBE_SKIP_LINE, lambda reason: reason.human) for item in items)
 
 
 @dataclass(frozen=True)
@@ -114,7 +111,7 @@ class SheetsProbe:
             plan: SheetPlan = self._read(loaded)
         except SheetsReadError as error:
             return self._fail(error)
-        rows: tuple[PlanRow, ...] = plan.plan_rows(settings.zone, self.session.started.astimezone(settings.zone))
+        rows: PlannedRows = plan.plan_rows(settings.zone, self.session.started.astimezone(settings.zone))
         console.say_lines(SheetsProbeReport(plan=plan, rows=rows).lines)
         return int(ExitCode.OK)
 

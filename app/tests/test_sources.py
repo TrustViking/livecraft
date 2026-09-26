@@ -19,18 +19,19 @@ from PIL import Image
 from app.core.retry import RetryPolicy
 from app.observability.log_event import LogArea
 from app.paths import LivecraftPaths
-from app.sheets.plan import SheetRow
-from app.sheets.rows import PlanRow, RowSkipReason
+from app.observability.log_event import LogEvent
+from app.sheets.rows import AdmittedRow, PlannedRows, RowSkipReason, SheetRow, SkippedRow
 from app.slots.preview import Preview
 from app.slots.slot import SlotKey
 from app.slots.texts import SourceText
-from app.sources.fetcher import MetadataFetcher, SourceFailureReason, SourceFetch
+from app.sources.fetcher import MetadataFetcher, SourceFetch
 from app.sources.language import LanguageDecision, LanguageResolver, LanguageSource
-from app.sources.metadata import SourceMetadata
+from app.sources.metadata import SourceFailureReason, SourceMetadata
 from app.sources.preview import PreviewDownloader, PreviewNormalizer, PreviewProblem, PreviewResult
-from app.sources.video import SourceCatalog, SourceTally, SourceVideo
-from app.sources.ytdlp import DETAIL_MAX_CHARS, YTDLP_TIMEOUT_SEC, YtDlpFetcher, YtDlpResult
+from app.sources.video import PreparedSources, SourceCatalog, SourceFacts, SourceVideo
+from app.sources.ytdlp import DETAIL_MAX_CHARS, YTDLP_TIMEOUT_SEC, YtDlpFetcher, YtDlpRefusalMarkers, YtDlpResult
 from app.tests.fixtures.logs import LogCapture
+from app.tests.fixtures.sources import admitted_row
 from app.ui import messages_ru as msg
 
 DATA_DIR: Path = Path(__file__).resolve().parent / "data" / "ytdlp"
@@ -125,7 +126,7 @@ def test_empty_title_builds_the_object_and_names_the_problem(title: str | None) 
     info: dict[str, Any] = load_info("video_full.json") | {"title": title}
     metadata: SourceMetadata = SourceMetadata.from_ytdlp(LINK, info)
     assert metadata.title == ""
-    assert metadata.problem == msg.SOURCE_NO_TITLE
+    assert metadata.problem is SourceFailureReason.NO_TITLE
     assert metadata.video_id == "dQw4w9WgXcQ"
 
 
@@ -143,11 +144,19 @@ def test_malformed_lists_do_not_break_the_object() -> None:
     assert metadata.auto_caption_languages == ()
 
 
-def test_log_line_has_no_title_or_description() -> None:
+def test_log_fields_have_no_title_or_description() -> None:
     metadata: SourceMetadata = SourceMetadata.from_ytdlp(LINK, load_info("video_full.json"))
-    assert "Тестовый" not in metadata.log_line
-    assert "описание" not in metadata.log_line
-    assert "id=dQw4w9WgXcQ" in metadata.log_line
+    line: str = LogEvent.of("probe", **metadata.log_fields).text
+    assert "Тестовый" not in line
+    assert "описание" not in line
+    assert "id=dQw4w9WgXcQ" in line
+
+
+def test_the_fetch_log_fields_are_the_summary_or_the_reason() -> None:
+    ok: SourceFetch = SourceFetch.from_metadata(LINK, SourceMetadata.from_ytdlp(LINK, load_info("video_full.json")))
+    assert LogEvent.of("fetch", **ok.log_fields).text.startswith("fetch result=ok id=dQw4w9WgXcQ ")
+    failed: SourceFetch = SourceFetch.failed(LINK, SourceFailureReason.TIMEOUT, "timeout_sec=30")
+    assert LogEvent.of("fetch", **failed.log_fields).text == "fetch result=timeout detail=timeout_sec=30"
 
 
 # --- YtDlpFetcher
@@ -320,6 +329,13 @@ def test_detail_is_the_first_line_cut_and_full_stderr_goes_only_to_debug(
     other_lines: list[str] = [record.getMessage() for record in log.records if record.levelno > logging.DEBUG]
     assert any(tail in line for line in debug_lines)
     assert not any(tail in line for line in other_lines)
+
+
+def test_refusal_markers_are_the_resource_files() -> None:
+    assert YtDlpRefusalMarkers.load() == YtDlpRefusalMarkers(
+        private=("Private video", "Sign in to confirm", "Sign in if you"),
+        unavailable=("Video unavailable", "removed by the uploader"),
+    )
 
 
 def test_empty_stderr_on_failure_gives_the_exit_code() -> None:
@@ -498,15 +514,21 @@ def test_downloaded_garbage_is_not_an_image() -> None:
     assert downloader_for(get, []).preview(THUMBNAIL).problem is PreviewProblem.NOT_IMAGE
 
 
-# --- SourceVideo и SourceCatalog
+# --- SourceFacts, SourceVideo, PreparedSources, SourceCatalog
 
 
-def admitted_row(row_number: int, link: str) -> PlanRow:
-    return PlanRow.admitted(SheetRow(row_number, link, "16.10.2026", "19:00"), START, link)
+def admitted(row_number: int, link: str) -> AdmittedRow:
+    return admitted_row(row_number, link, START)
 
 
-def skipped_row(row_number: int, link: str) -> PlanRow:
-    return PlanRow.skipped(SheetRow(row_number, link, "01.09.2026", "19:00"), RowSkipReason.IN_PAST)
+def rows_of(*rows: AdmittedRow, skipped: tuple[SkippedRow, ...] = ()) -> PlannedRows:
+    return PlannedRows(admitted=rows, skipped=skipped)
+
+
+def video_of(
+    row: AdmittedRow, fetched: SourceFetch, language: LanguageDecision | None, preview: PreviewResult | None = None
+) -> SourceVideo:
+    return SourceVideo(row=row, facts=SourceFacts(fetch=fetched, language=language, preview=preview))
 
 
 class _FakeFetcher:
@@ -542,6 +564,12 @@ def no_language_fetch(link: str) -> SourceFetch:
     return SourceFetch.from_metadata(link, SourceMetadata.from_ytdlp(link, info))
 
 
+def decision_for(fetched: SourceFetch) -> LanguageDecision:
+    metadata: SourceMetadata | None = fetched.ready_metadata
+    assert metadata is not None
+    return RESOLVER.resolve(metadata)
+
+
 def test_fake_fetcher_is_a_metadata_fetcher() -> None:
     fetcher: MetadataFetcher = _FakeFetcher({})
     assert callable(fetcher.fetch)
@@ -550,31 +578,28 @@ def test_fake_fetcher_is_a_metadata_fetcher() -> None:
 def test_two_rows_with_one_link_are_one_fetch_one_language_and_one_download(log: LogCapture) -> None:
     fetcher: _FakeFetcher = _FakeFetcher({LINK: ok_fetch(LINK)})
     get: _FakeGet = _FakeGet(_Response(200, png_bytes()))
-    rows: tuple[PlanRow, ...] = (admitted_row(2, LINK), admitted_row(5, LINK))
     catalog: SourceCatalog = catalog_for(fetcher, get)
-    videos: tuple[SourceVideo, ...] = catalog.prepare(rows)
-    assert [video.row.row_number for video in videos] == [2, 5]
+    videos: tuple[SourceVideo, ...] = catalog.prepare(rows_of(admitted(2, LINK), admitted(5, LINK))).videos
+    assert [video.row_number for video in videos] == [2, 5]
     assert all(video.is_ready and video.preview is not None for video in videos)
     assert fetcher.calls == [LINK]
     assert len(get.calls) == 1
-    assert videos[0].preview is videos[1].preview
-    assert videos[0].language is videos[1].language
+    assert videos[0].facts is videos[1].facts
     assert len(language_decisions(log)) == 1
-    assert list(catalog.languages) == [LINK]
+    assert list(catalog.known) == [LINK]
     info: list[str] = log.messages(logging.INFO)
-    assert f"source row=2 link={LINK} ok preview=ok {FULL_LANGUAGE}" in info
-    assert f"source row=5 link={LINK} ok preview=ok {FULL_LANGUAGE}" in info
+    assert f"source row=2 link={LINK} result=ok preview=ok {FULL_LANGUAGE}" in info
+    assert f"source row=5 link={LINK} result=ok preview=ok {FULL_LANGUAGE}" in info
     assert any("sources_prepared sources=2 links=1 ready=2 failed=0" in line for line in info)
     assert any(line.endswith("languages=uk:2") for line in info)
 
 
-def test_skipped_row_is_not_processed() -> None:
+def test_skipped_rows_are_not_processed() -> None:
     fetcher: _FakeFetcher = _FakeFetcher({LINK: ok_fetch(LINK)})
     get: _FakeGet = _FakeGet(_Response(200, png_bytes()))
-    videos: tuple[SourceVideo, ...] = catalog_for(fetcher, get).prepare(
-        (skipped_row(2, OTHER_LINK), admitted_row(3, LINK))
-    )
-    assert [video.row.row_number for video in videos] == [3]
+    past: SkippedRow = SkippedRow(SheetRow(2, OTHER_LINK, "01.09.2026", "19:00"), RowSkipReason.IN_PAST)
+    prepared: PreparedSources = catalog_for(fetcher, get).prepare(rows_of(admitted(3, LINK), skipped=(past,)))
+    assert [video.row_number for video in prepared.videos] == [3]
     assert fetcher.calls == [LINK]
 
 
@@ -583,84 +608,79 @@ def test_one_failed_source_does_not_stop_the_next(log: LogCapture) -> None:
     fetcher: _FakeFetcher = _FakeFetcher({OTHER_LINK: failed, LINK: ok_fetch(LINK)})
     get: _FakeGet = _FakeGet(_Response(200, png_bytes()))
     catalog: SourceCatalog = catalog_for(fetcher, get)
-    videos: tuple[SourceVideo, ...] = catalog.prepare((admitted_row(2, OTHER_LINK), admitted_row(3, LINK)))
+    videos: tuple[SourceVideo, ...] = catalog.prepare(rows_of(admitted(2, OTHER_LINK), admitted(3, LINK))).videos
     assert [video.is_ready for video in videos] == [False, True]
-    assert videos[0].failure is SourceFailureReason.PRIVATE
     assert videos[0].refusal is SourceFailureReason.PRIVATE
-    assert videos[0].preview is None and videos[0].preview_problem is None
-    assert videos[0].language is None                # язык отказавшего источника не решаем
-    assert list(catalog.languages) == [LINK]
+    assert videos[0].preview is None and videos[0].facts.preview is None
+    assert videos[0].facts.language is None          # язык отказавшего источника не решаем
+    assert len(language_decisions(log)) == 1
     assert len(get.calls) == 1                       # обложку отказавшего источника не качаем
-    warnings: list[str] = log.messages(logging.WARNING)
-    assert any(
-        f"row=2 link={OTHER_LINK} reason=private preview=- language=- language_source=-" in line for line in warnings
-    )
+    assert (
+        f"source row=2 link={OTHER_LINK} result=private preview=- language=- language_source=- "
+        "detail=ERROR: Private video"
+    ) in log.messages(logging.WARNING)
     assert any("failed=1 failures=private:1" in line for line in log.messages(logging.INFO))
 
 
 def test_source_without_preview_is_still_ready(log: LogCapture) -> None:
     fetcher: _FakeFetcher = _FakeFetcher({LINK: ok_fetch(LINK)})
     get: _FakeGet = _FakeGet(_Response(404))
-    videos: tuple[SourceVideo, ...] = catalog_for(fetcher, get).prepare((admitted_row(2, LINK),))
-    assert videos[0].is_ready
-    assert videos[0].preview is None
-    assert videos[0].preview_problem is PreviewProblem.NOT_FOUND
-    assert SourceTally(videos).no_preview == 1
-    assert f"source row=2 link={LINK} ok preview=not_found {FULL_LANGUAGE}" in log.messages(logging.INFO)
+    prepared: PreparedSources = catalog_for(fetcher, get).prepare(rows_of(admitted(2, LINK)))
+    video: SourceVideo = prepared.videos[0]
+    assert video.is_ready
+    assert video.preview is None
+    assert video.facts.preview == PreviewResult.failed(PreviewProblem.NOT_FOUND)
+    assert prepared.no_preview == 1
+    assert f"source row=2 link={LINK} result=ok preview=not_found {FULL_LANGUAGE}" in log.messages(logging.INFO)
 
 
 def test_source_without_title_is_not_ready_and_gets_no_language_and_no_preview(log: LogCapture) -> None:
     info: dict[str, Any] = load_info("video_full.json") | {"title": ""}
     no_title: SourceFetch = SourceFetch.from_metadata(LINK, SourceMetadata.from_ytdlp(LINK, info))
     get: _FakeGet = _FakeGet()
-    videos: tuple[SourceVideo, ...] = catalog_for(_FakeFetcher({LINK: no_title}), get).prepare(
-        (admitted_row(2, LINK),)
-    )
-    assert not videos[0].is_ready
-    assert videos[0].metadata is not None
-    assert videos[0].refusal is SourceFailureReason.NO_TITLE
-    assert videos[0].language is None
+    prepared: PreparedSources = catalog_for(_FakeFetcher({LINK: no_title}), get).prepare(rows_of(admitted(2, LINK)))
+    video: SourceVideo = prepared.videos[0]
+    assert not video.is_ready
+    assert video.facts.fetch.metadata is not None and video.metadata_url == LINK
+    assert video.refusal is SourceFailureReason.NO_TITLE
+    assert video.facts.language is None
     assert language_decisions(log) == []
     assert get.calls == []
 
 
 def test_source_whose_language_is_undetected_is_not_ready(log: LogCapture) -> None:
     get: _FakeGet = _FakeGet()
-    videos: tuple[SourceVideo, ...] = catalog_for(_FakeFetcher({LINK: no_language_fetch(LINK)}), get).prepare(
-        (admitted_row(2, LINK),)
-    )
-    video: SourceVideo = videos[0]
-    assert video.failure is None and video.metadata is not None and video.metadata.problem is None
-    assert video.language is not None and not video.language.is_resolved
-    assert video.language.source is LanguageSource.UNDETECTED
+    catalog: SourceCatalog = catalog_for(_FakeFetcher({LINK: no_language_fetch(LINK)}), get)
+    video: SourceVideo = catalog.prepare(rows_of(admitted(2, LINK))).videos[0]
+    assert video.facts.fetch.failure is None
+    assert video.facts.language is not None and not video.facts.language.is_resolved
+    assert video.facts.language.source is LanguageSource.UNDETECTED
     assert video.language_code is None
     assert not video.is_ready
     assert video.refusal is SourceFailureReason.NO_LANGUAGE
     assert get.calls == []                           # источник дальше не идёт — обложка ему не нужна
     warnings: list[str] = log.messages(logging.WARNING)
     assert any(line.startswith(f"language_decision url={LINK} final_language=unknown") for line in warnings)
-    assert any(
-        f"row=2 link={LINK} reason=no_language preview=- language=- language_source=undetected" in line
-        for line in warnings
-    )
+    assert (
+        f"source row=2 link={LINK} result=no_language preview=- language=- language_source=undetected detail=-"
+    ) in warnings
     assert any("failures=no_language:1" in line and line.endswith("languages=-") for line in log.messages(logging.INFO))
 
 
 def test_refusal_order_is_ytdlp_then_title_then_language() -> None:
-    undetected: LanguageDecision = RESOLVER.resolve(no_language_fetch(LINK).metadata)   # type: ignore[arg-type]
-    failed: SourceFetch = SourceFetch.failed(LINK, SourceFailureReason.TIMEOUT)
+    undetected: LanguageDecision = decision_for(no_language_fetch(LINK))
     info: dict[str, Any] = load_info("video_full.json") | {"title": ""}
     no_title: SourceFetch = SourceFetch.from_metadata(LINK, SourceMetadata.from_ytdlp(LINK, info))
-    row: PlanRow = admitted_row(2, LINK)
-    assert SourceVideo.of(row, failed, None, undetected).refusal is SourceFailureReason.TIMEOUT
-    assert SourceVideo.of(row, no_title, None, undetected).refusal is SourceFailureReason.NO_TITLE
-    assert SourceVideo.of(row, no_language_fetch(LINK), None, undetected).refusal is SourceFailureReason.NO_LANGUAGE
-    assert SourceVideo.of(row, no_language_fetch(LINK), None, None).refusal is SourceFailureReason.NO_LANGUAGE
+    assert SourceFacts(SourceFetch.failed(LINK, SourceFailureReason.TIMEOUT), undetected, None).refusal is (
+        SourceFailureReason.TIMEOUT
+    )
+    assert SourceFacts(no_title, undetected, None).refusal is SourceFailureReason.NO_TITLE
+    assert SourceFacts(no_language_fetch(LINK), undetected, None).refusal is SourceFailureReason.NO_LANGUAGE
+    assert SourceFacts(no_language_fetch(LINK), None, None).refusal is SourceFailureReason.NO_LANGUAGE
 
 
 def test_the_slot_key_of_a_fit_source_is_its_start_in_the_program_zone_and_its_language() -> None:
-    uk: LanguageDecision = RESOLVER.resolve(ok_fetch(LINK).metadata)   # type: ignore[arg-type]
-    video: SourceVideo = SourceVideo.of(admitted_row(2, LINK), ok_fetch(LINK), None, uk)
+    video: SourceVideo = video_of(admitted(2, LINK), ok_fetch(LINK), decision_for(ok_fetch(LINK)))
     kyiv: ZoneInfo = ZoneInfo("Europe/Kyiv")
     key: SlotKey | None = video.slot_key(kyiv)
     assert key == SlotKey(start=START.astimezone(kyiv), language="uk")
@@ -669,44 +689,59 @@ def test_the_slot_key_of_a_fit_source_is_its_start_in_the_program_zone_and_its_l
 
 def test_an_unfit_source_has_no_slot_key() -> None:
     """Негодный источник в слот не идёт: у него нет ключа слота, а не исключение."""
-    undetected: LanguageDecision = RESOLVER.resolve(no_language_fetch(LINK).metadata)   # type: ignore[arg-type]
     failed: SourceFetch = SourceFetch.failed(LINK, SourceFailureReason.TIMEOUT)
-    row: PlanRow = admitted_row(2, LINK)
-    assert SourceVideo.of(row, failed, None, None).slot_key(ZoneInfo("Europe/Kyiv")) is None
-    assert SourceVideo.of(row, no_language_fetch(LINK), None, undetected).slot_key(ZoneInfo("Europe/Kyiv")) is None
+    undetected: LanguageDecision = decision_for(no_language_fetch(LINK))
+    assert video_of(admitted(2, LINK), failed, None).slot_key(ZoneInfo("Europe/Kyiv")) is None
+    assert video_of(admitted(2, LINK), no_language_fetch(LINK), undetected).slot_key(ZoneInfo("Europe/Kyiv")) is None
 
 
-def test_the_source_text_is_the_title_and_description_of_the_video() -> None:
+def test_the_source_text_and_links_come_from_the_video_and_the_row() -> None:
     fetched: SourceFetch = ok_fetch(LINK)
     assert fetched.metadata is not None
-    video: SourceVideo = SourceVideo.of(admitted_row(2, LINK), fetched, None, None)
+    row: AdmittedRow = admitted_row(2, f"https://www.youtube.com/watch?v={LINK[-11:]}&t=5s", START)
+    video: SourceVideo = video_of(row, fetched, None)
     assert video.text == SourceText(title=fetched.metadata.title, description=fetched.metadata.description)
+    assert (video.link, video.watch_url) == (LINK, f"https://www.youtube.com/watch?v={LINK[-11:]}")
+    assert video.table_link == row.row.link and video.metadata_url == LINK
     failed: SourceFetch = SourceFetch.failed(LINK, SourceFailureReason.TIMEOUT)
-    assert SourceVideo.of(admitted_row(2, LINK), failed, None, None).text == SourceText(title="", description="")
+    empty: SourceVideo = video_of(row, failed, None)
+    assert (empty.text, empty.metadata_url) == (SourceText(title="", description=""), "")
 
 
-def test_tally_counts_by_reason_and_by_language() -> None:
+def test_prepared_sources_count_by_reason_and_by_language() -> None:
     failed: SourceFetch = SourceFetch.failed(OTHER_LINK, SourceFailureReason.UNAVAILABLE)
-    uk: LanguageDecision = RESOLVER.resolve(ok_fetch(LINK).metadata)   # type: ignore[arg-type]
-    ru: LanguageDecision = RESOLVER.resolve(ok_fetch(OTHER_LINK, "video_no_thumbnail.json").metadata)   # type: ignore[arg-type]
-    en: LanguageDecision = RESOLVER.resolve(ok_fetch(THIRD_LINK, "video_no_description.json").metadata)   # type: ignore[arg-type]
-    videos: tuple[SourceVideo, ...] = (
-        SourceVideo.of(admitted_row(2, OTHER_LINK), failed, None, None),
-        SourceVideo.of(admitted_row(3, OTHER_LINK), failed, None, None),
-        SourceVideo.of(admitted_row(4, LINK), ok_fetch(LINK), PreviewResult.failed(PreviewProblem.NO_URL), uk),
-        SourceVideo.of(admitted_row(5, THIRD_LINK), ok_fetch(THIRD_LINK, "video_no_description.json"), None, en),
-        SourceVideo.of(admitted_row(6, OTHER_LINK), ok_fetch(OTHER_LINK, "video_no_thumbnail.json"), None, ru),
-        SourceVideo.of(admitted_row(7, LINK), ok_fetch(LINK), None, uk),
-    )
-    tally: SourceTally = SourceTally(videos)
+    uk: LanguageDecision = decision_for(ok_fetch(LINK))
+    ru: LanguageDecision = decision_for(ok_fetch(OTHER_LINK, "video_no_thumbnail.json"))
+    en: LanguageDecision = decision_for(ok_fetch(THIRD_LINK, "video_no_description.json"))
+    prepared: PreparedSources = PreparedSources((
+        video_of(admitted(2, OTHER_LINK), failed, None),
+        video_of(admitted(3, OTHER_LINK), failed, None),
+        video_of(admitted(4, LINK), ok_fetch(LINK), uk, PreviewResult.failed(PreviewProblem.NO_URL)),
+        video_of(admitted(5, THIRD_LINK), ok_fetch(THIRD_LINK, "video_no_description.json"), en),
+        video_of(admitted(6, OTHER_LINK), ok_fetch(OTHER_LINK, "video_no_thumbnail.json"), ru),
+        video_of(admitted(7, LINK), ok_fetch(LINK), uk),
+    ))
     assert (uk.language, ru.language, en.language) == ("uk", "ru", "en")
-    assert tally.ready == 4
-    assert tally.no_preview == 4
-    assert tally.failures == {SourceFailureReason.UNAVAILABLE: 2}
-    assert list(tally.languages.items()) == [("uk", 2), ("en", 1), ("ru", 1)]
-    assert tally.log_line == (
-        "sources=6 links=3 ready=4 failed=2 failures=unavailable:2 no_preview=4 languages=uk:2,en:1,ru:1"
+    assert prepared.ready == 4 and prepared.has_ready
+    assert prepared.no_preview == 4
+    assert [(item.key, item.count) for item in prepared.failures.items] == [(SourceFailureReason.UNAVAILABLE, 2)]
+    assert [(item.key, item.count) for item in prepared.languages.items] == [("uk", 2), ("en", 1), ("ru", 1)]
+    assert prepared.has_errors
+    assert prepared.event.text == (
+        "sources_prepared sources=6 links=3 ready=4 failed=2 failures=unavailable:2 no_preview=4 "
+        "languages=uk:2,en:1,ru:1"
     )
+    unavailable: str = msg.INTAKE_COUNT_ITEM.format(name=SourceFailureReason.UNAVAILABLE.human, count=2)
+    assert prepared.console_line == msg.INTAKE_SOURCES_LINE.format(
+        ready=4, total=6, no_preview=4, failures=msg.INTAKE_SOURCES_FAILURES.format(items=unavailable)
+    )
+
+
+def test_prepared_sources_without_refusals_have_no_errors_and_no_failures_part() -> None:
+    uk: LanguageDecision = decision_for(ok_fetch(LINK))
+    prepared: PreparedSources = PreparedSources((video_of(admitted(2, LINK), ok_fetch(LINK), uk),))
+    assert not prepared.has_errors
+    assert prepared.console_line == msg.INTAKE_SOURCES_LINE.format(ready=1, total=1, no_preview=1, failures="")
 
 
 def test_catalog_from_paths_uses_ytdlp_and_the_resource_resolver(livecraft_paths: LivecraftPaths) -> None:
@@ -714,9 +749,9 @@ def test_catalog_from_paths_uses_ytdlp_and_the_resource_resolver(livecraft_paths
     assert isinstance(catalog.fetcher, YtDlpFetcher)
     assert catalog.fetcher.ytdlp_exe == livecraft_paths.ytdlp_exe
     assert catalog.resolver.detector.service_hints == RESOLVER.detector.service_hints
-    videos: tuple[SourceVideo, ...] = catalog.prepare((admitted_row(2, LINK),))
-    assert videos[0].failure is SourceFailureReason.TOOL_MISSING
-    assert videos[0].language is None
+    videos: tuple[SourceVideo, ...] = catalog.prepare(rows_of(admitted(2, LINK))).videos
+    assert videos[0].refusal is SourceFailureReason.TOOL_MISSING
+    assert videos[0].facts.language is None
 
 
 @pytest.mark.parametrize(

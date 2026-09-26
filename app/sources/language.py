@@ -1,24 +1,28 @@
-"""Язык источника по данным видео (CLAUDE.md §3 шаг 2.3, §14 решение 12; §2: `core\\language*.py` restreamer).
+"""Язык источника по данным видео (CLAUDE.md §3 шаг 2.3, §14 решение 12).
 
 Колонку языка таблицы программа не читает: язык решается один раз по тому, что yt-dlp сказал о видео,
 и дальше переходит в слот. Код языка из сырого значения и язык текста — `app\\texts\\language_detector.py`
-(`normalize_language`, `TextLanguageDetector`). Правила перенесены из restreamer без изменений:
+(`normalize_language`, `TextLanguageDetector`).
 
-- `LanguageProfile` — все сигналы языка одного видео; `decide` — голосование донора `resolve_language`
-  с тем же порядком приоритетов;
-- `LanguageResolver` — точка входа: данные видео → решение и строка лога.
+- `LanguageProfile` — все сигналы языка одного видео, коды уже нормализованы;
+- `LanguageVoting` — голосование сигналов: консенсус → согласие langdetect с языком видео → арбитраж спора →
+  langdetect → язык видео; итог — `LanguageDecision`;
+- `LanguageResolver` — точка входа: данные видео → профиль → решение → строка лога.
 
 Не определился язык — решение с `language=None`; такой источник дальше по конвейеру не идёт (§0).
 """
 from __future__ import annotations
 
+import logging
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
 from app.core.sequence import unique_in_order
-from app.observability.log_event import LogArea, LogValue, get_logger
+from app.core.text_format import NEWLINE
+from app.observability.log_event import LogArea, LogEvent, LogValue, get_logger
 from app.sources.metadata import SourceMetadata
 from app.texts.language_detector import TextLanguageDetector, normalize_language
 
@@ -26,10 +30,11 @@ LOGGER = get_logger(LogArea.SOURCES)
 
 CONSENSUS_VOTES: Final[int] = 3
 ORIGINAL_CAPTION_SUFFIX: Final[str] = "-orig"   # YouTube так помечает автосубтитры на языке звука
+VOTE_TEMPLATE: Final[str] = "{signal}:{code}"   # голос в поле строки лога
 
 
 class LanguageSource(str, Enum):
-    """Каким правилом решён язык; значения — как у донора, чтобы логи сверялись."""
+    """Каким правилом решён язык."""
 
     CONSENSUS = "consensus"
     LANGDETECT_METADATA_AGREEMENT = "langdetect_metadata_agreement"
@@ -42,7 +47,7 @@ class LanguageSource(str, Enum):
 
 
 class LanguageSignal(str, Enum):
-    """Независимый голос за язык видео. Первые субтитры и первые автосубтитры не голосуют (донор):
+    """Независимый голос за язык видео. Первые субтитры и первые автосубтитры не голосуют:
     первые — часто перевод, вторые — алфавитный каталог."""
 
     VIDEO_LANGUAGE = "video_language"
@@ -50,6 +55,44 @@ class LanguageSignal(str, Enum):
     AUTO_CAPTION_ORIG = "auto_caption_orig"
     DESCRIPTION_LANGUAGE = "description_language"
     LANGDETECT_TEXT = "langdetect_text"
+
+
+class LanguageEvent(str, Enum):
+    """События решения языка в логе."""
+
+    PROFILE = "language_profile"
+    VOTES = "language_votes"
+    ARBITRATION = "language_arbitration"
+    DECISION = "language_decision"
+
+
+# Голоса-арбитры спора языка видео и langdetect: звук, `-orig`, описание.
+ARBITER_SIGNALS: Final[tuple[LanguageSignal, ...]] = (
+    LanguageSignal.AUDIO_FIRST,
+    LanguageSignal.AUTO_CAPTION_ORIG,
+    LanguageSignal.DESCRIPTION_LANGUAGE,
+)
+
+
+@dataclass(frozen=True)
+class RawLanguages:
+    """Сырые коды языков из ответа yt-dlp: языки звука или ключи субтитров, как пришли."""
+
+    values: tuple[str, ...]
+
+    @property
+    def codes(self) -> tuple[str, ...]:
+        """Нормализованные коды в порядке первого появления, без повторов и без нераспознанных."""
+        return unique_in_order(code for code in map(normalize_language, self.values) if code is not None)
+
+    @property
+    def original_caption(self) -> str | None:
+        """Язык первого ключа автосубтитров вида `{язык}-orig` — это язык звука."""
+        for value in self.values:
+            key: str = value.strip()
+            if key.endswith(ORIGINAL_CAPTION_SUFFIX):
+                return normalize_language(key[: -len(ORIGINAL_CAPTION_SUFFIX)])
+        return None
 
 
 @dataclass(frozen=True)
@@ -69,33 +112,20 @@ class LanguageProfile:
     @classmethod
     def of(cls, metadata: SourceMetadata, detector: TextLanguageDetector) -> LanguageProfile:
         """Профиль из данных видео: коды нормализуются, повторы убираются, langdetect — три раза."""
+        captions: RawLanguages = RawLanguages(metadata.auto_caption_languages)
         profile: LanguageProfile = cls(
             video_language=normalize_language(metadata.youtube_language),
             channel_language=normalize_language(metadata.channel_language),
-            audio_languages=cls._unique(metadata.audio_languages),
-            subtitle_languages=cls._unique(metadata.subtitle_languages),
-            auto_caption_languages=cls._unique(metadata.auto_caption_languages),
-            auto_caption_orig_language=cls._original_caption(metadata.auto_caption_languages),
+            audio_languages=RawLanguages(metadata.audio_languages).codes,
+            subtitle_languages=RawLanguages(metadata.subtitle_languages).codes,
+            auto_caption_languages=captions.codes,
+            auto_caption_orig_language=captions.original_caption,
             title_language=detector.detect(metadata.title),
             description_language=detector.detect(metadata.description),
-            text_language=detector.detect(f"{metadata.title}\n{metadata.description}".strip()),
+            text_language=detector.detect(NEWLINE.join((metadata.title, metadata.description)).strip()),
         )
-        LOGGER.debug("language_profile url=%s %s", metadata.url, profile.log_line)
+        LogEvent.of(LanguageEvent.PROFILE, url=metadata.url, **profile.log_fields).emit(LOGGER, logging.DEBUG)
         return profile
-
-    @staticmethod
-    def _unique(raw_values: tuple[str, ...]) -> tuple[str, ...]:
-        """Нормализованные коды в порядке первого появления, без повторов и без нераспознанных."""
-        return unique_in_order(code for code in map(normalize_language, raw_values) if code is not None)
-
-    @staticmethod
-    def _original_caption(raw_keys: tuple[str, ...]) -> str | None:
-        """Язык первого сырого ключа автосубтитров вида `{язык}-orig` — это язык звука."""
-        for raw_key in raw_keys:
-            key: str = str(raw_key or "").strip()
-            if key.endswith(ORIGINAL_CAPTION_SUFFIX):
-                return normalize_language(key[: -len(ORIGINAL_CAPTION_SUFFIX)])
-        return None
 
     @property
     def audio_first(self) -> str | None:
@@ -103,46 +133,65 @@ class LanguageProfile:
 
     @property
     def metadata_candidates(self) -> tuple[str, ...]:
-        """Языки видео и канала без повторов — для строки лога, как у донора."""
+        """Языки видео и канала без повторов — для строки лога."""
         return unique_in_order(code for code in (self.video_language, self.channel_language) if code)
 
     @property
-    def votes(self) -> dict[LanguageSignal, str]:
-        """Голоса, которые есть, в порядке донора: видео, звук, `-orig`, описание, текст."""
-        signals: tuple[tuple[LanguageSignal, str | None], ...] = (
-            (LanguageSignal.VIDEO_LANGUAGE, self.video_language),
-            (LanguageSignal.AUDIO_FIRST, self.audio_first),
-            (LanguageSignal.AUTO_CAPTION_ORIG, self.auto_caption_orig_language),
-            (LanguageSignal.DESCRIPTION_LANGUAGE, self.description_language),
-            (LanguageSignal.LANGDETECT_TEXT, self.text_language),
+    def log_fields(self) -> Mapping[str, object]:
+        return dict(
+            video=self.video_language,
+            channel=self.channel_language,
+            audio=self.audio_languages,
+            subtitles=self.subtitle_languages,
+            auto_caption_orig=self.auto_caption_orig_language,
+            title=self.title_language,
+            description=self.description_language,
+            text=self.text_language,
         )
-        return {signal: code for signal, code in signals if code is not None}
+
+
+@dataclass(frozen=True)
+class LanguageVoting:
+    """Голосование сигналов профиля за язык видео."""
+
+    profile: LanguageProfile
+
+    @property
+    def votes(self) -> dict[LanguageSignal, str]:
+        """Голоса, которые есть, по порядку: видео, звук, `-orig`, описание, текст."""
+        profile: LanguageProfile = self.profile
+        signals: dict[LanguageSignal, str | None] = {
+            LanguageSignal.VIDEO_LANGUAGE: profile.video_language,
+            LanguageSignal.AUDIO_FIRST: profile.audio_first,
+            LanguageSignal.AUTO_CAPTION_ORIG: profile.auto_caption_orig_language,
+            LanguageSignal.DESCRIPTION_LANGUAGE: profile.description_language,
+            LanguageSignal.LANGDETECT_TEXT: profile.text_language,
+        }
+        return {signal: code for signal, code in signals.items() if code is not None}
 
     @property
     def arbiter_votes(self) -> dict[LanguageSignal, str]:
         """Голоса-арбитры спора языка видео и langdetect: звук, `-orig`, описание."""
-        arbiters: tuple[LanguageSignal, ...] = (
-            LanguageSignal.AUDIO_FIRST,
-            LanguageSignal.AUTO_CAPTION_ORIG,
-            LanguageSignal.DESCRIPTION_LANGUAGE,
-        )
-        return {signal: code for signal, code in self.votes.items() if signal in arbiters}
+        return {signal: code for signal, code in self.votes.items() if signal in ARBITER_SIGNALS}
 
     def decide(self) -> LanguageDecision:
-        """Язык видео по приоритетам донора: консенсус → согласие → арбитраж → langdetect → метаданные."""
-        LOGGER.debug("language_votes %s", self._votes_line(self.votes))
+        """Язык видео по приоритетам: консенсус → согласие → арбитраж → langdetect → язык видео."""
+        LogEvent.of(LanguageEvent.VOTES, votes=self._vote_values(self.votes)).emit(LOGGER, logging.DEBUG)
+        profile: LanguageProfile = self.profile
         consensus: str | None = self._consensus()
         if consensus is not None:
-            return LanguageDecision(consensus, LanguageSource.CONSENSUS, is_conflict=False, profile=self)
-        if self.text_language is not None and self.video_language is not None:
+            return LanguageDecision(consensus, LanguageSource.CONSENSUS, is_conflict=False, profile=profile)
+        if profile.text_language is not None and profile.video_language is not None:
             return self._compare_text_with_video()
-        if self.text_language is not None:
-            return LanguageDecision(self.text_language, LanguageSource.LANGDETECT, is_conflict=False, profile=self)
-        if self.video_language is not None:
+        if profile.text_language is not None:
             return LanguageDecision(
-                self.video_language, LanguageSource.METADATA_FALLBACK, is_conflict=False, profile=self
+                profile.text_language, LanguageSource.LANGDETECT, is_conflict=False, profile=profile
             )
-        return LanguageDecision(None, LanguageSource.UNDETECTED, is_conflict=False, profile=self)
+        if profile.video_language is not None:
+            return LanguageDecision(
+                profile.video_language, LanguageSource.METADATA_FALLBACK, is_conflict=False, profile=profile
+            )
+        return LanguageDecision(None, LanguageSource.UNDETECTED, is_conflict=False, profile=profile)
 
     def _consensus(self) -> str | None:
         """Язык, за который не меньше трёх голосов из не меньше трёх; иначе None."""
@@ -154,42 +203,32 @@ class LanguageProfile:
 
     def _compare_text_with_video(self) -> LanguageDecision:
         """langdetect и язык видео есть оба: совпали — согласие, нет — арбитраж."""
-        if self.text_language == self.video_language:
+        profile: LanguageProfile = self.profile
+        if profile.text_language == profile.video_language:
             return LanguageDecision(
-                self.text_language, LanguageSource.LANGDETECT_METADATA_AGREEMENT, is_conflict=False, profile=self
+                profile.text_language, LanguageSource.LANGDETECT_METADATA_AGREEMENT, is_conflict=False, profile=profile
             )
         return self._arbitrate()
 
     def _arbitrate(self) -> LanguageDecision:
         """Спор: арбитры голосуют за язык видео или за langdetect; ничья или арбитров нет — язык видео."""
+        profile: LanguageProfile = self.profile
         arbiters: dict[LanguageSignal, str] = self.arbiter_votes
         counts: Counter[str] = Counter(arbiters.values())
-        for_video: int = counts.get(self.video_language or "", 0)
-        for_text: int = counts.get(self.text_language or "", 0)
-        LOGGER.debug(
-            "language_arbitration video=%s:%d text=%s:%d arbiters=%s",
-            self.video_language, for_video, self.text_language, for_text, self._votes_line(arbiters),
-        )
+        for_video: int = counts.get(profile.video_language or "", 0)
+        for_text: int = counts.get(profile.text_language or "", 0)
+        arbitration: LogEvent = LogEvent.of(LanguageEvent.ARBITRATION, video=profile.video_language)
+        arbitration = arbitration.extended(for_video=for_video, text=profile.text_language, for_text=for_text)
+        arbitration.extended(arbiters=self._vote_values(arbiters)).emit(LOGGER, logging.DEBUG)
         if arbiters and for_video > for_text:
-            return LanguageDecision(self.video_language, LanguageSource.METADATA_ARBITRATION, True, self)
+            return LanguageDecision(profile.video_language, LanguageSource.METADATA_ARBITRATION, True, profile)
         if arbiters and for_text > for_video:
-            return LanguageDecision(self.text_language, LanguageSource.LANGDETECT_ARBITRATION, True, self)
-        return LanguageDecision(self.video_language, LanguageSource.METADATA_ARBITRATION_FALLBACK, True, self)
+            return LanguageDecision(profile.text_language, LanguageSource.LANGDETECT_ARBITRATION, True, profile)
+        return LanguageDecision(profile.video_language, LanguageSource.METADATA_ARBITRATION_FALLBACK, True, profile)
 
-    @staticmethod
-    def _votes_line(votes: dict[LanguageSignal, str]) -> str:
-        return LogValue.LIST_SEPARATOR.join(f"{signal.value}:{code}" for signal, code in votes.items()) or LogValue.EMPTY.value
-
-    @property
-    def log_line(self) -> str:
-        return (
-            f"video={self.video_language or LogValue.EMPTY.value} channel={self.channel_language or LogValue.EMPTY.value} "
-            f"audio={LogValue.LIST_SEPARATOR.join(self.audio_languages) or LogValue.EMPTY.value} "
-            f"subtitles={LogValue.LIST_SEPARATOR.join(self.subtitle_languages) or LogValue.EMPTY.value} "
-            f"auto_caption_orig={self.auto_caption_orig_language or LogValue.EMPTY.value} "
-            f"title={self.title_language or LogValue.EMPTY.value} description={self.description_language or LogValue.EMPTY.value} "
-            f"text={self.text_language or LogValue.EMPTY.value}"
-        )
+    def _vote_values(self, votes: dict[LanguageSignal, str]) -> tuple[str, ...]:
+        """Голоса для поля строки лога: «сигнал:код» по порядку."""
+        return tuple(VOTE_TEMPLATE.format(signal=signal.value, code=code) for signal, code in votes.items())
 
 
 @dataclass(frozen=True)
@@ -206,19 +245,24 @@ class LanguageDecision:
         return self.language is not None
 
     @property
-    def log_line(self) -> str:
-        """key=value по образцу `log_language_decision` донора; нет значения — `none`."""
+    def log_fields(self) -> Mapping[str, object]:
+        """Решение и сигналы, на которых оно стоит; не определился — `unknown`, нет значения — «-»."""
         profile: LanguageProfile = self.profile
-        return (
-            f"final_language={self.language or LogValue.UNKNOWN.value} source={self.source.value} "
-            f"conflict={'yes' if self.is_conflict else 'no'} "
-            f"metadata_candidates={LogValue.LIST_SEPARATOR.join(profile.metadata_candidates) or LogValue.EMPTY.value} "
-            f"langdetect={profile.text_language or LogValue.EMPTY.value} "
-            f"description_lang={profile.description_language or LogValue.EMPTY.value} "
-            f"title_lang={profile.title_language or LogValue.EMPTY.value} "
-            f"audio_lang={profile.audio_first or LogValue.EMPTY.value} "
-            f"auto_caption_orig={profile.auto_caption_orig_language or LogValue.EMPTY.value}"
+        return dict(
+            final_language=self.language or LogValue.UNKNOWN,
+            source=self.source,
+            conflict=self.is_conflict,
+            metadata_candidates=profile.metadata_candidates,
+            langdetect=profile.text_language,
+            description_lang=profile.description_language,
+            title_lang=profile.title_language,
+            audio_lang=profile.audio_first,
+            auto_caption_orig=profile.auto_caption_orig_language,
         )
+
+    def event(self, url: str) -> LogEvent:
+        """Строка лога о решении по видео `url`."""
+        return LogEvent.of(LanguageEvent.DECISION, url=url, **self.log_fields)
 
 
 @dataclass(frozen=True)
@@ -233,9 +277,6 @@ class LanguageResolver:
 
     def resolve(self, metadata: SourceMetadata) -> LanguageDecision:
         """Решение по одному видео; не определился — WARNING, иначе INFO."""
-        decision: LanguageDecision = LanguageProfile.of(metadata, self.detector).decide()
-        if decision.is_resolved:
-            LOGGER.info("language_decision url=%s %s", metadata.url, decision.log_line)
-        else:
-            LOGGER.warning("language_decision url=%s %s", metadata.url, decision.log_line)
+        decision: LanguageDecision = LanguageVoting(LanguageProfile.of(metadata, self.detector)).decide()
+        decision.event(metadata.url).emit(LOGGER, logging.INFO if decision.is_resolved else logging.WARNING)
         return decision

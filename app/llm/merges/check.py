@@ -205,9 +205,9 @@ class MergeDiagnostics:
     def _source_entities(sources: Sequence[SourceVideo]) -> set[str]:
         entities: set[str] = set()
         for source in sources:
-            title: str = source.metadata.title if source.metadata is not None else ""
-            body: str = source.metadata.description if source.metadata is not None else ""
-            entities.update(extract_named_entities(f"{title.strip()}{NEWLINE}{body.strip()}"))
+            title: str = source.text.title.strip()
+            body: str = source.text.description.strip()
+            entities.update(extract_named_entities(f"{title}{NEWLINE}{body}"))
         return entities
 
     def log_lines(self, label: MergeAttemptLabel) -> tuple[str, str]:

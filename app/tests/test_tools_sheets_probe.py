@@ -99,8 +99,10 @@ def test_probe_prints_columns_and_counters_only(
         time=msg.SHEETS_PROBE_COLUMN.format(name="Время", number=4),
     ) in lines
     assert msg.SHEETS_PROBE_ROWS.format(rows=5, admitted=2, skipped=3) in lines
-    for reason in (RowSkipReason.IN_PAST, RowSkipReason.EMPTY_LINK, RowSkipReason.DUPLICATE):
-        assert msg.SHEETS_PROBE_SKIP_LINE.format(reason=reason.human, count=1) in lines
+    skips: list[str] = [msg.SHEETS_PROBE_SKIP_LINE.format(name=reason.human, count=1) for reason in (
+        RowSkipReason.EMPTY_LINK, RowSkipReason.IN_PAST, RowSkipReason.DUPLICATE
+    )]
+    assert lines[-3:] == skips                              # причины — в порядке проверок
     assert_no_vault_values(lines)
     assert not any(LINK in line or "aB3_-xYz012" in line for line in lines)
 
@@ -109,7 +111,7 @@ def test_probe_prints_the_plan_problem(ready_paths: LivecraftPaths, monkeypatch:
     patch_open(monkeypatch, _FakeReader(values=[["Links", "Time"]]))
     code, lines = run_probe(ready_paths)
     assert code == ExitCode.OK
-    assert lines[1:] == [SheetPlan.from_values([["Links", "Time"]]).problem]
+    assert lines[1:] == [SheetPlan.from_values([["Links", "Time"]]).problem_text]
 
 
 def test_probe_without_vault_is_code_2_and_does_not_open_google(

@@ -1,4 +1,4 @@
-"""Получение данных источника: причина отказа, итог одного обращения, интерфейс получателя (CLAUDE.md §2).
+"""Получение данных источника: итог одного обращения и интерфейс получателя (CLAUDE.md §2).
 
 `MetadataFetcher` — Protocol, которого §2 требует от получателя метаданных: боевой — `YtDlpFetcher`
 (app\\sources\\ytdlp.py), в тестах — подделка с тем же `fetch`. Отказ — обычный исход, а не исключение:
@@ -6,31 +6,12 @@
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
 from typing import Protocol
 
 from app.observability.log_event import LogValue
-from app.sources.metadata import SourceMetadata
-from app.ui import messages_ru as msg
-
-
-class SourceFailureReason(str, Enum):
-    """Почему данных источника нет или они не годятся."""
-
-    TOOL_MISSING = "tool_missing"    # нет tools\yt-dlp.exe — yt-dlp не вызывался
-    PRIVATE = "private"              # приватное видео или нужен вход через cookies
-    UNAVAILABLE = "unavailable"      # удалено или заблокировано
-    TIMEOUT = "timeout"              # yt-dlp не уложился в своё время
-    BAD_OUTPUT = "bad_output"        # ответ yt-dlp — не объект JSON
-    NO_TITLE = "no_title"            # ответ разобран, но названия нет
-    FAILED = "failed"                # прочий отказ yt-dlp
-    NO_LANGUAGE = "no_language"      # язык видео не определился; yt-dlp эту причину не выдаёт — её ставит SourceVideo
-
-    @property
-    def human(self) -> str:
-        """Русская строка причины; текст — в messages_ru (§11)."""
-        return msg.SOURCE_FAILURE_REASONS[self.value]
+from app.sources.metadata import SourceFailureReason, SourceMetadata
 
 
 @dataclass(frozen=True)
@@ -48,26 +29,28 @@ class SourceFetch:
 
     @classmethod
     def from_metadata(cls, url: str, metadata: SourceMetadata) -> SourceFetch:
-        """Разобранный ответ: годен, если у объекта нет проблемы; без названия — отказ NO_TITLE."""
-        if metadata.problem is not None:
-            return cls(url=url, metadata=metadata, failure=SourceFailureReason.NO_TITLE)
-        return cls(url=url, metadata=metadata, failure=None)
+        """Разобранный ответ: годен, если у значения нет проблемы; иначе отказ с его причиной."""
+        return cls(url=url, metadata=metadata, failure=metadata.problem)
 
     @classmethod
     def failed(cls, url: str, reason: SourceFailureReason, detail: str = LogValue.EMPTY.value) -> SourceFetch:
         return cls(url=url, metadata=None, failure=reason, detail=detail or LogValue.EMPTY.value)
 
     @property
-    def is_ok(self) -> bool:
-        return self.failure is None and self.metadata is not None
+    def ready_metadata(self) -> SourceMetadata | None:
+        """Данные видео, по которым можно работать: отказа нет. У отказа — None, даже если значение построено."""
+        return self.metadata if self.failure is None else None
 
     @property
-    def log_line(self) -> str:
-        """`ok` и сводка метаданных либо `reason=… detail=…`."""
-        if self.is_ok and self.metadata is not None:
-            return f"ok {self.metadata.log_line}"
-        reason: str = self.failure.value if self.failure is not None else LogValue.EMPTY.value
-        return f"reason={reason} detail={self.detail!r}"
+    def is_ok(self) -> bool:
+        return self.ready_metadata is not None
+
+    @property
+    def log_fields(self) -> Mapping[str, object]:
+        """`result=ok` и сводка данных видео либо `result=<причина>` и подробность."""
+        if self.ready_metadata is not None:
+            return dict(result=LogValue.OK, **self.ready_metadata.log_fields)
+        return dict(result=self.failure, detail=self.detail)
 
 
 class MetadataFetcher(Protocol):

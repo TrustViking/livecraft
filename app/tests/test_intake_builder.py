@@ -7,22 +7,19 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.intake.builder import SlotBuild, SlotBuilder, SlotGroup
-from app.sheets.plan import SheetPlan, SheetRow
-from app.sheets.rows import PlanRow
+from app.sheets.rows import AdmittedRow
 from app.slots.preview import Preview
 from app.slots.slot import SlotKey, StreamSlot
-from app.slots.texts import SlotTextOrigin, SlotTexts
-from app.sources.fetcher import SourceFailureReason
+from app.slots.texts import SlotProblem, SlotTextOrigin, SlotTexts
+from app.sources.metadata import SourceFailureReason
 from app.sources.video import SourceVideo
-from app.tests.conftest import ready_source
 from app.tests.fixtures.logs import LogCapture
 from app.tests.fixtures.slots import build_slots
-from app.ui import messages_ru as msg
+from app.tests.fixtures.sources import admitted_row, failed_source, planned_rows, ready_source
 
 KYIV: ZoneInfo = ZoneInfo("Europe/Kyiv")
 NOW: datetime = datetime(2026, 3, 1, 12, 0, tzinfo=KYIV)
 START: datetime = datetime(2026, 10, 16, 19, 0, tzinfo=KYIV)
-HEADER: list[str] = ["Links", "Date", "Time"]
 IDS: tuple[str, ...] = ("dQw4w9WgXcQ", "aB3_-xYz012", "Zx9_8yW7v6U", "Qw3_rTy8uI0", "Pl9-kJh7gF6")
 PREVIEW: Preview = Preview(data=b"\xff\xd8jpeg", width=1280, height=720)
 
@@ -35,41 +32,32 @@ def watch(index: int) -> str:
     return f"https://www.youtube.com/watch?v={IDS[index]}"
 
 
-def plan(*rows: list[str]) -> tuple[PlanRow, ...]:
-    """Настоящий разбор таблицы: значения диапазона → SheetPlan → разобранные ряды с подменённым «сейчас»."""
-    return SheetPlan.from_values([HEADER, *rows]).plan_rows(KYIV, NOW)
+def plan(*rows: list[str]) -> tuple[AdmittedRow, ...]:
+    """Допущенные ряды настоящего разбора таблицы с подменённым «сейчас»."""
+    return planned_rows(*rows, zone=KYIV, now=NOW).admitted
 
 
-def sources(rows: tuple[PlanRow, ...], languages: dict[int, str]) -> tuple[SourceVideo, ...]:
+def sources(rows: tuple[AdmittedRow, ...], languages: dict[int, str]) -> tuple[SourceVideo, ...]:
     """Источник на каждый допущенный ряд: язык по номеру ряда, название и описание с номером ряда."""
     return tuple(
         ready_source(row, f"Эфир ряда {row.row_number}", f"Описание ряда {row.row_number}", languages[row.row_number])
         for row in rows
-        if row.is_admitted
     )
 
 
-def failed(row: PlanRow) -> SourceVideo:
-    return SourceVideo(
-        row=row, metadata=None, preview=None, failure=SourceFailureReason.UNAVAILABLE,
-        preview_problem=None, language=None,
-    )
+def failed(row: AdmittedRow) -> SourceVideo:
+    return failed_source(row, SourceFailureReason.UNAVAILABLE)
 
 
 def build(videos: tuple[SourceVideo, ...]) -> SlotBuild:
     return build_slots(videos, KYIV)
 
 
-def odd_source(row_number: int, odd_link: str) -> SourceVideo:
-    """Источник ряда со ссылкой, у которой нет id видео YouTube."""
-    return ready_source(PlanRow.admitted(SheetRow(row_number, odd_link, "", ""), START, odd_link), "t", "", "uk")
-
-
 # --- группировка
 
 
 def test_two_rows_of_one_hour_and_language_make_one_slot_with_sources_in_row_order() -> None:
-    rows: tuple[PlanRow, ...] = plan([link(0), "16.10.2026", "19:00"], [link(1), "16.10.2026", "19:00"])
+    rows: tuple[AdmittedRow, ...] = plan([link(0), "16.10.2026", "19:00"], [link(1), "16.10.2026", "19:00"])
     result: SlotBuild = build(sources(rows, {2: "uk", 3: "uk"}))
     (slot,) = result.slots
     assert slot.slot_id == "16-10-2026_1900_uk"
@@ -82,7 +70,7 @@ def test_two_rows_of_one_hour_and_language_make_one_slot_with_sources_in_row_ord
 
 
 def test_one_hour_in_three_languages_gives_three_slots_uk_en_then_others(slot_log: LogCapture) -> None:
-    rows: tuple[PlanRow, ...] = plan(
+    rows: tuple[AdmittedRow, ...] = plan(
         [link(0), "16.10.2026", "19:00"],
         [link(1), "16.10.2026", "19:00"],
         [link(2), "16.10.2026", "19:00"],
@@ -97,7 +85,7 @@ def test_one_hour_in_three_languages_gives_three_slots_uk_en_then_others(slot_lo
 
 
 def test_unfit_source_does_not_get_into_a_slot() -> None:
-    rows: tuple[PlanRow, ...] = plan([link(0), "16.10.2026", "19:00"], [link(1), "16.10.2026", "19:00"])
+    rows: tuple[AdmittedRow, ...] = plan([link(0), "16.10.2026", "19:00"], [link(1), "16.10.2026", "19:00"])
     good, bad = rows
     result: SlotBuild = build((ready_source(good, "Эфир", "", "uk"), failed(bad)))
     (slot,) = result.slots
@@ -123,7 +111,7 @@ def test_no_fit_sources_give_no_groups_and_no_slots(slot_log: LogCapture) -> Non
     ],
 )
 def test_slot_id_across_daylight_saving_uses_local_time(date_text: str, slot_id: str, offset: str) -> None:
-    rows: tuple[PlanRow, ...] = plan([link(0), date_text, "19:00"])
+    rows: tuple[AdmittedRow, ...] = plan([link(0), date_text, "19:00"])
     (slot,) = build(sources(rows, {2: "uk"})).slots
     assert slot.slot_id == slot_id
     assert slot.time == "19:00"
@@ -134,7 +122,7 @@ def test_slot_id_across_daylight_saving_uses_local_time(date_text: str, slot_id:
 
 
 def test_slot_with_an_empty_title_is_refused_not_dropped(slot_log: LogCapture) -> None:
-    rows: tuple[PlanRow, ...] = plan([link(0), "16.10.2026", "19:00"], [link(1), "16.10.2026", "20:00"])
+    rows: tuple[AdmittedRow, ...] = plan([link(0), "16.10.2026", "19:00"], [link(1), "16.10.2026", "20:00"])
     first, second = rows
     result: SlotBuild = build(
         (ready_source(first, "x" * 150, "описание", "uk"), ready_source(second, "Эфир", "", "uk"))
@@ -142,11 +130,12 @@ def test_slot_with_an_empty_title_is_refused_not_dropped(slot_log: LogCapture) -
     assert [slot.slot_id for slot in result.slots] == ["16-10-2026_2000_uk"]
     (refused,) = result.refused
     assert refused.slot_id == "16-10-2026_1900_uk"
-    assert refused.problem == msg.SLOT_EMPTY_TITLE
+    assert refused.problem is SlotProblem.EMPTY_TITLE
+    assert result.has_errors
     warnings: list[str] = slot_log.messages(logging.WARNING)
     assert len(warnings) == 1
     assert warnings[0].startswith("slot_refused slot=16-10-2026_1900_uk ")
-    assert "title_chars=0" in warnings[0] and warnings[0].endswith(f"problem={msg.SLOT_EMPTY_TITLE}")
+    assert "title_chars=0" in warnings[0] and warnings[0].endswith("problem=empty_title")
     assert "slots_built slots=1 refused=1 languages=uk:1" in slot_log.messages(logging.INFO)
 
 
@@ -154,7 +143,7 @@ def test_slot_with_an_empty_title_is_refused_not_dropped(slot_log: LogCapture) -
 
 
 def test_the_group_takes_previews_of_sources_that_have_them_in_row_order() -> None:
-    rows: tuple[PlanRow, ...] = plan(
+    rows: tuple[AdmittedRow, ...] = plan(
         [link(0), "16.10.2026", "19:00"], [link(1), "16.10.2026", "19:00"], [link(2), "16.10.2026", "19:00"],
     )
     other_preview: Preview = Preview(data=b"\xff\xd8other", width=640, height=360)
@@ -169,11 +158,12 @@ def test_the_group_takes_previews_of_sources_that_have_them_in_row_order() -> No
     assert slot.previews == (PREVIEW, other_preview)
 
 
-def test_the_group_sources_are_watch_links_and_a_link_without_an_id_stays_as_it_is() -> None:
-    rows: tuple[PlanRow, ...] = plan([f"https://www.youtube.com/watch?v={IDS[0]}&t=5s", "16.10.2026", "19:00"])
-    odd: SourceVideo = odd_source(3, "https://example.org/stream")
-    group: SlotGroup = SlotGroup(SlotKey(START, "uk"), (ready_source(rows[0], "Эфир", "", "uk"), odd))
-    assert group.sources == (watch(0), "https://example.org/stream")
+def test_the_group_sources_are_clean_watch_links_in_row_order() -> None:
+    rows: tuple[AdmittedRow, ...] = plan(
+        [f"https://www.youtube.com/watch?v={IDS[0]}&t=5s", "16.10.2026", "19:00"], [link(1), "16.10.2026", "19:00"]
+    )
+    group: SlotGroup = SlotGroup(SlotKey(START, "uk"), tuple(ready_source(row, "Эфир", "", "uk") for row in rows))
+    assert group.sources == (watch(0), watch(1))
 
 
 def test_the_source_texts_follow_the_platform_rules() -> None:
@@ -195,7 +185,7 @@ def test_the_slot_takes_the_texts_it_is_given() -> None:
 def test_groups_keep_the_order_of_the_sources_inside_a_slot() -> None:
     """Внутри слота источники идут в том порядке, в каком их дал каталог, — это порядок рядов."""
     videos: list[SourceVideo] = [
-        ready_source(PlanRow.admitted(SheetRow(number, link(index), "", ""), START, link(index)), "t", "", "uk")
+        ready_source(admitted_row(number, link(index), START), "t", "", "uk")
         for number, index in ((4, 1), (6, 2), (9, 0))
     ]
     (group,) = SlotBuilder(KYIV).groups(videos)

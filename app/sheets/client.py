@@ -9,7 +9,7 @@
 таблицы — поэтому он не пишется никуда, а исходная ошибка доступна только как `__cause__`.
 
 Повторы — только через `RetryLoop` (§11): первое обращение и до `max_retries` повторов на 429, 5xx
-и транспортных сбоях. Запасного диапазона при «Unable to parse range» нет (он был в restreamer): диапазон —
+и транспортных сбоях. Запасного диапазона при «Unable to parse range» нет: диапазон —
 значение пользователя, своё программа не подставляет.
 """
 from __future__ import annotations
@@ -95,6 +95,7 @@ class SheetsEvent(str, Enum):
     READ_RETRY = "sheets_read_retry"
     READ_DONE = "sheets_read_done"
     READ_FAILED = "sheets_read_failed"
+    AUTH_FAILED = "sheets_auth_failed"
 
 
 class SheetsReadError(Exception):
@@ -129,8 +130,7 @@ class SheetsReadError(Exception):
 
     @property
     def log_line(self) -> str:
-        status: str = str(self.status) if self.status is not None else "-"
-        return f"reason={self.reason.value} sheet={self.label} status={status}"
+        return LogEvent.of(SheetsEvent.READ_FAILED, reason=self.reason, sheet=self.label, status=self.status).text
 
 
 @dataclass(frozen=True)
@@ -181,7 +181,7 @@ class SheetsReader:
         try:
             credentials: Any = login.credentials(allow_login=allow_login, on_login=on_login)
         except AuthError as error:
-            LOGGER.warning("sheets_auth_failed reason=%s detail=%s", error.reason.value, error.detail)
+            LogEvent.of(SheetsEvent.AUTH_FAILED, reason=error.reason, detail=error.detail).emit(LOGGER, logging.WARNING)
             raise SheetsReadError(
                 SheetsReadReason.AUTH, SecretField.SHEETS_ID.log_label, detail=error.human
             ) from error

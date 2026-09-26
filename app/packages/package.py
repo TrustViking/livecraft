@@ -2,26 +2,26 @@
 
 ZIP: `manifest.json` первым, затем обложки `previews/`. Формат — ровно тот, что читает planers
 `app\\package\\reader.py::read_package` (schema_version 1), чтобы пакет годился и для planers на другой машине.
-Правила записи — донор restreamer `publish\\planer_package_exporter.py` (`_build_manifest_payload`, `_build_period`,
-`_build_file_name`, `_write_archive_atomically`); обложки берутся из памяти (`Preview.data`), а не с диска, и
-всегда JPEG. Ссылка на форму ключей уходит в манифест открытым текстом (решение 15): без неё planers пакет не читает,
-поэтому без ссылки, как и без слотов, пакет не пишется — причина называется.
+Обложки берутся из памяти (`Preview.data`), а не с диска, и всегда JPEG. Запись атомарна: читатель видит либо
+прежний пакет, либо новый целиком. Ссылка на форму ключей уходит в манифест открытым текстом (решение 15): без неё
+planers пакет не читает, поэтому без ссылки, как и без слотов, пакет не пишется — причина называется.
 """
 from __future__ import annotations
 
 import json
+import logging
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Final
 
 from app.config.loader import FormSettings, LivecraftSettings
-from app.core.dates import DATE_FORMAT, DATETIME_FORMAT, SLOT_TIME_FORMAT, require_aware
+from app.core.dates import DATETIME_FORMAT, SLOT_TIME_FORMAT, format_date, require_aware
 from app.core.text_format import TEXT_ENCODING
-from app.observability.log_event import LogArea, get_logger
+from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.paths import AtomicFile
 from app.slots.slot import StreamSlot
 from app.ui import messages_ru as msg
@@ -29,7 +29,7 @@ from app.version import APP_NAME, APP_VERSION
 
 LOGGER = get_logger(LogArea.PACKAGES)
 
-# Формат пакета — единственный источник (донор PlanerPackageFormat); читатель — planers _ManifestParser.
+# Формат пакета — единственный источник; читатель — planers _ManifestParser.
 SCHEMA_VERSION: Final[int] = 1
 MANIFEST_NAME: Final[str] = "manifest.json"
 JSON_INDENT: Final[int] = 2
@@ -38,6 +38,42 @@ PREVIEW_NAME_TEMPLATE: Final[str] = PREVIEWS_DIR + "/{slot_id}_{index}.jpg"   # 
 FILE_NAME_TEMPLATE: Final[str] = "plan_{period_from}_{period_to}_gen{generated_date}-{generated_time}.bcast"
 TEMP_PREFIX_TEMPLATE: Final[str] = ".{stem}_"    # точка впереди: недописанный пакет не похож на plan_*.bcast
 PREVIEW_INDEX_START: Final[int] = 1
+ARCHIVE_WRITE_MODE: Final[str] = "w"
+
+
+class ManifestKey(str, Enum):
+    """Ключи верхнего уровня манифеста схемы 1 в порядке записи."""
+
+    SCHEMA_VERSION = "schema_version"
+    PACKAGE_ID = "package_id"
+    GENERATED_AT = "generated_at"
+    GENERATOR = "generator"
+    TIMEZONE = "timezone"
+    PERIOD = "period"
+    FORM = "form"
+    SLOTS = "slots"
+
+
+class GeneratorKey(str, Enum):
+    """Ключи записи «кто собрал пакет»."""
+
+    PROJECT = "project"
+    VERSION = "version"
+    RUN_ID = "run_id"
+
+
+class PeriodKey(str, Enum):
+    """Ключи записи периода пакета."""
+
+    FROM = "from"
+    TO = "to"
+
+
+class PackageEvent(str, Enum):
+    """События пакета в логе."""
+
+    SKIPPED = "package_skipped"
+    WRITTEN = "package_written"
 
 
 class PackageProblem(str, Enum):
@@ -66,11 +102,16 @@ class PackageResult:
         return self.path is not None
 
     @property
-    def log_line(self) -> str:
+    def has_errors(self) -> bool:
+        """Незаписанный пакет — ошибка запуска (§10)."""
+        return not self.is_written
+
+    @property
+    def log_fields(self) -> Mapping[str, object]:
         """Без текстов слотов и без ссылки на форму: путь, счётчики и размер либо причина."""
         if self.problem is not None:
-            return f"problem={self.problem.value} slots={self.slots}"
-        return f"path={self.path} slots={self.slots} previews={self.previews} size_bytes={self.size_bytes}"
+            return dict(problem=self.problem, slots=self.slots)
+        return dict(path=self.path, slots=self.slots, previews=self.previews, size_bytes=self.size_bytes)
 
     @property
     def console_line(self) -> str:
@@ -81,11 +122,36 @@ class PackageResult:
 
 
 @dataclass(frozen=True)
+class PackagePeriod:
+    """Период пакета: дата самого раннего и самого позднего старта слотов по местному времени сборки."""
+
+    first: date
+    last: date
+
+    @classmethod
+    def of(cls, starts: Sequence[datetime]) -> PackagePeriod:
+        """Период по моментам старта, уже переведённым в зону момента сборки; моментов — хотя бы один."""
+        return cls(first=min(starts).date(), last=max(starts).date())
+
+    @property
+    def first_text(self) -> str:
+        return format_date(self.first)
+
+    @property
+    def last_text(self) -> str:
+        return format_date(self.last)
+
+    @property
+    def manifest_value(self) -> dict[str, str]:
+        return {PeriodKey.FROM.value: self.first_text, PeriodKey.TO.value: self.last_text}
+
+
+@dataclass(frozen=True)
 class SlotPackage:
     """Слоты запуска, форма ключей и момент сборки — всё, из чего складывается один plan_*.bcast.
 
     Сам решает, можно ли его писать (`problem`), сам строит манифест, имя файла и имена обложек и сам
-    пишет архив атомарно (`write`). Слоты — в порядке (start, language), как у донора.
+    пишет архив атомарно (`write`). Слоты — в порядке (start, language).
     """
 
     slots: tuple[StreamSlot, ...]
@@ -102,20 +168,11 @@ class SlotPackage:
         generated_at: datetime,
         package_id: str,
     ) -> SlotPackage:
-        """Пакет запуска: момент сборки — в зоне программы; слот с проблемой в пакет не идёт (planers его
-        не прочтёт), повтор slot_id — побеждает более поздний (донор). Оба случая — WARNING в лог.
-        """
+        """Пакет запуска из годных слотов сборки (`SlotBuild.slots`: slot_id у них разные, проблем нет);
+        момент сборки — в зоне программы."""
         require_aware(generated_at)
-        by_id: dict[str, StreamSlot] = {}
-        for slot in slots:
-            if slot.problem is not None:
-                LOGGER.warning("package_slot_refused %s problem=%r", slot.log_line, slot.problem)
-                continue
-            if slot.slot_id in by_id:
-                LOGGER.warning("package_slot_duplicate slot=%s resolution=later_wins", slot.slot_id)
-            by_id[slot.slot_id] = slot
         return cls(
-            slots=tuple(sorted(by_id.values(), key=lambda item: (item.start, item.language))),
+            slots=tuple(sorted(slots, key=lambda slot: (slot.start, slot.language))),
             form=settings.form,
             timezone=settings.timezone,
             generated_at=generated_at.astimezone(settings.zone),
@@ -139,22 +196,9 @@ class SlotPackage:
         )
 
     @property
-    def period_from(self) -> str | None:
-        """Дата самого раннего старта DD-MM-YYYY в зоне момента сборки; слотов нет — None."""
-        if not self.slots:
-            return None
-        return min(self._local_starts).strftime(DATE_FORMAT)
-
-    @property
-    def period_to(self) -> str | None:
-        """Дата самого позднего старта DD-MM-YYYY в зоне момента сборки; слотов нет — None."""
-        if not self.slots:
-            return None
-        return max(self._local_starts).strftime(DATE_FORMAT)
-
-    @property
-    def _local_starts(self) -> tuple[datetime, ...]:
-        return tuple(slot.start.astimezone(self.generated_at.tzinfo) for slot in self.slots)
+    def period(self) -> PackagePeriod:
+        """Период по стартам слотов в зоне момента сборки. У пакета без слотов периода нет — он и не пишется."""
+        return PackagePeriod.of(tuple(slot.start.astimezone(self.generated_at.tzinfo) for slot in self.slots))
 
     @property
     def preview_count(self) -> int:
@@ -162,25 +206,28 @@ class SlotPackage:
 
     @property
     def manifest(self) -> dict[str, Any]:
-        """Манифест схемы 1 — ключи и порядок донора `_build_manifest_payload`."""
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "package_id": self.package_id,
-            "generated_at": self.generated_at.strftime(DATETIME_FORMAT),
-            "generator": {"project": APP_NAME, "version": APP_VERSION, "run_id": self.package_id},
-            "timezone": self.timezone,
-            "period": {"from": self.period_from, "to": self.period_to},
-            "form": self.form.to_data(),
-            "slots": [slot.to_record(self.preview_names(slot)) for slot in self.slots],
-        }
+        """Манифест схемы 1: ключи `ManifestKey` в их порядке."""
+        values: tuple[object, ...] = (
+            SCHEMA_VERSION,
+            self.package_id,
+            self.generated_at.strftime(DATETIME_FORMAT),
+            {GeneratorKey.PROJECT.value: APP_NAME, GeneratorKey.VERSION.value: APP_VERSION,
+             GeneratorKey.RUN_ID.value: self.package_id},
+            self.timezone,
+            self.period.manifest_value,
+            self.form.to_data(),
+            [slot.to_record(self.preview_names(slot)) for slot in self.slots],
+        )
+        return {key.value: value for key, value in zip(ManifestKey, values, strict=True)}
 
     @property
     def file_name(self) -> str:
         """Имя файла — для людей: planers его не разбирает, читает только манифест."""
+        period: PackagePeriod = self.period
         return FILE_NAME_TEMPLATE.format(
-            period_from=self.period_from,
-            period_to=self.period_to,
-            generated_date=self.generated_at.strftime(DATE_FORMAT),
+            period_from=period.first_text,
+            period_to=period.last_text,
+            generated_date=format_date(self.generated_at.date()),
             generated_time=self.generated_at.strftime(SLOT_TIME_FORMAT),
         )
 
@@ -194,7 +241,7 @@ class SlotPackage:
             result: PackageResult = PackageResult(
                 path=None, problem=problem, slots=len(self.slots), previews=0, size_bytes=0
             )
-            LOGGER.warning("package_skipped %s", result.log_line)
+            LogEvent.of(PackageEvent.SKIPPED, **result.log_fields).emit(LOGGER, logging.WARNING)
             return result
         bcast_dir.mkdir(parents=True, exist_ok=True)
         target: Path = bcast_dir / self.file_name
@@ -206,7 +253,7 @@ class SlotPackage:
             previews=self.preview_count,
             size_bytes=target.stat().st_size,
         )
-        LOGGER.info("package_written package_id=%s %s", self.package_id, result.log_line)
+        LogEvent.of(PackageEvent.WRITTEN, package_id=self.package_id, **result.log_fields).emit(LOGGER)
         return result
 
     def _write_atomically(self, target: Path) -> None:
@@ -218,7 +265,7 @@ class SlotPackage:
         manifest_bytes: bytes = json.dumps(
             self.manifest, ensure_ascii=False, indent=JSON_INDENT
         ).encode(TEXT_ENCODING)
-        with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        with zipfile.ZipFile(archive_path, mode=ARCHIVE_WRITE_MODE, compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr(MANIFEST_NAME, manifest_bytes)
             for slot in self.slots:
                 for name, preview in zip(self.preview_names(slot), slot.previews, strict=True):

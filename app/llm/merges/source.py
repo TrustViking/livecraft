@@ -68,13 +68,12 @@ class MergeSource:
     @classmethod
     def of(cls, video: SourceVideo, texts: MergePromptTexts) -> MergeSource:
         """Источник из видео слота; видео без данных (в слот такие не попадают) даёт пустые название и описание."""
-        title: str = video.metadata.title if video.metadata is not None else ""
-        description: str = (video.metadata.description if video.metadata is not None else "").strip()
+        description: str = video.text.description.strip()
         return cls(
-            title=title.strip(),
+            title=video.text.title.strip(),
             description=PreparedSourceDescription.of(description or texts.no_description, texts.service_hints),
             no_description=texts.no_description,
-            row_number=video.row.row_number,
+            row_number=video.row_number,
         )
 
     @property

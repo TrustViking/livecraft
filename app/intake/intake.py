@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import logging
-from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -32,10 +31,10 @@ from app.paths import LivecraftPaths
 from app.run.exit_code import RunOutcome
 from app.secretsafe.vault import Vault
 from app.sheets.client import SheetsReader, SheetsReadError
-from app.sheets.plan import SheetPlan
-from app.sheets.rows import PlanRow, RowSkipReason
+from app.sheets.plan import PlanProblem, SheetPlan
+from app.sheets.rows import PlannedRows
 from app.slots.texts import SlotTexts
-from app.sources.video import SourceCatalog, SourceTally, SourceVideo
+from app.sources.video import PreparedSources, SourceCatalog
 from app.ui import messages_ru as msg
 
 LOGGER = get_logger(LogArea.INTAKE)
@@ -72,86 +71,32 @@ class IntakeRequest:
 
 
 @dataclass(frozen=True)
-class RowTally:
-    """Итог разбора рядов таблицы: сколько прочитано, допущено и отсеяно по причинам (порядок — порядок проверок)."""
-
-    rows: tuple[PlanRow, ...]
-
-    @property
-    def admitted(self) -> int:
-        return sum(1 for row in self.rows if row.is_admitted)
-
-    @property
-    def skipped(self) -> Counter[RowSkipReason]:
-        counts: Counter[RowSkipReason] = Counter(row.skip for row in self.rows if row.skip is not None)
-        return Counter({reason: counts[reason] for reason in RowSkipReason if counts[reason]})
-
-    @property
-    def console_line(self) -> str:
-        skipped: Counter[RowSkipReason] = self.skipped
-        reasons: str = ""
-        if skipped:
-            items: str = msg.ITEM_JOINER.join(
-                msg.INTAKE_COUNT_ITEM.format(name=reason.human, count=count) for reason, count in skipped.items()
-            )
-            reasons = msg.INTAKE_TABLE_REASONS.format(items=items)
-        return msg.INTAKE_TABLE_LINE.format(
-            rows=len(self.rows), admitted=self.admitted, skipped=sum(skipped.values()), reasons=reasons
-        )
-
-
-@dataclass(frozen=True)
 class IntakeResult:
-    """Итог прогона: ряды, источники, слоты, пакет и причина остановки — и правила исхода и строк."""
+    """Итог прогона: объект каждой пройденной стадии и шаг, на котором прогон остановился.
 
-    rows: tuple[PlanRow, ...]
-    videos: tuple[SourceVideo, ...]
-    build: SlotBuild | None
-    package: PackageResult | None
-    sheets_error: SheetsReadError | None
-    plan_problem: str | None
-    stopped_at: IntakeStage | None
+    Не пройденная стадия — None. Итог только опрашивает стадии: исход, строки консоли и лога — из их ответов.
+    """
 
-    @classmethod
-    def table_failed(cls, error: SheetsReadError) -> IntakeResult:
-        return cls(
-            rows=(), videos=(), build=None, package=None, sheets_error=error, plan_problem=None,
-            stopped_at=IntakeStage.TABLE,
-        )
+    sheets_error: SheetsReadError | None = None
+    plan: SheetPlan | None = None
+    rows: PlannedRows | None = None
+    sources: PreparedSources | None = None
+    build: SlotBuild | None = None
+    package: PackageResult | None = None
+    stopped_at: IntakeStage | None = None
 
-    @classmethod
-    def plan_failed(cls, problem: str) -> IntakeResult:
-        return cls(
-            rows=(), videos=(), build=None, package=None, sheets_error=None, plan_problem=problem,
-            stopped_at=IntakeStage.TABLE,
-        )
-
-    @classmethod
-    def stopped(
-        cls,
-        rows: tuple[PlanRow, ...],
-        stage: IntakeStage,
-        videos: tuple[SourceVideo, ...] = (),
-        build: SlotBuild | None = None,
-    ) -> IntakeResult:
-        """Прогон остановился после разбора рядов: дальше идти не с чем, пакета нет."""
-        return cls(
-            rows=rows, videos=videos, build=build, package=None, sheets_error=None, plan_problem=None,
-            stopped_at=stage,
-        )
+    @property
+    def plan_problem(self) -> PlanProblem | None:
+        return self.plan.problem if self.plan is not None else None
 
     @property
     def has_future_rows(self) -> bool:
-        return RowTally(self.rows).admitted > 0
+        return self.rows is not None and bool(self.rows.admitted)
 
     @property
     def has_errors(self) -> bool:
-        """Отказ источника, слот с проблемой или незаписанный пакет — ошибка запуска (§10)."""
-        if SourceTally(self.videos).failures:
-            return True
-        if self.build is not None and self.build.refused:
-            return True
-        return self.package is not None and not self.package.is_written
+        """Негодный источник, слот с проблемой или незаписанный пакет — ошибка запуска (§10)."""
+        return any(stage.has_errors for stage in self._later_stages)
 
     @property
     def outcome(self) -> RunOutcome:
@@ -172,63 +117,45 @@ class IntakeResult:
 
     @property
     def console_lines(self) -> tuple[str, ...]:
-        """По строке на пройденный шаг; на остановке — строка о том, почему дальше не пошли."""
-        if self.sheets_error is not None:
-            return (self.sheets_error.human,)
-        if self.plan_problem is not None:
-            return (self.plan_problem,)
-        lines: list[str] = [RowTally(self.rows).console_line]
+        """По строке на пройденную стадию; на остановке — строка о том, почему дальше не пошли."""
+        if self.rows is None:
+            return (self._table_problem,)
+        lines: list[str] = [self.rows.console_line]
         if not self.has_future_rows:
             return (*lines, msg.INTAKE_NO_FUTURE_ROWS)
-        lines.append(self._sources_line)
-        if self.build is not None:
-            lines.append(self._slots_line(self.build))
-        if self.package is not None:
-            lines.append(self.package.console_line)
-        elif self.stopped_at in (IntakeStage.SOURCES, IntakeStage.SLOTS):
+        lines.extend(stage.console_line for stage in self._later_stages)
+        if self.package is None:
             lines.append(msg.INTAKE_NO_SLOTS)
         return tuple(lines)
 
     @property
+    def _later_stages(self) -> tuple[PreparedSources | SlotBuild | PackageResult, ...]:
+        """Пройденные стадии после рядов по порядку: источники, слоты, пакет."""
+        return tuple(stage for stage in (self.sources, self.build, self.package) if stage is not None)
+
+    @property
+    def _table_problem(self) -> str:
+        """Почему таблица не дала рядов: сбой чтения либо проблема плана."""
+        if self.sheets_error is not None:
+            return self.sheets_error.human
+        return self.plan.problem_text if self.plan is not None else ""
+
+    @property
     def log_fields(self) -> Mapping[str, object]:
-        """Счётчики, причина остановки и исход; без значений сейфа, ссылки формы и текстов видео."""
+        """Счётчики стадий, причина остановки и исход; без значений сейфа, ссылки формы и текстов видео."""
         return dict(
             stopped_at=self.stopped_at,
             sheets_error=None if self.sheets_error is None else self.sheets_error.reason,
-            plan_problem=self.plan_problem is not None,
-            rows=len(self.rows),
-            admitted=RowTally(self.rows).admitted,
-            sources=len(self.videos),
-            ready=SourceTally(self.videos).ready,
+            plan_problem=self.plan_problem,
+            rows=None if self.rows is None else self.rows.total,
+            admitted=None if self.rows is None else len(self.rows.admitted),
+            sources=None if self.sources is None else len(self.sources.videos),
+            ready=None if self.sources is None else self.sources.ready,
             slots=None if self.build is None else len(self.build.slots),
             refused=None if self.build is None else len(self.build.refused),
-            package=None if self.package is None else self.package.log_line,
+            package=None if self.package is None else self.package.is_written,
             outcome=self.outcome,
         )
-
-    @property
-    def _sources_line(self) -> str:
-        tally: SourceTally = SourceTally(self.videos)
-        failures: str = ""
-        if tally.failures:
-            items: str = msg.ITEM_JOINER.join(
-                msg.INTAKE_COUNT_ITEM.format(name=reason.human, count=count)
-                for reason, count in tally.failures.items()
-            )
-            failures = msg.INTAKE_SOURCES_FAILURES.format(items=items)
-        return msg.INTAKE_SOURCES_LINE.format(
-            ready=tally.ready, total=len(self.videos), no_preview=tally.no_preview, failures=failures
-        )
-
-    def _slots_line(self, build: SlotBuild) -> str:
-        languages: str = ""
-        if build.languages:
-            items: str = msg.LIST_JOINER.join(
-                msg.INTAKE_COUNT_ITEM.format(name=code, count=count) for code, count in build.languages.items()
-            )
-            languages = msg.INTAKE_SLOTS_LANGUAGES.format(items=items)
-        refused: str = msg.INTAKE_SLOTS_REFUSED.format(count=len(build.refused)) if build.refused else ""
-        return msg.INTAKE_SLOTS_LINE.format(count=len(build.slots), languages=languages, refused=refused)
 
 
 @dataclass(frozen=True)
@@ -259,25 +186,27 @@ class PlanIntake:
         try:
             plan: SheetPlan = self.reader_factory().read_plan(self.request.vault)
         except SheetsReadError as error:
-            return self._finish(IntakeResult.table_failed(error))
+            return self._finish(IntakeResult(sheets_error=error, stopped_at=IntakeStage.TABLE))
         if plan.problem is not None:
-            return self._finish(IntakeResult.plan_failed(plan.problem))
-        rows: tuple[PlanRow, ...] = plan.plan_rows(self.request.settings.zone, self.request.now)
-        if not RowTally(rows).admitted:
-            return self._finish(IntakeResult.stopped(rows, IntakeStage.TABLE))
-        videos: tuple[SourceVideo, ...] = self.catalog.prepare(rows)
-        if not SourceTally(videos).ready:
-            return self._finish(IntakeResult.stopped(rows, IntakeStage.SOURCES, videos))
-        build: SlotBuild = SlotBuild.of([group.slot(self._texts(group)) for group in self.builder.groups(videos)])
+            return self._finish(IntakeResult(plan=plan, stopped_at=IntakeStage.TABLE))
+        rows: PlannedRows = plan.plan_rows(self.request.settings.zone, self.request.now)
+        if not rows.admitted:
+            return self._finish(IntakeResult(plan=plan, rows=rows, stopped_at=IntakeStage.TABLE))
+        return self._finish(self._after_rows(plan, rows))
+
+    def _after_rows(self, plan: SheetPlan, rows: PlannedRows) -> IntakeResult:
+        """Источники → слоты → пакет по рядам с будущими эфирами; остановка там, где дальше идти не с чем."""
+        sources: PreparedSources = self.catalog.prepare(rows)
+        if not sources.has_ready:
+            return IntakeResult(plan=plan, rows=rows, sources=sources, stopped_at=IntakeStage.SOURCES)
+        groups: tuple[SlotGroup, ...] = self.builder.groups(sources.videos)
+        build: SlotBuild = SlotBuild.of([group.slot(self._texts(group)) for group in groups])
         if not build.slots:
-            return self._finish(IntakeResult.stopped(rows, IntakeStage.SLOTS, videos, build))
+            return IntakeResult(plan=plan, rows=rows, sources=sources, build=build, stopped_at=IntakeStage.SLOTS)
         package: PackageResult = self._package(build).write(self.request.paths.bcast_dir)
         stopped_at: IntakeStage | None = None if package.is_written else IntakeStage.PACKAGE
-        return self._finish(
-            IntakeResult(
-                rows=rows, videos=videos, build=build, package=package, sheets_error=None, plan_problem=None,
-                stopped_at=stopped_at,
-            )
+        return IntakeResult(
+            plan=plan, rows=rows, sources=sources, build=build, package=package, stopped_at=stopped_at
         )
 
     def _texts(self, group: SlotGroup) -> SlotTexts:

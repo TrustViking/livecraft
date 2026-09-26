@@ -3,29 +3,28 @@
 Вход — список списков строк, как его отдаёт `values.get`: первая строка — шапка, ряды данных нумеруются
 с 2 (как в самой таблице). Сети здесь нет: чтение таблицы — задача `sheets\\client.py`.
 
-Три объекта:
-- `SheetColumns` — где в диапазоне колонки ссылки, даты и времени; сам распознаёт их по шапке;
-- `SheetRow` — один ряд (ячейки уже обрезаны); сам решает, допущен ли он (`plan` → `PlanRow`);
-- `SheetPlan` — шапка и ряды; сам называет свою проблему (`problem`) и отсеивает повторы (`plan_rows`).
+Объекты:
+- `SheetHeader` — шапка диапазона; сама находит колонку по названиям;
+- `SheetColumns` — где в диапазоне колонки ссылки, даты и времени; строит ряды `SheetRow` (app\\sheets\\rows.py);
+- `SheetPlan` — шапка и ряды; сам называет свою проблему (`problem`) и разбирает ряды (`plan_rows` → `PlannedRows`).
 
-Поведение перенесено из restreamer (`google\\sheets_client.py::read_rows`, `planning\\batch_planner.py::
-build_prepared_videos`), кроме обратной записи в таблицу — её в livecraft нет (§6 инвариант 3), и кроме
-запасного диапазона при ошибке разбора: диапазон — значение пользователя, своё программа не подставляет.
+Обратной записи в таблицу нет (§6 инвариант 3); запасного диапазона при ошибке разбора тоже: диапазон — значение
+пользователя, своё программа не подставляет.
 """
 from __future__ import annotations
 
-from collections import Counter
+import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import Final
 from zoneinfo import ZoneInfo
 
-from app.core.dates import require_aware
-from app.core.sheet_text import is_real_local_time, normalize_header_name, parse_sheet_datetime
-from app.core.youtube_video import YouTubeVideoId
-from app.observability.log_event import LogArea, get_logger
+from app.core.sheet_text import normalize_header_name
+from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.resources.loader import TextResource
-from app.sheets.rows import PlanRow, RowSkipReason
+from app.sheets.rows import PlannedRows, SheetRow
 from app.ui import messages_ru as msg
 
 LOGGER = get_logger(LogArea.SHEETS)
@@ -36,40 +35,19 @@ DATE_ALIASES_RESOURCE: Final[str] = "sheet_header_date.txt"
 TIME_ALIASES_RESOURCE: Final[str] = "sheet_header_time.txt"
 FIRST_DATA_ROW_NUMBER: Final[int] = 2        # строка 1 таблицы — шапка
 HEADER_ITEM_TEMPLATE: Final[str] = "«{name}»"
-SUMMARY_COUNT_TEMPLATE: Final[str] = " {reason}={count}"
 
 
-@dataclass(frozen=True)
-class SheetRow:
-    """Один ряд таблицы: номер строки в таблице и три ячейки плана, уже обрезанные по краям."""
+class PlanProblem(str, Enum):
+    """Почему по плану нельзя работать."""
 
-    row_number: int
-    link: str
-    date_raw: str
-    time_raw: str
+    EMPTY = "empty"                     # в диапазоне нет ни шапки, ни рядов
+    HEADER_UNKNOWN = "header_unknown"   # в шапке не нашлась колонка ссылки, даты или времени
 
-    def plan(self, zone: ZoneInfo, now: datetime) -> PlanRow:
-        """Допущен ли ряд. Проверки по порядку донора; первая сработавшая — причина отсева.
 
-        `now` — aware datetime (часы — параметром, в тестах фиксированы).
-        """
-        require_aware(now)
-        if not self.link:
-            return PlanRow.skipped(self, RowSkipReason.EMPTY_LINK)
-        if not self.date_raw or not self.time_raw:
-            return PlanRow.skipped(self, RowSkipReason.MISSING_DATE_TIME)
-        try:
-            start: datetime = parse_sheet_datetime(self.date_raw, self.time_raw, zone)
-        except ValueError:
-            return PlanRow.skipped(self, RowSkipReason.BAD_DATE_TIME)
-        if not is_real_local_time(start):
-            return PlanRow.skipped(self, RowSkipReason.NONEXISTENT_TIME)
-        if start < now:
-            return PlanRow.skipped(self, RowSkipReason.IN_PAST, start)
-        video: YouTubeVideoId | None = YouTubeVideoId.of(self.link)
-        if video is None:
-            return PlanRow.skipped(self, RowSkipReason.BAD_LINK, start)
-        return PlanRow.admitted(self, start, video.short_url)
+class PlanEvent(str, Enum):
+    """События плана в логе."""
+
+    PROBLEM = "sheet_plan_problem"
 
 
 @dataclass(frozen=True)
@@ -90,6 +68,33 @@ class HeaderAliases:
 
 
 @dataclass(frozen=True)
+class SheetHeader:
+    """Шапка диапазона: заголовки колонок как в таблице, без краёв."""
+
+    names: tuple[str, ...]
+
+    @property
+    def keys(self) -> tuple[str, ...]:
+        """Заголовки в виде для сравнения с названиями колонок (`normalize_header_name`)."""
+        return tuple(normalize_header_name(name) for name in self.names)
+
+    def index_of(self, aliases: tuple[str, ...]) -> int | None:
+        """Колонка по названиям: сначала точное совпадение, затем название внутри заголовка; не нашлась — None."""
+        wanted: tuple[str, ...] = tuple(normalize_header_name(alias) for alias in aliases)
+        keys: tuple[str, ...] = self.keys
+        exact: int | None = next((index for index, key in enumerate(keys) if key in wanted), None)
+        if exact is not None:
+            return exact
+        return next((index for index, key in enumerate(keys) if any(alias in key for alias in wanted if alias)), None)
+
+    @property
+    def text(self) -> str:
+        """Непустые заголовки для человека: «a», «b»; ни одного — «нет ни одного»."""
+        names: list[str] = [HEADER_ITEM_TEMPLATE.format(name=name) for name in self.names if name]
+        return msg.LIST_JOINER.join(names) if names else msg.SHEET_PLAN_HEADER_NONE
+
+
+@dataclass(frozen=True)
 class SheetColumns:
     """Индексы (с 0) колонок ссылки, даты и времени в значениях диапазона."""
 
@@ -98,29 +103,17 @@ class SheetColumns:
     time: int
 
     @classmethod
-    def from_header(cls, header: list[str]) -> SheetColumns | None:
+    def from_header(cls, header: SheetHeader) -> SheetColumns | None:
         """Колонки по шапке; не нашлась хотя бы одна — None."""
-        names: list[str] = [normalize_header_name(str(cell)) for cell in header]
         aliases: HeaderAliases = HeaderAliases.load()
-        link: int | None = cls._find(names, aliases.link)
-        date: int | None = cls._find(names, aliases.date)
-        time: int | None = cls._find(names, aliases.time)
+        link: int | None = header.index_of(aliases.link)
+        date: int | None = header.index_of(aliases.date)
+        time: int | None = header.index_of(aliases.time)
         if link is None or date is None or time is None:
             return None
         return cls(link=link, date=date, time=time)
 
-    @staticmethod
-    def _find(names: list[str], aliases: tuple[str, ...]) -> int | None:
-        wanted: tuple[str, ...] = tuple(normalize_header_name(alias) for alias in aliases)
-        for index, name in enumerate(names):
-            if name in wanted:
-                return index
-        for index, name in enumerate(names):
-            if any(alias in name for alias in wanted if alias):
-                return index
-        return None
-
-    def row(self, row_number: int, values: list[str]) -> SheetRow:
+    def row(self, row_number: int, values: Sequence[str]) -> SheetRow:
         """Ряд из значений строки таблицы; ячейки, которых нет (короткий ряд), — пустые."""
         return SheetRow(
             row_number=row_number,
@@ -130,15 +123,12 @@ class SheetColumns:
         )
 
     @property
-    def log_line(self) -> str:
-        """Колонки для лога key=value, номера — с 0, как в значениях диапазона."""
-        return f"link_column={self.link} date_column={self.date} time_column={self.time}"
+    def log_fields(self) -> Mapping[str, object]:
+        """Колонки для строки лога, номера — с 0, как в значениях диапазона."""
+        return dict(link_column=self.link, date_column=self.date, time_column=self.time)
 
-    @staticmethod
-    def _cell(values: list[str], index: int) -> str:
-        if index >= len(values):
-            return ""
-        return str(values[index]).strip()
+    def _cell(self, values: Sequence[str], index: int) -> str:
+        return str(values[index]).strip() if index < len(values) else ""
 
 
 @dataclass(frozen=True)
@@ -152,15 +142,15 @@ class SheetPlan:
 
     columns: SheetColumns | None
     rows: tuple[SheetRow, ...]
-    header: tuple[str, ...]
+    header: SheetHeader
     range_row_count: int
 
     @classmethod
     def from_values(cls, values: list[list[str]]) -> SheetPlan:
         if not values:
-            return cls(columns=None, rows=(), header=(), range_row_count=0)
-        header: tuple[str, ...] = tuple(str(cell).strip() for cell in values[0])
-        columns: SheetColumns | None = SheetColumns.from_header(list(header))
+            return cls(columns=None, rows=(), header=SheetHeader(()), range_row_count=0)
+        header: SheetHeader = SheetHeader(tuple(str(cell).strip() for cell in values[0]))
+        columns: SheetColumns | None = SheetColumns.from_header(header)
         rows: tuple[SheetRow, ...] = ()
         if columns is not None:
             rows = tuple(
@@ -170,56 +160,31 @@ class SheetPlan:
         return cls(columns=columns, rows=rows, header=header, range_row_count=len(values))
 
     @property
-    def problem(self) -> str | None:
-        """Почему по этому плану нельзя работать — русской строкой; годному плану — None."""
+    def problem(self) -> PlanProblem | None:
+        """Почему по этому плану нельзя работать; годному плану — None."""
         if self.range_row_count == 0:
-            return msg.SHEET_PLAN_EMPTY
+            return PlanProblem.EMPTY
         if self.columns is None:
-            return msg.SHEET_PLAN_HEADER_UNKNOWN.format(headers=self._header_text)
+            return PlanProblem.HEADER_UNKNOWN
         return None
 
     @property
-    def _header_text(self) -> str:
-        names: list[str] = [HEADER_ITEM_TEMPLATE.format(name=name) for name in self.header if name]
-        return msg.LIST_JOINER.join(names) if names else msg.SHEET_PLAN_HEADER_NONE
+    def problem_text(self) -> str:
+        """Проблема плана для человека: у нераспознанной шапки — с перечнем её заголовков; у годного плана — пусто."""
+        if self.problem is PlanProblem.EMPTY:
+            return msg.SHEET_PLAN_EMPTY
+        if self.problem is PlanProblem.HEADER_UNKNOWN:
+            return msg.SHEET_PLAN_HEADER_UNKNOWN.format(headers=self.header.text)
+        return ""
 
-    def plan_rows(self, zone: ZoneInfo, now: datetime) -> tuple[PlanRow, ...]:
-        """Разбор каждого ряда и отсев повторов «та же ссылка — тот же момент»; порядок — порядок таблицы.
-
-        Из повторов остаётся ранний ряд, поздний получает `DUPLICATE` и номер оставленного.
-        Отсеянный ряд — строкой в лог, итог — счётчиками по причинам.
-        """
-        if self.problem is not None:
-            LOGGER.warning("sheet_plan_problem range_rows=%d header=%r", self.range_row_count, self.header)
-            return ()
-        kept: dict[tuple[str, datetime], int] = {}
-        planned: list[PlanRow] = []
-        for row in self.rows:
-            outcome: PlanRow = row.plan(zone, now)
-            identity: tuple[str, datetime] | None = outcome.identity
-            if identity is not None and identity in kept:
-                outcome = outcome.as_duplicate_of(kept[identity])
-            elif identity is not None:
-                kept[identity] = outcome.row_number
-            planned.append(outcome)
-        result: tuple[PlanRow, ...] = tuple(planned)
-        self._log(result)
-        return result
-
-    def _log(self, planned: tuple[PlanRow, ...]) -> None:
-        for outcome in planned:
-            if not outcome.is_admitted:
-                LOGGER.info("sheet_row_skipped %s", outcome.log_line)
-        LOGGER.info("sheet_plan_ready %s", self._summary(planned))
-
-    def _summary(self, planned: tuple[PlanRow, ...]) -> str:
-        counts: Counter[RowSkipReason] = Counter(
-            outcome.skip for outcome in planned if outcome.skip is not None
-        )
-        admitted: int = sum(1 for outcome in planned if outcome.is_admitted)
-        columns: str = self.columns.log_line if self.columns is not None else "-"
-        line: str = f"rows={len(planned)} admitted={admitted} {columns}"
-        for reason in RowSkipReason:
-            if counts[reason]:
-                line += SUMMARY_COUNT_TEMPLATE.format(reason=reason.value, count=counts[reason])
-        return line
+    def plan_rows(self, zone: ZoneInfo, now: datetime) -> PlannedRows:
+        """Разбор рядов с отсевом повторов; отсеянные ряды и итог — строками лога."""
+        planned: PlannedRows = PlannedRows.of(self.rows, zone, now)
+        if self.columns is None:
+            problem: LogEvent = LogEvent.of(PlanEvent.PROBLEM, problem=self.problem, range_rows=self.range_row_count)
+            problem.extended(header=self.header.names).emit(LOGGER, logging.WARNING)
+            return planned
+        for row in planned.skipped:
+            row.event.emit(LOGGER)
+        planned.ready_event.extended(**self.columns.log_fields).emit(LOGGER)
+        return planned

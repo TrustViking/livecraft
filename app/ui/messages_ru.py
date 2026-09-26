@@ -508,7 +508,7 @@ SHEETS_PROBE_LOGIN: Final[str] = SHEETS_LOGIN_BROWSER
 SHEETS_PROBE_COLUMNS: Final[str] = "Колонки: ссылка — {link}, дата — {date}, время — {time}."
 SHEETS_PROBE_COLUMN: Final[str] = "«{name}» ({number}-я в диапазоне)"
 SHEETS_PROBE_ROWS: Final[str] = "Рядов прочитано: {rows}, допущено: {admitted}, отсеяно: {skipped}."
-SHEETS_PROBE_SKIP_LINE: Final[str] = "  {reason}: {count}"
+SHEETS_PROBE_SKIP_LINE: Final[str] = "  {name}: {count}"
 SHEETS_PROBE_RELOGIN_HELP: Final[str] = "войти в Google заново в браузере и выбрать другой аккаунт"
 SHEETS_PROBE_RELOGIN_HINT: Final[str] = (
     "Вошли не тем аккаунтом? Запустите с --relogin и выберите аккаунт, у которого есть доступ к таблице."
@@ -526,7 +526,6 @@ SOURCE_FAILURE_REASONS: Final[dict[str, str]] = {
     "failed": "yt-dlp не смог получить данные видео — подробности в логе",
     "no_language": "язык видео не определился ни по данным YouTube, ни по названию и описанию",
 }
-SOURCE_NO_TITLE: Final[str] = "У видео нет названия — без него эфиру нечего дать в название."
 PREVIEW_PROBLEMS: Final[dict[str, str]] = {
     "no_url": "источник не дал адреса обложки",
     "not_found": "обложки по адресу нет",
@@ -537,9 +536,10 @@ PREVIEW_PROBLEMS: Final[dict[str, str]] = {
 }
 
 # --- слоты (app\slots\): тексты эфира под правила YouTube
-SLOT_EMPTY_TITLE: Final[str] = (
-    "Название эфира пустое после подгонки под правила YouTube — слот дальше не идёт."
-)
+# Ключи словаря — значения SlotProblem.
+SLOT_PROBLEMS: Final[dict[str, str]] = {
+    "empty_title": "Название эфира пустое после подгонки под правила YouTube — слот дальше не идёт.",
+}
 
 # --- пакет plan_*.bcast (app\packages\, §14 решение 13): куда записан или что сделать, чтобы записался.
 # Ключи словаря — значения PackageProblem.

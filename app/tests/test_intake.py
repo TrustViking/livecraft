@@ -28,11 +28,12 @@ from app.paths import LivecraftPaths
 from app.run.exit_code import RunOutcome
 from app.secretsafe.vault import Vault
 from app.sheets.client import SheetsReadError, SheetsReadReason
-from app.sheets.plan import SheetPlan
+from app.sheets.plan import PlanProblem, SheetPlan
 from app.sheets.rows import RowSkipReason
-from app.sources.fetcher import SourceFailureReason, SourceFetch
+from app.slots.texts import SlotProblem
+from app.sources.fetcher import SourceFetch
 from app.sources.language import LanguageResolver
-from app.sources.metadata import SourceMetadata
+from app.sources.metadata import SourceFailureReason, SourceMetadata
 from app.sources.preview import PreviewDownloader
 from app.sources.video import SourceCatalog
 from app.tests.conftest import FORM_URL, SHIPPED_SETTINGS
@@ -61,8 +62,9 @@ def _info() -> dict[str, Any]:
     return info
 
 
-def _ok_fetch(link: str) -> SourceFetch:
-    return SourceFetch.from_metadata(link, SourceMetadata.from_ytdlp(link, _info()))
+def _ok_fetch(link: str, title: str | None = None) -> SourceFetch:
+    info: dict[str, Any] = _info() if title is None else _info() | {"title": title}
+    return SourceFetch.from_metadata(link, SourceMetadata.from_ytdlp(link, info))
 
 
 def _png() -> bytes:
@@ -80,15 +82,18 @@ class _Response:
 class _Fetcher:
     """Получатель без yt-dlp: по ссылке — сохранённый ответ или отказ."""
 
-    def __init__(self, failures: dict[str, SourceFailureReason] | None = None) -> None:
+    def __init__(
+        self, failures: dict[str, SourceFailureReason] | None = None, titles: dict[str, str] | None = None
+    ) -> None:
         self.failures: dict[str, SourceFailureReason] = failures or {}
+        self.titles: dict[str, str] = titles or {}
         self.calls: list[str] = []
 
     def fetch(self, url: str) -> SourceFetch:
         self.calls.append(url)
         if url in self.failures:
             return SourceFetch.failed(url, self.failures[url], "stub")
-        return _ok_fetch(url)
+        return _ok_fetch(url, self.titles.get(url))
 
 
 @dataclass
@@ -261,8 +266,39 @@ def test_a_table_that_does_not_read_is_a_result_not_an_exception(
 def test_an_unknown_header_is_code_1(livecraft_paths: LivecraftPaths) -> None:
     result: IntakeResult = _intake(livecraft_paths, _Reader(values=[["Что-то", "Ещё"], FUTURE_ROW])).run()
     assert result.outcome is RunOutcome.FAILED
-    assert result.plan_problem is not None and result.console_lines == (result.plan_problem,)
-    assert _packages(livecraft_paths) == []
+    assert result.plan_problem is PlanProblem.HEADER_UNKNOWN and result.stopped_at is IntakeStage.TABLE
+    assert result.plan is not None and result.console_lines == (result.plan.problem_text,)
+    assert "«Что-то», «Ещё»" in result.console_lines[0]
+    assert result.rows is None and _packages(livecraft_paths) == []
+
+
+def test_an_empty_range_is_code_1_and_names_the_empty_table(livecraft_paths: LivecraftPaths) -> None:
+    result: IntakeResult = _intake(livecraft_paths, _Reader(values=[])).run()
+    assert result.outcome is RunOutcome.FAILED
+    assert result.plan_problem is PlanProblem.EMPTY and result.console_lines == (msg.SHEET_PLAN_EMPTY,)
+
+
+def test_a_slot_with_an_empty_title_is_refused_and_does_not_get_into_the_package(
+    livecraft_paths: LivecraftPaths,
+) -> None:
+    """Название без границы слова не влезает в 100 символов: слот уходит в отказ, пакет — без него, код 1."""
+    fetcher: _Fetcher = _Fetcher(titles={OTHER_LINK: "x" * 150})
+    result: IntakeResult = _intake(livecraft_paths, _Reader(values=[HEADER, FUTURE_ROW, OTHER_ROW]), fetcher).run()
+    assert result.outcome is RunOutcome.FAILED
+    assert result.build is not None
+    (refused,) = result.build.refused
+    assert (refused.slot_id, refused.problem) == ("17-10-2026_2000_uk", SlotProblem.EMPTY_TITLE)
+    assert [slot.slot_id for slot in result.build.slots] == ["16-10-2026_1900_uk"]
+    assert result.package is not None and result.package.is_written and result.package.slots == 1
+    [package] = _packages(livecraft_paths)
+    with zipfile.ZipFile(package) as archive:
+        manifest: dict[str, Any] = json.loads(archive.read("manifest.json").decode("utf-8"))
+    assert [slot["slot_id"] for slot in manifest["slots"]] == ["16-10-2026_1900_uk"]
+    assert result.console_lines[2] == msg.INTAKE_SLOTS_LINE.format(
+        count=1,
+        languages=msg.INTAKE_SLOTS_LANGUAGES.format(items="uk: 1"),
+        refused=msg.INTAKE_SLOTS_REFUSED.format(count=1),
+    )
 
 
 def test_without_the_form_the_package_is_not_written_and_the_code_is_1(livecraft_paths: LivecraftPaths) -> None:
@@ -305,9 +341,10 @@ def test_the_finished_line_names_the_outcome_instead_of_a_code(livecraft_paths: 
     with LogCapture.on(LogArea.INTAKE) as intake_log:
         _intake(livecraft_paths, _Reader(values=[HEADER, PAST_ROW])).run()
     [finished] = [line for line in intake_log.messages(logging.INFO) if line.startswith("intake_finished ")]
-    assert finished.startswith(f"intake_finished package_id={PACKAGE_ID} stopped_at=table ")
-    assert finished.endswith(" outcome=nothing_planned")
-    assert "exit_code" not in finished
+    assert finished == (
+        f"intake_finished package_id={PACKAGE_ID} stopped_at=table sheets_error=- plan_problem=- rows=1 admitted=0 "
+        "sources=- ready=- slots=- refused=- package=- outcome=nothing_planned"
+    )
 
 
 def test_a_failed_table_is_logged_with_its_label_reason_and_status(livecraft_paths: LivecraftPaths) -> None:
@@ -324,7 +361,8 @@ def test_the_same_link_at_the_same_moment_twice_is_one_source_of_the_slot(livecr
     fetcher: _Fetcher = _Fetcher()
     result: IntakeResult = _intake(livecraft_paths, _Reader(values=[HEADER, FUTURE_ROW, FUTURE_ROW]), fetcher).run()
     assert result.outcome is RunOutcome.DONE
-    assert [row.skip for row in result.rows] == [None, RowSkipReason.DUPLICATE]
+    assert result.rows is not None and [row.row_number for row in result.rows.admitted] == [2]
+    assert [(row.reason, row.duplicate_of) for row in result.rows.skipped] == [(RowSkipReason.DUPLICATE, 2)]
     assert fetcher.calls == [LINK]
     assert result.build is not None
     (slot,) = result.build.slots

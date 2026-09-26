@@ -1,5 +1,5 @@
 """Общие фикстуры: папки livecraft в tmp_path, фиксированное «сейчас», корень репо, сейф на диске,
-готовый к запуску корень, живой и мёртвый посторонние процессы, готовый источник и лог слотов.
+готовый к запуску корень, живой и мёртвый посторонние процессы и лог слотов.
 """
 from __future__ import annotations
 
@@ -23,11 +23,6 @@ from app.observability.log_event import LogArea
 from app.paths import LivecraftPaths
 from app.secretsafe.crypto import FORMAT_VERSION, VAULT_KEY_BYTES, EncryptedField, VaultCrypto, VaultFile
 from app.secretsafe.value import SecretField
-from app.sheets.rows import PlanRow
-from app.sources.language import LanguageProfile
-from app.slots.preview import Preview
-from app.sources.metadata import SourceMetadata
-from app.sources.video import SourceVideo
 from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
 
@@ -80,34 +75,6 @@ def write_supplied_vault(paths: LivecraftPaths, values: dict[SecretField, str]) 
     }
     paths.vault_file.write_text(
         VaultFile(version=FORMAT_VERSION, salt=salt, fields=fields).render(), encoding=TEXT_ENCODING
-    )
-
-
-def ready_source(
-    row: PlanRow, title: str, description: str, language: str, preview: Preview | None = None
-) -> SourceVideo:
-    """Годный источник без сети: данные видео как от yt-dlp, язык — настоящим решением по языку видео."""
-    link: str = row.link or ""
-    metadata: SourceMetadata = SourceMetadata(
-        url=link,
-        video_id=link.rsplit("/", 1)[-1],
-        title=title,
-        description=description,
-        thumbnail_url="",
-        youtube_language=language,
-        channel_language=None,
-        duration_seconds=None,
-        audio_languages=(),
-        subtitle_languages=(),
-        auto_caption_languages=(),
-    )
-    return SourceVideo(
-        row=row,
-        metadata=metadata,
-        preview=preview,
-        failure=None,
-        preview_problem=None,
-        language=LanguageProfile(video_language=language, channel_language=None).decide(),
     )
 
 

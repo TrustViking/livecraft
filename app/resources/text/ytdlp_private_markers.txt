@@ -1,0 +1,4 @@
+# Подстроки stderr yt-dlp, по которым отказ называется «приватное видео или нужен вход»: по одной на строку.
+Private video
+Sign in to confirm
+Sign in if you

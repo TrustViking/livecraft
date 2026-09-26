@@ -2,8 +2,8 @@
 
 `SlotKey` — чем слот отличается от другого: момент старта в зоне программы и язык; отсюда `slot_id`
 `{DD-MM-YYYY}_{HHMM}_{язык}` — правило самого ключа — и порядок слотов (`sort_key`).
-`StreamSlot` несёт ровно поля схемы §4 плюс происхождение текстов и сам строит свою запись схемы — ту, что читает
-пакет plan_*.bcast (`SlotRecordKey` — ключи записи в порядке схемы).
+`StreamSlot` — ключ, окончательные тексты, обложки и источники; поля схемы §4 — его свойства. Слот сам строит свою
+запись схемы — ту, что читает пакет plan_*.bcast (`SlotRecordKey` — ключи записи в порядке схемы).
 """
 from __future__ import annotations
 
@@ -14,11 +14,8 @@ from enum import Enum
 from typing import ClassVar, Final
 
 from app.core.dates import ISO_TIMESPEC, SLOT_TIME_FORMAT, format_date, format_time
-from app.core.text_format import SPACE, TEXT_ENCODING
-from app.observability.log_event import LogField
 from app.slots.preview import Preview
-from app.slots.texts import SlotTextOrigin, SlotTexts
-from app.ui import messages_ru as msg
+from app.slots.texts import SlotProblem, SlotTextOrigin, SlotTexts
 
 SLOT_ID_TEMPLATE: Final[str] = "{date}_{time}_{language}"
 
@@ -73,43 +70,58 @@ class SlotKey:
 
 @dataclass(frozen=True)
 class StreamSlot:
-    """Один эфир плана: когда, на каком языке, с какими текстами, обложками и источниками (§4)."""
+    """Один эфир плана: ключ (когда и на каком языке), окончательные тексты, обложки и источники (§4).
 
-    slot_id: str                        # {DD-MM-YYYY}_{HHMM}_{lang}
-    date: str                           # DD-MM-YYYY — для людей и для формы
-    time: str                           # HH:MM — для людей, в форму не уходит
-    start: datetime                     # момент старта со смещением — для сравнения с YouTube
-    language: str
-    title: str                          # ≤100 символов после safe_trim
-    description: str                    # ≤5000 байт после safe_trim
+    Поля схемы §4 — свойства: они выводятся из ключа и текстов, а не хранятся второй раз.
+    """
+
+    key: SlotKey
+    texts: SlotTexts
     previews: tuple[Preview, ...]       # обложки источников в порядке рядов; может быть пусто
-    sources: tuple[str, ...]            # ссылки watch?v=<id> в порядке рядов; ссылка без id — как есть
-    text_origin: SlotTextOrigin
-
-    @classmethod
-    def of(
-        cls, key: SlotKey, texts: SlotTexts, previews: tuple[Preview, ...], sources: tuple[str, ...]
-    ) -> StreamSlot:
-        """Слот из ключа, окончательных текстов, обложек и ссылок источников — в том порядке, в каком их дали."""
-        return cls(
-            slot_id=key.slot_id,
-            date=key.date_text,
-            time=key.time_text,
-            start=key.start,
-            language=key.language,
-            title=texts.title,
-            description=texts.description,
-            previews=previews,
-            sources=sources,
-            text_origin=texts.origin,
-        )
+    sources: tuple[str, ...]            # ссылки watch?v=<id> в порядке рядов
 
     @property
-    def problem(self) -> str | None:
-        """Почему слот дальше не идёт; None — годен. Пустое описание — не проблема."""
-        if not self.title.strip():
-            return msg.SLOT_EMPTY_TITLE
-        return None
+    def slot_id(self) -> str:
+        """{DD-MM-YYYY}_{HHMM}_{lang}."""
+        return self.key.slot_id
+
+    @property
+    def date(self) -> str:
+        """DD-MM-YYYY — для людей и для формы."""
+        return self.key.date_text
+
+    @property
+    def time(self) -> str:
+        """HH:MM — для людей, в форму не уходит."""
+        return self.key.time_text
+
+    @property
+    def start(self) -> datetime:
+        """Момент старта со смещением — для сравнения с YouTube."""
+        return self.key.start
+
+    @property
+    def language(self) -> str:
+        return self.key.language
+
+    @property
+    def title(self) -> str:
+        """≤100 символов после safe_trim."""
+        return self.texts.title
+
+    @property
+    def description(self) -> str:
+        """≤5000 байт после safe_trim."""
+        return self.texts.description
+
+    @property
+    def text_origin(self) -> SlotTextOrigin:
+        return self.texts.origin
+
+    @property
+    def problem(self) -> SlotProblem | None:
+        """Почему слот дальше не идёт; None — годен. Правило — у текстов слота."""
+        return self.texts.problem
 
     def to_record(self, preview_names: tuple[str, ...]) -> dict[str, object]:
         """Запись слота схемы §4: `start` — ISO-8601 с секундами, `previews` — имена файлов обложек слота
@@ -138,12 +150,7 @@ class StreamSlot:
             sources=len(self.sources),
             previews=len(self.previews),
             texts=self.text_origin,
-            title_chars=len(self.title),
-            description_chars=len(self.description),
-            description_bytes=len(self.description.encode(TEXT_ENCODING)),
+            title_chars=self.texts.title_chars,
+            description_chars=self.texts.description_chars,
+            description_bytes=self.texts.description_bytes,
         )
-
-    @property
-    def log_line(self) -> str:
-        """Сводка key=value для строк лога других объектов о слоте."""
-        return SPACE.join(LogField(name, value).text for name, value in self.log_fields.items())

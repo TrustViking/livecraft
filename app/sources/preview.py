@@ -7,7 +7,7 @@
 и потолком YouTube 2 МБ, поэтому исходный формат «как есть» не сохраняется: не открылась картинка или не ужалась
 до 2 МБ (quality 90, затем 80 и 70) — это проблема обложки, а не обложка.
 
-Скачивание — донор `HttpClient.get_bytes` (`requests.get`, таймаут 20 с) плюс повторы `RetryLoop` (§11)
+Скачивание — `requests.get` с таймаутом 20 с плюс повторы `RetryLoop` (§11)
 на 429, 5xx, обрыве связи и таймауте; 404 и прочие 4xx — отказ сразу.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from http import HTTPStatus
-from typing import Any, Final
+from typing import Final
 
 import requests
 from PIL import Image, UnidentifiedImageError
@@ -35,7 +35,7 @@ LOGGER = get_logger(LogArea.SOURCES_PREVIEW)
 JPEG_FORMAT: Final[str] = "JPEG"
 RGB_MODE: Final[str] = "RGB"
 IMAGE_SIZE_TEMPLATE: Final[str] = "{width}x{height}"
-JPEG_QUALITIES: Final[tuple[int, ...]] = (90, 80, 70)   # первая — донора; дальше — чтобы уложиться в MAX_BYTES
+JPEG_QUALITIES: Final[tuple[int, ...]] = (90, 80, 70)   # первая — основная; дальше — чтобы уложиться в MAX_BYTES
 PREVIEW_TIMEOUT_SEC: Final[float] = 20.0
 OK_STATUSES: Final[range] = range(200, 300)
 RETRYABLE_ERRORS: Final[tuple[type[Exception], ...]] = (requests.ConnectionError, requests.Timeout)
@@ -136,7 +136,7 @@ class PreviewResult:
 class PreviewDownloader:
     """Скачивание обложек. `session_get` — `requests.get` или подделка; `policy`, `rng`, `sleep` — параметрами."""
 
-    session_get: Callable[..., Any] = requests.get
+    session_get: Callable[..., requests.Response] = requests.get
     timeout_sec: float = PREVIEW_TIMEOUT_SEC
     policy: RetryPolicy = field(default_factory=RetryPolicy)
     rng: random.Random = field(default_factory=random.Random)
@@ -173,7 +173,7 @@ class PreviewDownloader:
 
     def _attempt(self, url: str) -> bytes | AttemptFailure:
         try:
-            response: Any = self.session_get(url, timeout=self.timeout_sec)
+            response: requests.Response = self.session_get(url, timeout=self.timeout_sec)
         except requests.RequestException as error:
             is_retryable: bool = isinstance(error, RETRYABLE_ERRORS)
             problem: PreviewProblem = PreviewProblem.UNAVAILABLE if is_retryable else PreviewProblem.REJECTED

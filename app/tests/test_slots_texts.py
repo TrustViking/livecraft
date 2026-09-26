@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from app.slots.texts import SlotTextOrigin, SlotTexts, SourceText
+from app.slots.texts import SlotProblem, SlotTextOrigin, SlotTexts, SourceText
 from app.tests.fixtures.logs import LogCapture
 from app.ui import messages_ru as msg
 
@@ -48,7 +48,7 @@ def test_several_sources_take_the_first_title_and_the_filled_descriptions_in_the
 def test_a_source_without_video_data_gives_empty_texts() -> None:
     """Видео без данных — пустые название и описание: слот с таким названием получит проблему, а не падение."""
     result: SlotTexts = SlotTexts.from_sources((SourceText("", ""),))
-    assert result.problem == msg.SLOT_EMPTY_TITLE and result.description == ""
+    assert result.problem is SlotProblem.EMPTY_TITLE and result.description == ""
 
 
 # --- правила YouTube
@@ -134,7 +134,7 @@ def test_fitting_twice_changes_nothing() -> None:
 def test_title_without_a_boundary_is_dropped_and_is_a_problem() -> None:
     fitted: SlotTexts = texts("x" * 150).for_youtube()
     assert fitted.title == ""
-    assert fitted.problem == msg.SLOT_EMPTY_TITLE
+    assert fitted.problem is SlotProblem.EMPTY_TITLE
 
 
 def test_fitted_title_is_not_a_problem() -> None:
@@ -146,10 +146,16 @@ def test_empty_description_is_not_a_problem() -> None:
 
 
 def test_blank_title_is_a_problem() -> None:
-    assert texts("   ").problem == msg.SLOT_EMPTY_TITLE
+    assert texts("   ").problem is SlotProblem.EMPTY_TITLE
 
 
 def test_merged_texts_keep_their_origin_through_the_platform_rules() -> None:
     assert SlotTextOrigin.MERGED.value == "merged"
     merged: SlotTexts = SlotTexts(title="Название <эфира>", description="Опис", origin=SlotTextOrigin.MERGED)
     assert merged.for_youtube().origin is SlotTextOrigin.MERGED
+
+
+def test_every_slot_problem_has_a_russian_text() -> None:
+    for problem in SlotProblem:
+        assert problem.human == msg.SLOT_PROBLEMS[problem.value] and problem.human
+    assert set(msg.SLOT_PROBLEMS) == {problem.value for problem in SlotProblem}
