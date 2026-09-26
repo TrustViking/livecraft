@@ -4,104 +4,53 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterator
-from dataclasses import dataclass, field
 
 import pytest
 
-from app.llm.backend import LlmRequest, LlmResponse
+from app.llm.backend import LlmRequest
 from app.llm.errors import LlmErrorKind, LlmRequestError
+from app.llm.merges.answer import MergeAnswer
 from app.llm.merges.attempt import (
-    MERGE_RESPONSE_SCHEMA,
-    MERGE_SCHEMA_NAME,
     OVERFLOW_PARAGRAPHS_UNKNOWN,
     OVERLOADED_COUNT_UNKNOWN,
     MergeAttempt,
     MergeAttemptResult,
-    MergeRules,
     RejectedMerge,
 )
 from app.llm.merges.check import MergeAttemptLabel
 from app.llm.merges.contract import MergeContract
 from app.llm.merges.description import MergedDescription
+from app.llm.merges.merge_rules import MergeRules
 from app.llm.merges.prompt import MergePrompt
 from app.llm.merges.reject import MergeReject, MergeRejectCode
 from app.llm.merges.retry import RetryFacts, RetryMode, RetryProfile, RetrySignal
-from app.llm.usage import RunUsage
 from app.observability.log_event import LogArea
 from app.sources.video import SourceVideo
 from app.tests.conftest import LLM_SETTINGS
 from app.tests.fixtures.logs import LogCapture
-from app.tests.test_llm_merges_check import (
+from app.tests.fixtures.merges import (
+    ADJACENT_ANSWER,
+    CTA_FIRST_ANSWER,
     EXPANDED_SOURCES,
+    FAKE_BACKEND,
     HOOK,
-    LONG_ALPHA,
-    LONG_BETA,
+    MODEL,
+    OVERFLOW_ANSWER,
+    OVERLOADED_ANSWER,
+    STRONG_ANSWER,
     STRONG_BULLETS,
     STRONG_CLOSE,
     STRONG_HOOK,
-    bullets,
+    THIN_ANSWER,
+    TITLE,
+    UNDERFLOW_ANSWER,
+    QueueBackend,
+    answer,
+    error,
     sources_of,
 )
 
 RULES: MergeRules = MergeRules.load()
-FAKE_BACKEND: str = "fake"
-MODEL: str = "gpt-x"
-TITLE: str = "Brussels, Kharkiv, Geneva: the operational agenda tonight"
-STRONG_ANSWER: str = f"{STRONG_HOOK}\n\nIn this stream you'll see:\n{bullets(STRONG_BULLETS)}\n\n{STRONG_CLOSE}"
-THIN_ANSWER: str = f"{STRONG_HOOK}\n\n{bullets(STRONG_BULLETS[:3])}\n\n{STRONG_CLOSE}"
-OVERLOADED_ANSWER: str = f"{STRONG_HOOK}\n\n{bullets([LONG_ALPHA, LONG_BETA, *STRONG_BULLETS[:4]])}\n\n{STRONG_CLOSE}"
-CTA_FIRST_ANSWER: str = f"Subscribe to the channel for more updates.\n\n{STRONG_HOOK}\n\n{bullets(STRONG_BULLETS)}"
-ADJACENT_ANSWER: str = (
-    f"{STRONG_HOOK}\n\n{bullets([STRONG_BULLETS[0]])}\n{bullets([STRONG_BULLETS[0] + ' again'])}\n"
-    f"{bullets(STRONG_BULLETS[1:])}"
-)
-UNDERFLOW_ANSWER: str = "One single paragraph only."
-OVERFLOW_ANSWER: str = "\n\n".join(
-    f"Paragraph number {index} with its own distinct content about topic {index}." for index in range(8)
-)
-
-
-def answer(description: str, title: str = TITLE) -> str:
-    """Ответ модели по схеме merge."""
-    return json.dumps({"title": title, "description": description}, ensure_ascii=False)
-
-
-def error(kind: LlmErrorKind) -> LlmRequestError:
-    return LlmRequestError(kind, backend=FAKE_BACKEND, detail=kind.value)
-
-
-@dataclass
-class QueueBackend:
-    """Нейросеть за разъёмом: сохранённые ответы по очереди; отказ — `LlmRequestError` в очереди."""
-
-    replies: list[str | LlmRequestError] = field(default_factory=list)
-    structured: bool = False
-    requests: list[LlmRequest] = field(default_factory=list)
-    run_usage: RunUsage = field(default_factory=RunUsage)
-
-    @property
-    def name(self) -> str:
-        return FAKE_BACKEND
-
-    def complete(self, request: LlmRequest) -> LlmResponse:
-        self.requests.append(request)
-        reply: str | LlmRequestError = self.replies.pop(0)
-        if isinstance(reply, LlmRequestError):
-            raise reply
-        payload: object = json.loads(reply) if self.structured else None
-        self.run_usage.add(None)
-        return LlmResponse(
-            text=reply,
-            structured=payload if isinstance(payload, dict) else None,
-            model=request.model_name,
-        )
-
-    def probe(self, model_name: str) -> LlmResponse | LlmRequestError:
-        return error(LlmErrorKind.FAILED)
-
-    @property
-    def prompts(self) -> list[str]:
-        return [request.prompt for request in self.requests]
 
 
 @pytest.fixture
@@ -143,7 +92,7 @@ def test_the_request_carries_the_merge_schema_zero_temperature_and_settings() ->
     attempt: MergeAttempt = attempt_with(backend)
     attempt.run()
     request: LlmRequest = backend.requests[0]
-    assert request.schema is MERGE_RESPONSE_SCHEMA and request.schema["name"] == MERGE_SCHEMA_NAME == "merge_summary_v2"
+    assert request.schema is MergeAnswer.SCHEMA and request.schema["name"] == "merge_summary_v2"
     assert request.schema["schema"]["required"] == ["title", "description"]
     assert request.temperature == 0.0 and request.model_name == MODEL
     assert request.max_output_tokens == LLM_SETTINGS.max_output_tokens

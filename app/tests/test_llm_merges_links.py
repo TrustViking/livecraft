@@ -12,7 +12,7 @@ from app.observability.log_event import LogArea
 from app.resources.loader import TextResource
 from app.sources.video import SourceVideo
 from app.tests.fixtures.logs import LogCapture
-from app.tests.test_llm_merges_source import merge_video
+from app.tests.fixtures.merges import merge_video
 
 HINTS: OfficialLinkHints = OfficialLinkHints.load()
 # Отпечаток файла restreamer `app\resources\text\lexicon_official_link_hints.txt` (35324e5): ресурс перенесён побайтно.

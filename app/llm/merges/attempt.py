@@ -1,7 +1,7 @@
 """Одна попытка merge: запрос к модели → разбор → починка алфавита → нормализация → проверка (CLAUDE.md §14 решение 23).
 
 Перенесено из restreamer, поведение как есть: `merge_executor.py::MergeExecutor.execute` (строки 91–305). Шаги строго
-донорские: запрос со схемой ответа `merge_summary_v2` и температурой 0 → предварительная проверка переполнения абзацев и
+донорские: запрос со схемой ответа `MergeAnswer.SCHEMA` и температурой 0 → предварительная проверка переполнения абзацев и
 разбор ответа (`MergeAnswer.parse`, предел абзацев — из контракта промта этой попытки, решение Коворка к 3.13) → ссылки
 источников и ссылки ответа (`MergeCheckRequest.of`) → починка смешанного алфавита (строка `merge_script_mix_repaired`) →
 нормализация качества с числом источников → диагностика (две строки стиля) → проверка покрытия с восстановлением
@@ -19,45 +19,28 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Final
+from enum import Enum
+from typing import Final
 
 from app.llm.backend import LlmBackend, LlmRequest, LlmResponse
 from app.llm.errors import LlmErrorKind, LlmRequestError
+from app.config.settings import LlmSettings
 from app.llm.merges.answer import MergeAnswer
-from app.llm.merges.check import MergeAttemptLabel, MergeCheck, MergeCheckPassed, MergeCheckRequest, MergeCheckRules
+from app.llm.merges.check import MergeAttemptLabel, MergeCheck, MergeCheckPassed, MergeCheckRequest, MergeDiagnostics
 from app.llm.merges.contract import MergeContract
-from app.llm.merges.description import HomoglyphRepair, MergedDescription
+from app.llm.merges.description import MergedDescription
+from app.llm.merges.merge_rules import MergeRules
 from app.llm.merges.prompt import MergePrompt
 from app.llm.merges.prompt_texts import MergePromptTexts
 from app.llm.merges.quality import QualityNormalization, QualityRequest
 from app.llm.merges.reject import MergeReject, MergeRejectCode
 from app.llm.merges.retry import RetryFacts, RetryProfile
-from app.llm.merges.rules import MIN_BULLETS_EXTRA_OVER_SOURCES, MIN_BULLETS_FLOOR
+from app.llm.merges.script_mix import HomoglyphRepair
 from app.observability.log_event import LogArea, LogValue, get_logger
-from app.texts.composer import PublishHeadings
-
-if TYPE_CHECKING:
-    from app.config.loader import LlmSettings
-    from app.llm.merges.check import MergeDiagnostics
-    from app.texts.language_detector import TextLanguageDetector
-    from app.sources.video import SourceVideo
+from app.sources.video import SourceVideo
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
-# Схема ответа merge (донор: `MergeExecutor._STRUCTURED_SCHEMA`): ровно название до 99 знаков и описание.
-MERGE_SCHEMA_NAME: Final[str] = "merge_summary_v2"
-MERGE_RESPONSE_SCHEMA: Final[dict[str, Any]] = {
-    "name": MERGE_SCHEMA_NAME,
-    "schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["title", "description"],
-        "properties": {
-            "title": {"type": "string", "minLength": 1, "maxLength": 99},
-            "description": {"type": "string", "minLength": 1},
-        },
-    },
-}
 REQUEST_LABEL: Final[str] = "merge_{language}_primary_{attempt}"
 # Сбой запроса, который не квота и не настройка модели: код донора «неожиданная ошибка», повтор — обычный.
 UNEXPECTED_CODE: Final[str] = MergeRejectCode.UNEXPECTED.value
@@ -67,22 +50,14 @@ OVERFLOW_PARAGRAPHS_UNKNOWN: Final[int] = 8
 STAGE_PRIMARY: Final[str] = "primary"
 
 
+class AttemptEvent(str, Enum):
+    """События попытки в логе."""
+
+    SCRIPT_MIX_REPAIRED = "merge_script_mix_repaired"
+
+
 def _flag(value: bool) -> str:
     return LogValue.YES.value if value else LogValue.NO.value
-
-
-@dataclass(frozen=True)
-class MergeRules:
-    """Всё, чем пользуется merge, одним объектом на запуск: правила проверки (в них правила качества, призывы,
-    негодный тезис и подсказки официальных ссылок), тексты промта и заголовки блоков описания для санации."""
-
-    check: MergeCheckRules
-    texts: MergePromptTexts
-    headings: PublishHeadings
-
-    @classmethod
-    def load(cls, detector: TextLanguageDetector | None = None) -> MergeRules:
-        return cls(check=MergeCheckRules.load(detector), texts=MergePromptTexts.load(), headings=PublishHeadings.load())
 
 
 @dataclass(frozen=True)
@@ -125,7 +100,7 @@ class RejectedMerge:
         return RetryFacts(
             source_count=source_count,
             actual_bullets=self.bullet_count,
-            required_bullets=max(source_count + MIN_BULLETS_EXTRA_OVER_SOURCES, MIN_BULLETS_FLOOR),
+            required_bullets=MergeContract.min_bullets(source_count),
             min_bullets=contract.bullet_range_min,
             max_bullets=contract.bullet_range_max,
             overloaded_count=self.overloaded_count,
@@ -222,7 +197,7 @@ class MergeAttempt:
     def request(self) -> LlmRequest:
         """Запрос попытки: промт, модель метки, предел ответа и ожидание из настроек, схема merge, температура 0."""
         label: str = REQUEST_LABEL.format(language=self.label.language, attempt=self.label.attempt)
-        return LlmRequest.from_settings(self.settings, self.label.model, self.prompt.text, label, MERGE_RESPONSE_SCHEMA)
+        return LlmRequest.from_settings(self.settings, self.label.model, self.prompt.text, label, MergeAnswer.SCHEMA)
 
     def run(self) -> MergeAttemptResult:
         """Запрос и все шаги донора; сбой запроса — итог со сбоем, отказ на любом шаге — итог с отказом."""
@@ -231,7 +206,7 @@ class MergeAttempt:
         except LlmRequestError as error:
             return MergeAttemptResult(label=self.label, error=error)
         parsed: MergeAnswer | MergeReject = MergeAnswer.parse(
-            response, self.prompt.contract.max_body_paragraphs, self.rules.check.quality.cta
+            response, self.prompt.contract.max_body_paragraphs, self.rules.lexicons.cta
         )
         result: MergeAttemptResult = MergeAttemptResult(
             label=self.label, raw_chars=len(response.text), raw_received=bool(response.text.strip())
@@ -243,16 +218,17 @@ class MergeAttempt:
     def _checked(self, answer: MergeAnswer, result: MergeAttemptResult) -> MergeAttemptResult:
         """Починка алфавита, нормализация, диагностика и проверка разобранного ответа."""
         request: MergeCheckRequest = MergeCheckRequest.of(
-            self.label, answer.title, answer.description, self.sources, self.rules.check
+            self.label, answer.title, answer.description, self.sources, self.rules.lexicons
         )
-        repair: HomoglyphRepair = answer.description.with_homoglyphs_repaired(self.label.language)
+        repair: HomoglyphRepair = HomoglyphRepair.of(answer.description, self.label.language)
         if repair.tokens_repaired > 0:
-            LOGGER.info("merge_script_mix_repaired %s %s", self.label.prefix, repair.log_line)
-        normalization: QualityNormalization = repair.description.quality_normalized(
+            repair.extend(self.label.event(AttemptEvent.SCRIPT_MIX_REPAIRED)).emit(LOGGER)
+        normalization: QualityNormalization = QualityNormalization.of(
+            repair.description,
             QualityRequest(language=self.label.language, title=answer.title, source_count=len(self.sources)),
-            self.rules.check.quality,
+            self.rules.lexicons,
         )
-        check: MergeCheck = MergeCheck.of(request, normalization, self.rules.check)
+        check: MergeCheck = MergeCheck.of(request, normalization, self.rules.lexicons)
         self._log_diagnostics(check)
         verdict: MergeCheckPassed | MergeReject = check.run_with_recovery()
         if isinstance(verdict, MergeReject):

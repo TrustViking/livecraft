@@ -1,13 +1,10 @@
 """Отказ ответа модели на merge: код причины и подробность — значение, а не исключение (CLAUDE.md §14 решение 23).
 
-У донора причина закодирована текстом исключения и разбирается обратно по подстрокам
-(`merge_validation.py::_reason_code_from_error`, `_reason_codes_from_error`). Здесь код ставится в момент отказа;
-значения кодов — ровно те `reason_code`, которые донорский разбор даёт на путях разбора ответа и проверки покрытия
-(`merge_validation.py::_validate_coverage_preserving_merge_or_raise`), — это держит сверка с донором.
+Код ставится в момент отказа. Что код значит для программы, записано одной таблицей признаков `REJECT_TRAITS`:
+на каком шаге он выдаётся (разбор ответа, проверка описания или оба), относится ли он к проверке описания
+(такие причины идут отдельным списком `reason_codes`) и может ли помочь повтор с подсказкой модели.
 
-Отказ semantic gate несёт коды гейта (`MergeReject.validation_codes`) как есть: первый из них — `reason_code` донора.
-Нормализация донора (`_normalize_description_validation_reason_codes`) их не меняет: коды гейта — значения перечисления
-без краёв и повторов, и ни один из них не частный код покрытия источников, который донор сводит к общему.
+Отказ semantic gate несёт коды гейта (`MergeReject.validation_codes`) как есть: первый из них — главная причина.
 """
 from __future__ import annotations
 
@@ -19,23 +16,11 @@ from types import MappingProxyType
 from typing import Final
 
 from app.core.errors import DETAIL_MAX_CHARS
-from app.observability.log_event import LogValue
+from app.llm.merges import rules
+from app.observability.log_event import LogEvent
 from app.ui import messages_ru as msg
 
-# Повторяемые причины донора (`merge_constants.py::RECOVERABLE_REJECT_CODES`) целиком: часть их даёт разбор ответа,
-# остальные — проверка покрытия (`check.py`).
-RECOVERABLE_REJECT_CODES: Final[frozenset[str]] = frozenset(
-    {
-        "overloaded_bullet",
-        "compact_bullet_overflow",
-        "duplicate_paragraph",
-        "hook_echo_in_body",
-        "cta_as_first_paragraph",
-        "cta_in_hook",
-        "paragraph_underflow",
-        "paragraph_overflow",
-    }
-)
+PARAGRAPH_COUNT_DETAIL: Final[str] = "body_paragraphs={count} allowed={low}..{high}"
 
 
 class MergeRejectStage(str, Enum):
@@ -46,7 +31,7 @@ class MergeRejectStage(str, Enum):
 
 
 class MergeRejectCode(str, Enum):
-    """Почему ответ модели не принят. Значения — `reason_code` донора."""
+    """Почему ответ модели не принят. Значение — код причины в логе и ключ строк повтора."""
 
     NOT_JSON_OBJECT = "not_json_object"
     MISSING_KEYS = "missing_keys"
@@ -58,7 +43,7 @@ class MergeRejectCode(str, Enum):
     DESCRIPTION_EMPTY = "empty"                  # после снятия строк «title:» и подобных не осталось текста
     PARAGRAPH_UNDERFLOW = "paragraph_underflow"
     PARAGRAPH_OVERFLOW = "paragraph_overflow"
-    # Проверка покрытия (`check.py::MergeCheck`), порядок — донорский порядок проверок.
+    # Проверка покрытия (`check.py::MergeCheck`), в порядке проверок.
     PER_SOURCE_ENUMERATION = "per_source_enumeration"
     HOOK_ECHO_IN_BODY = "hook_echo_in_body"
     CTA_IN_HOOK = "cta_in_hook"
@@ -69,73 +54,74 @@ class MergeRejectCode(str, Enum):
     NUMBERED_TITLE_DUMP = "numbered_title_dump"
     # Semantic gate качества описания: настоящие причины — в `MergeReject.validation_codes`.
     SEMANTIC_GATE = "semantic_gate"
-    # Название или описание — список или объект JSON. Донорский разбор текста отказа не узнаёт эту причину
-    # и отдаёт общий код; код сохранён, подробность (`invalid_type:<ключ>`) — в `MergeReject.detail`.
+    # Название или описание — список или объект JSON; подробность (`invalid_type:<ключ>`) — в `MergeReject.detail`.
     UNEXPECTED = "unexpected_error"
+
+    @classmethod
+    def of(cls, value: str) -> MergeRejectCode | None:
+        """Код по значению; коды гейта и виды сбоя запроса — не коды отказа: None."""
+        return next((code for code in cls if code.value == value), None)
+
+    @property
+    def traits(self) -> RejectTraits:
+        return REJECT_TRAITS[self]
 
     @property
     def is_recoverable(self) -> bool:
-        """Повтор с подсказкой модели может помочь (донор: `RECOVERABLE_REJECT_CODES`)."""
-        return self.value in RECOVERABLE_REJECT_CODES
+        """Повтор с подсказкой модели может помочь."""
+        return self.traits.is_recoverable
 
     @property
     def is_description_validation(self) -> bool:
-        """Отказ проверки описания: у донора такие причины идут отдельным списком `reason_codes`."""
-        return self in _DESCRIPTION_VALIDATION_CODES
+        """Отказ проверки описания: такие причины идут отдельным списком `reason_codes`."""
+        return self.traits.is_description_validation
 
     @property
     def stages(self) -> frozenset[MergeRejectStage]:
-        """Шаги, которые выдают этот код (`CODE_STAGES`); призыв в начале и повтор абзацев выдают оба."""
-        return CODE_STAGES.get(self, frozenset())
+        """Шаги, которые выдают этот код; призыв в начале и повтор абзацев выдают оба."""
+        return self.traits.stages
 
     @property
     def human(self) -> str:
         return msg.MERGE_REJECT_TEXT[self.value]
 
 
+@dataclass(frozen=True)
+class RejectTraits:
+    """Что код отказа значит для программы: шаги, которые его выдают; причина ли это проверки описания;
+    может ли помочь повтор с подсказкой."""
+
+    stages: frozenset[MergeRejectStage]
+    is_description_validation: bool
+    is_recoverable: bool
+
+
 _ANSWER: Final[frozenset[MergeRejectStage]] = frozenset({MergeRejectStage.ANSWER})
 _CHECK: Final[frozenset[MergeRejectStage]] = frozenset({MergeRejectStage.CHECK})
 _BOTH: Final[frozenset[MergeRejectStage]] = frozenset({MergeRejectStage.ANSWER, MergeRejectStage.CHECK})
-# Единственное место, где записано, какой шаг какой код выдаёт; полноту каждого шага держит свой тест.
-CODE_STAGES: Final[Mapping[MergeRejectCode, frozenset[MergeRejectStage]]] = MappingProxyType(
+# Единственное место, где записаны признаки кодов; полноту каждого шага держит свой тест.
+REJECT_TRAITS: Final[Mapping[MergeRejectCode, RejectTraits]] = MappingProxyType(
     {
-        MergeRejectCode.NOT_JSON_OBJECT: _ANSWER,
-        MergeRejectCode.MISSING_KEYS: _ANSWER,
-        MergeRejectCode.EXTRA_KEYS: _ANSWER,
-        MergeRejectCode.INVALID_TITLE: _ANSWER,
-        MergeRejectCode.INVALID_DESCRIPTION: _ANSWER,
-        MergeRejectCode.CTA_AS_FIRST_PARAGRAPH: _BOTH,
-        MergeRejectCode.DUPLICATE_PARAGRAPH: _BOTH,
-        MergeRejectCode.DESCRIPTION_EMPTY: _ANSWER,
-        MergeRejectCode.PARAGRAPH_UNDERFLOW: _ANSWER,
-        MergeRejectCode.PARAGRAPH_OVERFLOW: _ANSWER,
-        MergeRejectCode.PER_SOURCE_ENUMERATION: _CHECK,
-        MergeRejectCode.HOOK_ECHO_IN_BODY: _CHECK,
-        MergeRejectCode.CTA_IN_HOOK: _CHECK,
-        MergeRejectCode.INSUFFICIENT_BULLET_COVERAGE: _CHECK,
-        MergeRejectCode.COMPACT_BULLET_OVERFLOW: _CHECK,
-        MergeRejectCode.EXCESSIVE_EMOJI_USAGE: _CHECK,
-        MergeRejectCode.OVERLOADED_BULLET: _CHECK,
-        MergeRejectCode.NUMBERED_TITLE_DUMP: _CHECK,
-        MergeRejectCode.SEMANTIC_GATE: _CHECK,
-        MergeRejectCode.UNEXPECTED: _ANSWER,
-    }
-)
-
-_DESCRIPTION_VALIDATION_CODES: Final[frozenset[MergeRejectCode]] = frozenset(
-    {
-        MergeRejectCode.CTA_AS_FIRST_PARAGRAPH,
-        MergeRejectCode.DUPLICATE_PARAGRAPH,
-        MergeRejectCode.DESCRIPTION_EMPTY,
-        MergeRejectCode.PER_SOURCE_ENUMERATION,
-        MergeRejectCode.HOOK_ECHO_IN_BODY,
-        MergeRejectCode.CTA_IN_HOOK,
-        MergeRejectCode.INSUFFICIENT_BULLET_COVERAGE,
-        MergeRejectCode.COMPACT_BULLET_OVERFLOW,
-        MergeRejectCode.EXCESSIVE_EMOJI_USAGE,
-        MergeRejectCode.OVERLOADED_BULLET,
-        MergeRejectCode.NUMBERED_TITLE_DUMP,
-        MergeRejectCode.SEMANTIC_GATE,
+        MergeRejectCode.NOT_JSON_OBJECT: RejectTraits(_ANSWER, False, False),
+        MergeRejectCode.MISSING_KEYS: RejectTraits(_ANSWER, False, False),
+        MergeRejectCode.EXTRA_KEYS: RejectTraits(_ANSWER, False, False),
+        MergeRejectCode.INVALID_TITLE: RejectTraits(_ANSWER, False, False),
+        MergeRejectCode.INVALID_DESCRIPTION: RejectTraits(_ANSWER, False, False),
+        MergeRejectCode.CTA_AS_FIRST_PARAGRAPH: RejectTraits(_BOTH, True, True),
+        MergeRejectCode.DUPLICATE_PARAGRAPH: RejectTraits(_BOTH, True, True),
+        MergeRejectCode.DESCRIPTION_EMPTY: RejectTraits(_ANSWER, True, False),
+        MergeRejectCode.PARAGRAPH_UNDERFLOW: RejectTraits(_ANSWER, False, True),
+        MergeRejectCode.PARAGRAPH_OVERFLOW: RejectTraits(_ANSWER, False, True),
+        MergeRejectCode.PER_SOURCE_ENUMERATION: RejectTraits(_CHECK, True, False),
+        MergeRejectCode.HOOK_ECHO_IN_BODY: RejectTraits(_CHECK, True, True),
+        MergeRejectCode.CTA_IN_HOOK: RejectTraits(_CHECK, True, True),
+        MergeRejectCode.INSUFFICIENT_BULLET_COVERAGE: RejectTraits(_CHECK, True, False),
+        MergeRejectCode.COMPACT_BULLET_OVERFLOW: RejectTraits(_CHECK, True, True),
+        MergeRejectCode.EXCESSIVE_EMOJI_USAGE: RejectTraits(_CHECK, True, False),
+        MergeRejectCode.OVERLOADED_BULLET: RejectTraits(_CHECK, True, True),
+        MergeRejectCode.NUMBERED_TITLE_DUMP: RejectTraits(_CHECK, True, False),
+        MergeRejectCode.SEMANTIC_GATE: RejectTraits(_CHECK, True, False),
+        MergeRejectCode.UNEXPECTED: RejectTraits(_ANSWER, False, False),
     }
 )
 
@@ -146,7 +132,7 @@ class MergeReject:
 
     `validation_codes` — причины, которые у отказа свои, а не из его кода: коды semantic gate.
     `paragraph_count` — сколько абзацев тела насчитал отказ по числу абзацев (недобор, перебор); у прочих None.
-    Повтор после перебора называет модели это число (у донора — разбором «got N» из текста исключения).
+    Повтор после перебора называет модели это число.
     """
 
     code: MergeRejectCode
@@ -160,39 +146,52 @@ class MergeReject:
         codes: tuple[str, ...] = tuple(gate_codes)
         return cls(MergeRejectCode.SEMANTIC_GATE, validation_codes=codes or (MergeRejectCode.SEMANTIC_GATE.value,))
 
+    @classmethod
+    def of_paragraph_count(cls, count: int, max_body_paragraphs: int) -> MergeReject:
+        """Абзацев тела меньше двух — недобор, больше предела — перебор; число абзацев — в отказе."""
+        code: MergeRejectCode = (
+            MergeRejectCode.PARAGRAPH_UNDERFLOW
+            if count < rules.MIN_BODY_PARAGRAPHS
+            else MergeRejectCode.PARAGRAPH_OVERFLOW
+        )
+        detail: str = PARAGRAPH_COUNT_DETAIL.format(count=count, low=rules.MIN_BODY_PARAGRAPHS, high=max_body_paragraphs)
+        return cls(code, detail, paragraph_count=count)
+
     @property
     def reason_codes(self) -> tuple[str, ...]:
-        """Причины проверки описания — как `_reason_codes_from_error` донора; у прочих отказов список пуст."""
+        """Причины проверки описания; у прочих отказов список пуст."""
         if self.validation_codes:
             return self.validation_codes
         return (self.code.value,) if self.code.is_description_validation else ()
 
     @property
     def reason_code(self) -> str:
-        """Главная причина — `reason_code` донора: первая причина проверки описания, иначе код отказа."""
+        """Главная причина: первая причина проверки описания, иначе код отказа."""
         codes: tuple[str, ...] = self.reason_codes
         return codes[0] if codes else self.code.value
 
     @property
     def signals(self) -> tuple[str, ...]:
         """Причины, по которым выбирается повтор и решается его повторяемость: причины проверки описания, а если их
-        нет — главная причина (донор: `error.reason_codes or (error.reason_code,)` в `merge_orchestrator.py`)."""
+        нет — главная причина."""
         return self.reason_codes or (self.reason_code,)
 
     @property
     def is_recoverable(self) -> bool:
-        """Повтор с подсказкой может помочь: хотя бы одна причина повторяемая (донор: `merge_orchestrator.py`)."""
-        return any(code in RECOVERABLE_REJECT_CODES for code in self.signals)
+        """Повтор с подсказкой может помочь: хотя бы одна причина — повторяемый код отказа."""
+        codes: tuple[MergeRejectCode | None, ...] = tuple(MergeRejectCode.of(signal) for signal in self.signals)
+        return any(code is not None and code.is_recoverable for code in codes)
 
     @property
     def human(self) -> str:
         return self.code.human
 
-    @property
-    def log_line(self) -> str:
+    def extend(self, event: LogEvent) -> LogEvent:
+        """Событие с полями отказа: главная причина, причины проверки, повторяемость и подробность в кавычках JSON."""
         detail: str = self.detail[:DETAIL_MAX_CHARS]
-        return (
-            f"reason_code={self.reason_code} reason_codes={LogValue.LIST_SEPARATOR.join(self.reason_codes) or LogValue.EMPTY.value} "
-            f"recoverable={'yes' if self.is_recoverable else 'no'} "
-            f"detail={json.dumps(detail, ensure_ascii=False) if detail else LogValue.EMPTY.value}"
+        return event.extended(
+            reason_code=self.reason_code,
+            reason_codes=self.reason_codes,
+            recoverable=self.is_recoverable,
+            detail=json.dumps(detail, ensure_ascii=False) if detail else None,
         )

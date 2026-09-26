@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import dataclasses
-from types import MappingProxyType
-
 import pytest
 
 from app.llm.merges import rules
-from app.llm.merges.contract import MergeContract, MergeContractMode, SourceTextSet, capitalized_runs
+from app.llm.merges.contract import BulletRange, CapitalizedRuns, MergeContract, MergeContractMode, SourceTextSet
 from app.llm.merges.prompt_texts import MergePromptTexts
+from app.tests.fixtures.merges import texts_with
 from app.texts.description_marks import extract_named_entities
 
 TEXTS: MergePromptTexts = MergePromptTexts.load()
@@ -20,11 +18,12 @@ def lowercase_texts(count: int) -> tuple[str, ...]:
 
 
 def with_contracts(compact: str, expanded: str, narrative: str) -> MergePromptTexts:
-    return dataclasses.replace(
-        TEXTS,
-        contracts=MappingProxyType(
-            {MergeContractMode.COMPACT: compact, MergeContractMode.EXPANDED: expanded, MergeContractMode.NARRATIVE: narrative}
-        ),
+    return texts_with(
+        contracts={
+            MergeContractMode.COMPACT: compact,
+            MergeContractMode.EXPANDED: expanded,
+            MergeContractMode.NARRATIVE: narrative,
+        }
     )
 
 
@@ -68,7 +67,7 @@ def test_two_sources_about_one_event_get_the_narrative_contract() -> None:
 
 
 def test_four_shared_names_are_not_enough_for_one_event() -> None:
-    """Имена через запятую сливаются в одну цепочку («Alex Brown Nina White»): у донора здесь четыре цепочки, не пять."""
+    """Имена через запятую сливаются в одну цепочку («Alex Brown Nina White»): здесь четыре цепочки, не пять."""
     four: str = "John Smith met Mary Jones while Alex Brown, Nina White, and Oleg Ivanov reported from the same event."
     assert MergeContract.select((four, four), TEXTS).mode is MergeContractMode.COMPACT
 
@@ -77,12 +76,13 @@ def test_names_shared_by_three_sources_do_not_make_them_narrative() -> None:
     assert MergeContract.select((SHARED_EVENT,) * 3, TEXTS).mode is MergeContractMode.EXPANDED
 
 
-# --- два разных поиска имён донора
+# --- два разных поиска имён: сравнение источников и имена спикеров
 
 
 def test_single_event_runs_drop_punctuation_and_accept_all_caps_words() -> None:
-    """Внутренний поиск донора: цепочки слов с заглавной буквы, знаки сняты; «NATO EU» — тоже цепочка."""
-    assert capitalized_runs("Talk: NATO EU, then Anna-Maria Kovalenko, and O'Brien Kelly.") == {
+    """Имена события для сравнения источников: цепочки слов с заглавной буквы, знаки сняты, регистр сохранён;
+    «NATO EU» — тоже цепочка, а в правиле имён описания её нет."""
+    assert CapitalizedRuns("Talk: NATO EU, then Anna-Maria Kovalenko, and O'Brien Kelly.").names == {
         "Talk NATO EU", "AnnaMaria Kovalenko", "OBrien Kelly"
     }
     assert "nato eu" not in extract_named_entities("Talk: NATO EU")
@@ -99,6 +99,19 @@ def test_speaker_names_are_capped_at_eight() -> None:
 
 
 # --- строка-якорь спикеров
+
+
+@pytest.mark.parametrize(("sources", "minimum"), [(0, 5), (1, 5), (2, 5), (4, 5), (5, 6), (8, 9)])
+def test_min_bullets_is_one_more_than_the_sources_and_never_below_five(sources: int, minimum: int) -> None:
+    assert MergeContract.min_bullets(sources) == minimum
+
+
+@pytest.mark.parametrize(
+    ("count", "low", "high"), [(3, 4, 6), (4, 5, 7), (5, 5, 7), (6, 6, 9), (12, 6, 9)]
+)
+def test_expanded_bullet_range_grows_with_the_sources(count: int, low: int, high: int) -> None:
+    assert BulletRange.expanded(count) == BulletRange(low, high)
+    assert BulletRange.compact().label == "4-7"
 
 
 def test_three_sources_get_no_speaker_anchor() -> None:
@@ -118,7 +131,7 @@ def test_four_sources_get_speaker_anchor_in_place_of_the_placeholder() -> None:
         "For 4 sources surface at least 3 distinct named speakers or participants from the list below, covering as many "
         "sources as possible. Do not drop any speaker from this list without clear overlap reason. Known names from "
         "sources: oleh martynenko, anna kovalenko, iryna melnyk, from geneva, marta leone."
-    )   # «From Geneva» — тоже имя по правилу донора: два слова с заглавной, в каждом не меньше трёх букв
+    )   # «From Geneva» — тоже имя по правилу имён: два слова с заглавной, в каждом не меньше трёх букв
     assert "{speaker_anchor_line}" not in block
 
 
@@ -144,7 +157,7 @@ def test_anchor_is_appended_when_the_template_has_no_placeholder() -> None:
 
 
 def test_compact_contract_is_read_from_the_template_and_exposes_the_range() -> None:
-    """Донор: test_compact_contract_is_read_from_templates_and_exposes_4_7_range (контракт)."""
+    """Компактный контракт берётся из шаблона; диапазон пунктов подставляется меткой «4-7»."""
     texts: MergePromptTexts = with_contracts(
         "TEMPLATE COMPACT CONTRACT\nUse compact bullet range {compact_bullet_range} for compact mode.",
         "Expanded template {expanded_bullet_min}-{expanded_bullet_max}",

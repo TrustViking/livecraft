@@ -7,7 +7,7 @@
   },
   "E8": {
     "','": "два смысла: разделитель тысяч в числах ответа OpenAI (app\\llm\\backends\\openai_response.py) и десятичная запятая, которую человек вводит в настройщике (app\\setup\\fields\\settings_draft.py); список в строке лога — LogValue.LIST_SEPARATOR, член перечисления",
-    "'.'": "три смысла: разделитель пути ключа в livecraft.json (app\\config\\loader.py), разделитель частей имени хоста (app\\core\\url_text.py), десятичная точка числа из настройщика (app\\setup\\fields\\settings_draft.py)",
+    "'.'": "три смысла: разделитель пути ключа в livecraft.json (app\\config\\json_node.py::KEY_SEPARATOR), разделитель частей имени хоста (app\\core\\web_link.py::HOST_DOT), десятичная точка числа из настройщика (app\\setup\\fields\\settings_draft.py::DECIMAL_POINT)",
     "'text'": "два смысла: имя папки текстовых ресурсов (app\\resources\\loader.py) и имя параметра виджета Tk (app\\setup\\tabs\\__init__.py)"
   },
   "E13": {

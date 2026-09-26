@@ -1,16 +1,15 @@
-"""Профиль повтора merge: что дописать в промт повторной попытки (restreamer `app\\llm\\merges\\merge_retry.py`).
+"""Профиль повтора merge: что дописать в промт повторной попытки.
 
-`RetryProfile.targeted` — восемь `_targeted_*_retry_profile` донора: сигнал отказа задаёт строки (боевой шаблон
-`merge_retry_reinforcements.json`, при его отсутствии — запасные строки донора) и подстановки из `RetryFacts`.
-`RetryProfile.standard` — обычный повтор донора (инструкции нет). Расширенный профиль донора с его встроенными строками
-зовут только тесты донора: в боевой путь он не входит и не перенесён.
-Блок инструкции (`instruction_block`) — `_retry_instruction_block`: промт дописывает его последним (`MergePrompt.text`).
-Какой профиль после отказа — `RetryProfile.after_reject`: первый сигнал в порядке донора (`SIGNAL_ORDER`,
-`merge_orchestrator.py::_select_retry_profile`), иначе обычный повтор с сигналами отказа.
+`RetryProfile.targeted` — направленный повтор: сигнал отказа задаёт строки (шаблон `merge_retry_reinforcements.json`,
+при его отсутствии — запасные строки) и подстановки из `RetryFacts`. `RetryProfile.standard` — обычный повтор без
+инструкции. Блок инструкции (`instruction_block`) промт дописывает последним (`MergePrompt.text`).
+
+Какой профиль после отказа — `RetryProfile.after_reject`: первый код отказа в порядке `SIGNAL_ORDER` задаёт сигнал,
+кода со своим профилем нет — обычный повтор с причинами отказа.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final
@@ -18,7 +17,8 @@ from typing import Final
 from app.core.sequence import unique_in_order
 from app.core.text_format import NEWLINE
 from app.llm.merges import rules
-from app.llm.merges.prompt_texts import MergePromptTexts
+from app.llm.merges.prompt_texts import MergePromptTexts, Placeholder
+from app.llm.merges.reject import MergeRejectCode
 from app.observability.log_event import LogValue
 
 INSTRUCTION_HEADER: Final[str] = "RETRY INSTRUCTION:"
@@ -30,54 +30,54 @@ class RetryMode(str, Enum):
 
 
 class RetrySignal(str, Enum):
-    """Отказ, на который у донора есть свой профиль повтора. Значение — ключ строк в шаблоне повтора."""
+    """Отказ, у которого есть свой профиль повтора. Значение — код отказа и ключ строк в шаблоне повтора."""
 
-    INSUFFICIENT_BULLET_COVERAGE = "insufficient_bullet_coverage"
-    DUPLICATE_PARAGRAPH = "duplicate_paragraph"
-    HOOK_ECHO_IN_BODY = "hook_echo_in_body"
-    OVERLOADED_BULLET = "overloaded_bullet"
-    PARAGRAPH_OVERFLOW = "paragraph_overflow"
-    PARAGRAPH_UNDERFLOW = "paragraph_underflow"
-    COMPACT_BULLET_OVERFLOW = "compact_bullet_overflow"
-    CTA_AS_FIRST_PARAGRAPH = "cta_as_first_paragraph"
+    INSUFFICIENT_BULLET_COVERAGE = MergeRejectCode.INSUFFICIENT_BULLET_COVERAGE.value
+    DUPLICATE_PARAGRAPH = MergeRejectCode.DUPLICATE_PARAGRAPH.value
+    HOOK_ECHO_IN_BODY = MergeRejectCode.HOOK_ECHO_IN_BODY.value
+    OVERLOADED_BULLET = MergeRejectCode.OVERLOADED_BULLET.value
+    PARAGRAPH_OVERFLOW = MergeRejectCode.PARAGRAPH_OVERFLOW.value
+    PARAGRAPH_UNDERFLOW = MergeRejectCode.PARAGRAPH_UNDERFLOW.value
+    COMPACT_BULLET_OVERFLOW = MergeRejectCode.COMPACT_BULLET_OVERFLOW.value
+    CTA_AS_FIRST_PARAGRAPH = MergeRejectCode.CTA_AS_FIRST_PARAGRAPH.value
 
     @property
     def reject_signals(self) -> tuple[str, ...]:
-        """Сигналы профиля; повтор абзаца у донора закрывает ещё и оба призыва."""
-        return _REJECT_SIGNALS.get(self, (self.value,))
+        """Коды отказа, которые закрывает профиль; повтор абзаца закрывает ещё и оба призыва."""
+        return tuple(code.value for code in REJECT_SIGNALS.get(self, (MergeRejectCode(self.value),)))
 
     @property
     def focus_tags(self) -> tuple[str, ...]:
-        return _FOCUS_TAGS[self]
+        return FOCUS_TAGS[self]
 
     @classmethod
     def first_of(cls, codes: Iterable[str]) -> RetrySignal | None:
-        """Сигнал повтора по причинам отказа — первый в порядке донора (`SIGNAL_ORDER`); своего профиля нет — None."""
-        present: frozenset[str] = frozenset(codes)
-        for code, signal in SIGNAL_ORDER:
-            if code in present:
-                return signal
-        return None
+        """Сигнал повтора по причинам отказа — первый в порядке `SIGNAL_ORDER`; своего профиля нет — None."""
+        present: frozenset[MergeRejectCode | None] = frozenset(MergeRejectCode.of(code) for code in codes)
+        return next((signal for code, signal in SIGNAL_ORDER if code in present), None)
 
 
-# Порядок донора `merge_orchestrator.py::MergeOrchestrator._select_retry_profile`: причина, найденная раньше, задаёт
-# профиль. Повтор абзаца и призыв в тезисе — одна проверка донора, у обоих профиль повтора абзаца.
-SIGNAL_ORDER: Final[tuple[tuple[str, RetrySignal], ...]] = (
-    ("overloaded_bullet", RetrySignal.OVERLOADED_BULLET),
-    ("insufficient_bullet_coverage", RetrySignal.INSUFFICIENT_BULLET_COVERAGE),
-    ("cta_as_first_paragraph", RetrySignal.CTA_AS_FIRST_PARAGRAPH),
-    ("hook_echo_in_body", RetrySignal.HOOK_ECHO_IN_BODY),
-    ("duplicate_paragraph", RetrySignal.DUPLICATE_PARAGRAPH),
-    ("cta_in_hook", RetrySignal.DUPLICATE_PARAGRAPH),
-    ("paragraph_underflow", RetrySignal.PARAGRAPH_UNDERFLOW),
-    ("paragraph_overflow", RetrySignal.PARAGRAPH_OVERFLOW),
-    ("compact_bullet_overflow", RetrySignal.COMPACT_BULLET_OVERFLOW),
+# Порядок выбора профиля: причина, найденная раньше, задаёт профиль. Повтор абзаца и призыв в тезисе — одна беда,
+# у обоих профиль повтора абзаца.
+SIGNAL_ORDER: Final[tuple[tuple[MergeRejectCode, RetrySignal], ...]] = (
+    (MergeRejectCode.OVERLOADED_BULLET, RetrySignal.OVERLOADED_BULLET),
+    (MergeRejectCode.INSUFFICIENT_BULLET_COVERAGE, RetrySignal.INSUFFICIENT_BULLET_COVERAGE),
+    (MergeRejectCode.CTA_AS_FIRST_PARAGRAPH, RetrySignal.CTA_AS_FIRST_PARAGRAPH),
+    (MergeRejectCode.HOOK_ECHO_IN_BODY, RetrySignal.HOOK_ECHO_IN_BODY),
+    (MergeRejectCode.DUPLICATE_PARAGRAPH, RetrySignal.DUPLICATE_PARAGRAPH),
+    (MergeRejectCode.CTA_IN_HOOK, RetrySignal.DUPLICATE_PARAGRAPH),
+    (MergeRejectCode.PARAGRAPH_UNDERFLOW, RetrySignal.PARAGRAPH_UNDERFLOW),
+    (MergeRejectCode.PARAGRAPH_OVERFLOW, RetrySignal.PARAGRAPH_OVERFLOW),
+    (MergeRejectCode.COMPACT_BULLET_OVERFLOW, RetrySignal.COMPACT_BULLET_OVERFLOW),
 )
-
-_REJECT_SIGNALS: Final[dict[RetrySignal, tuple[str, ...]]] = {
-    RetrySignal.DUPLICATE_PARAGRAPH: ("duplicate_paragraph", "cta_as_first_paragraph", "cta_in_hook"),
+REJECT_SIGNALS: Final[Mapping[RetrySignal, tuple[MergeRejectCode, ...]]] = {
+    RetrySignal.DUPLICATE_PARAGRAPH: (
+        MergeRejectCode.DUPLICATE_PARAGRAPH,
+        MergeRejectCode.CTA_AS_FIRST_PARAGRAPH,
+        MergeRejectCode.CTA_IN_HOOK,
+    ),
 }
-_FOCUS_TAGS: Final[dict[RetrySignal, tuple[str, ...]]] = {
+FOCUS_TAGS: Final[Mapping[RetrySignal, tuple[str, ...]]] = {
     RetrySignal.INSUFFICIENT_BULLET_COVERAGE: ("bullet_coverage",),
     RetrySignal.DUPLICATE_PARAGRAPH: ("no_hook_duplication", "hook_first"),
     RetrySignal.HOOK_ECHO_IN_BODY: ("no_hook_echo",),
@@ -102,24 +102,28 @@ class RetryFacts:
     actual_paragraphs: int = 0
     max_paragraphs: int = 0
 
-    def placeholders(self, signal: RetrySignal) -> dict[str, object]:
-        """Подстановки сигнала — ровно те ключи и в том порядке, что `placeholder_values` донора."""
+    def placeholders(self, signal: RetrySignal) -> Mapping[Placeholder, object]:
+        """Подстановки сигнала — ключи и порядок, в котором их ждут строки повтора."""
         if signal is RetrySignal.INSUFFICIENT_BULLET_COVERAGE:
             return {
-                "actual_bullets": self.actual_bullets,
-                "required_bullets": self.required_bullets,
-                "source_count": self.source_count,
+                Placeholder.ACTUAL_BULLETS: self.actual_bullets,
+                Placeholder.REQUIRED_BULLETS: self.required_bullets,
+                Placeholder.SOURCE_COUNT: self.source_count,
             }
         if signal is RetrySignal.OVERLOADED_BULLET:
             return {
-                "overloaded_count": self.overloaded_count,
-                "bullet_name_limit": rules.BULLET_OVERLOAD_NAME_LIMIT,
-                "bullet_char_limit": rules.BULLET_OVERLOAD_CHAR_LIMIT,
+                Placeholder.OVERLOADED_COUNT: self.overloaded_count,
+                Placeholder.BULLET_NAME_LIMIT: rules.BULLET_OVERLOAD_NAME_LIMIT,
+                Placeholder.BULLET_CHAR_LIMIT: rules.BULLET_OVERLOAD_CHAR_LIMIT,
             }
         if signal is RetrySignal.PARAGRAPH_OVERFLOW:
-            return {"actual_paragraphs": self.actual_paragraphs, "max_paragraphs": self.max_paragraphs}
+            return {Placeholder.ACTUAL_PARAGRAPHS: self.actual_paragraphs, Placeholder.MAX_PARAGRAPHS: self.max_paragraphs}
         if signal is RetrySignal.COMPACT_BULLET_OVERFLOW:
-            return {"actual_bullets": self.actual_bullets, "min_bullets": self.min_bullets, "max_bullets": self.max_bullets}
+            return {
+                Placeholder.ACTUAL_BULLETS: self.actual_bullets,
+                Placeholder.MIN_BULLETS: self.min_bullets,
+                Placeholder.MAX_BULLETS: self.max_bullets,
+            }
         return {}
 
 
@@ -154,7 +158,7 @@ class RetryProfile:
 
     @classmethod
     def targeted(cls, signal: RetrySignal, facts: RetryFacts, texts: MergePromptTexts) -> RetryProfile:
-        """Направленный профиль по сигналу отказа (восемь `_targeted_*_retry_profile` донора)."""
+        """Направленный профиль по сигналу отказа."""
         return cls(
             mode=RetryMode.TARGETED,
             reject_signals=signal.reject_signals,
@@ -164,8 +168,8 @@ class RetryProfile:
 
     @classmethod
     def after_reject(cls, signals: tuple[str, ...], facts: RetryFacts, texts: MergePromptTexts) -> RetryProfile:
-        """Профиль следующей попытки после отказа: направленный по первому сигналу в порядке донора, иначе обычный
-        с сигналами отказа (`_select_retry_profile`). Числа — из отвергнутой попытки (`facts`)."""
+        """Профиль следующей попытки после отказа: направленный по первому сигналу в порядке `SIGNAL_ORDER`, иначе
+        обычный с сигналами отказа. Числа — из отвергнутой попытки (`facts`)."""
         signal: RetrySignal | None = RetrySignal.first_of(signals)
         if signal is None:
             return cls.standard(signals)
@@ -174,7 +178,5 @@ class RetryProfile:
     @classmethod
     def standard(cls, reject_signals: Iterable[str] = ()) -> RetryProfile:
         """Обычный повтор без инструкции; сигналы — без повторов, пустые после `strip` выпадают (сами не срезаются)."""
-        signals: tuple[str, ...] = tuple(
-            signal for signal in unique_in_order(reject_signals) if str(signal or "").strip()
-        )
+        signals: tuple[str, ...] = tuple(signal for signal in unique_in_order(reject_signals) if signal.strip())
         return cls(mode=RetryMode.STANDARD, reject_signals=signals, focus_tags=(), reinforcement_lines=())

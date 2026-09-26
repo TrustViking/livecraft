@@ -15,15 +15,15 @@ from app.llm.merges.quality import (
     QualityNormalization,
     QualityReasonCode,
     QualityRequest,
-    QualityRules,
 )
+from app.llm.merges.merge_rules import MergeLexicons
 from app.llm.merges.rules import COMPACT_BULLET_MAX
 from app.observability.log_event import LogArea
 from app.tests.conftest import REPO_ROOT
 from app.tests.fixtures.logs import LogCapture
 from app.tools.code_standard.source import ModuleSource, SourceTree
 
-RULES: QualityRules = QualityRules.load()
+LEXICONS: MergeLexicons = MergeLexicons.load()
 CLEAN_EN: str = (
     "This stream breaks down the budget decision and explains what it means for the regions and for families.\n\n"
     "In this stream you'll see:\n"
@@ -37,7 +37,7 @@ CLEAN_EN: str = (
 
 def normalized(description: str, language: str, title: str = "", source_count: int = 0) -> QualityNormalization:
     request: QualityRequest = QualityRequest(language=language, title=title, source_count=source_count)
-    return MergedDescription(description).quality_normalized(request, RULES)
+    return QualityNormalization.of(MergedDescription(description), request, LEXICONS)
 
 
 def bullet_lines(text: str) -> list[str]:
@@ -180,6 +180,19 @@ def test_wrong_language_hook_is_hard_reject() -> None:
     assert result.diagnostics.language_consistency_ok is False
 
 
+def test_a_hook_whose_language_is_undecided_is_not_a_language_reject() -> None:
+    """Язык тезиса не определился (`unknown`: в тезисе нет букв) — это не «язык явно не тот»: правило одно со
+    служебными строками. Отказа по языку нет; раньше такой тезис давал жёсткий отказ."""
+    result: QualityNormalization = normalized(
+        "2026-10-16 19:00 — 12 345 / 67 890 — 100 %!\n\nУ цьому стрімі ви побачите:\n🔹 пункт один\n🔹 пункт два",
+        "uk",
+    )
+    assert result.diagnostics.hook_language_detected == "unknown"
+    assert QualityReasonCode.INCONSISTENT_BLOCK_LANGUAGE not in result.diagnostics.semantic_gate_reason_codes
+    assert result.diagnostics.language_consistency_ok is True
+    assert result.diagnostics.semantic_gate_status is QualityGateStatus.OK
+
+
 # --- донор: test_normalize_merge_description_does_not_double_prefix_bullet_as_lead_in
 def test_bullet_is_not_prefixed_twice() -> None:
     result: QualityNormalization = normalized(
@@ -303,13 +316,31 @@ def test_every_reason_code_and_status_is_reachable() -> None:
     assert statuses == set(QualityGateStatus)
 
 
-def test_reason_codes_keep_donor_order() -> None:
+def test_reason_codes_keep_their_order() -> None:
     result: QualityNormalization = normalized(
         "This English hook is clearly not in the expected block language and stays unchanged.\n\n"
         "In this stream you'll see:\n📌 a\n🎤 b\n🎥 c\n✅ d\n\n🌐 Links:\nhttps://example.org",
         "uk",
     )
     assert result.diagnostics.semantic_gate_reason_codes == tuple(QualityReasonCode)
+
+
+def test_quality_normalization_returns_a_new_description() -> None:
+    result: QualityNormalization = normalized("Hook paragraph with enough words here.\n\n- one point\n- two point", "en")
+    assert result.description.text == "Hook paragraph with enough words here.\n\n🔹 one point\n🔹 two point"
+
+
+@pytest.mark.parametrize(
+    ("codes", "status"),
+    [
+        ((), QualityGateStatus.OK),
+        ((QualityReasonCode.MISSING_BLOCK_SPACING,), QualityGateStatus.NEEDS_NORMALIZATION),
+        ((QualityReasonCode.MISSING_BLOCK_SPACING, QualityReasonCode.SCRIPT_MIX_CONTAMINATION), QualityGateStatus.HARD_REJECT),
+        ((QualityReasonCode.INCONSISTENT_BLOCK_LANGUAGE,), QualityGateStatus.HARD_REJECT),
+    ],
+)
+def test_the_status_follows_from_the_codes(codes: tuple[QualityReasonCode, ...], status: QualityGateStatus) -> None:
+    assert QualityGateStatus.of(codes) is status
 
 
 def test_empty_description_is_not_normalized_but_title_is_checked() -> None:

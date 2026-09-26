@@ -3,8 +3,11 @@ from __future__ import annotations
 import pytest
 
 from app.llm.merges.quality import QualityReasonCode
-from app.llm.merges.reject import RECOVERABLE_REJECT_CODES, MergeReject, MergeRejectCode, MergeRejectStage
+from app.llm.merges.reject import REJECT_TRAITS, MergeReject, MergeRejectCode, MergeRejectStage, RejectTraits
+from app.observability.log_event import LogEvent
 from app.ui import messages_ru as msg
+
+EVENT: LogEvent = LogEvent.of("merge_answer_rejected", model="m")
 
 DONOR_REASON_CODES: frozenset[str] = frozenset(
     {
@@ -43,7 +46,7 @@ def test_texts_have_no_codes_without_a_member() -> None:
     assert set(msg.MERGE_REJECT_TEXT) == DONOR_REASON_CODES
 
 
-def test_recoverable_codes_follow_the_donor_set() -> None:
+def test_recoverable_codes_are_the_ones_a_hint_can_fix() -> None:
     recoverable: set[MergeRejectCode] = {code for code in MergeRejectCode if code.is_recoverable}
     assert recoverable == {
         MergeRejectCode.CTA_AS_FIRST_PARAGRAPH,
@@ -55,7 +58,21 @@ def test_recoverable_codes_follow_the_donor_set() -> None:
         MergeRejectCode.COMPACT_BULLET_OVERFLOW,
         MergeRejectCode.OVERLOADED_BULLET,
     }
-    assert {code.value for code in recoverable} == RECOVERABLE_REJECT_CODES
+
+
+def test_every_code_has_its_traits_in_one_table() -> None:
+    assert set(REJECT_TRAITS) == set(MergeRejectCode)
+    for code in MergeRejectCode:
+        traits: RejectTraits = code.traits
+        assert (code.stages, code.is_description_validation, code.is_recoverable) == (
+            traits.stages, traits.is_description_validation, traits.is_recoverable
+        )
+
+
+def test_a_code_is_found_by_its_value_and_gate_codes_are_not_reject_codes() -> None:
+    assert MergeRejectCode.of("overloaded_bullet") is MergeRejectCode.OVERLOADED_BULLET
+    assert MergeRejectCode.of("script_mix_contamination") is None
+    assert MergeRejectCode.of("quota") is None
 
 
 @pytest.mark.parametrize(
@@ -74,17 +91,18 @@ def test_reason_codes_like_the_donor_parse_of_the_error_text(code: MergeRejectCo
     assert MergeReject(code).reason_codes == reason_codes
 
 
-def test_log_line_has_code_codes_and_quoted_detail() -> None:
-    line: str = MergeReject(MergeRejectCode.EXTRA_KEYS, "title \n,x").log_line
-    assert line == 'reason_code=extra_keys reason_codes=- recoverable=no detail="title \\n,x"'
+def test_the_event_gets_code_codes_and_quoted_detail() -> None:
+    line: str = MergeReject(MergeRejectCode.EXTRA_KEYS, "title \n,x").extend(EVENT).text
+    assert line == 'merge_answer_rejected model=m reason_code=extra_keys reason_codes=- recoverable=no detail="title \\n,x"'
     assert "\n" not in line
-    assert MergeReject(MergeRejectCode.DUPLICATE_PARAGRAPH).log_line == (
-        "reason_code=duplicate_paragraph reason_codes=duplicate_paragraph recoverable=yes detail=-"
+    assert MergeReject(MergeRejectCode.DUPLICATE_PARAGRAPH).extend(EVENT).text == (
+        "merge_answer_rejected model=m reason_code=duplicate_paragraph reason_codes=duplicate_paragraph "
+        "recoverable=yes detail=-"
     )
 
 
-def test_log_line_cuts_a_long_detail() -> None:
-    assert len(MergeReject(MergeRejectCode.EXTRA_KEYS, "k" * 1000).log_line) < 300
+def test_the_event_cuts_a_long_detail() -> None:
+    assert len(MergeReject(MergeRejectCode.EXTRA_KEYS, "k" * 1000).extend(EVENT).text) < 330
 
 
 @pytest.mark.parametrize("code", COVERAGE_CODES)
@@ -121,10 +139,11 @@ def test_recoverable_when_any_reason_is_recoverable() -> None:
     assert not MergeReject(MergeRejectCode.EXCESSIVE_EMOJI_USAGE).is_recoverable
 
 
-def test_semantic_gate_log_line_names_the_first_gate_code() -> None:
-    line: str = MergeReject.semantic_gate(["missing_block_spacing", "script_mix_contamination"]).log_line
+def test_semantic_gate_event_names_the_first_gate_code() -> None:
+    line: str = MergeReject.semantic_gate(["missing_block_spacing", "script_mix_contamination"]).extend(EVENT).text
     assert line == (
-        "reason_code=missing_block_spacing reason_codes=missing_block_spacing,script_mix_contamination "
+        "merge_answer_rejected model=m reason_code=missing_block_spacing "
+        "reason_codes=missing_block_spacing,script_mix_contamination "
         "recoverable=no detail=-"
     )
 
@@ -147,6 +166,17 @@ def test_signals_fall_back_to_the_main_reason() -> None:
         "missing_block_spacing",
         "script_mix_contamination",
     )
+
+
+@pytest.mark.parametrize(
+    ("count", "code"), [(1, MergeRejectCode.PARAGRAPH_UNDERFLOW), (5, MergeRejectCode.PARAGRAPH_OVERFLOW)]
+)
+def test_a_paragraph_count_reject_says_underflow_or_overflow_and_carries_the_count(
+    count: int, code: MergeRejectCode
+) -> None:
+    reject: MergeReject = MergeReject.of_paragraph_count(count, 4)
+    assert (reject.code, reject.paragraph_count) == (code, count)
+    assert reject.detail == f"body_paragraphs={count} allowed=2..4"
 
 
 def test_the_paragraph_count_is_carried_but_not_compared() -> None:

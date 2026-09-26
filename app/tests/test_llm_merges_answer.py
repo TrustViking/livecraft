@@ -8,17 +8,20 @@ import pytest
 
 from app.llm.backend import LlmResponse
 from app.llm.merges import answer as answer_module
-from app.llm.merges import description as description_module
+from app.llm.merges import emoji as emoji_module
+from app.llm.merges import rules
 from app.llm.merges.answer import AnswerParseMode, MergeAnswer
 from app.llm.merges.layout import TailBlock
 from app.llm.merges.reject import MergeReject, MergeRejectCode, MergeRejectStage
 from app.observability.log_event import LogArea
 from app.tests.conftest import REPO_ROOT
 from app.tests.fixtures.logs import LogCapture
+from app.texts.description_marks import CtaLexicon
 from app.tools.code_standard.module_shape import TopLevelNames
 from app.tools.code_standard.source import SourceKey, SourceTree
 
 TWO_PARAGRAPHS: str = "Paragraph one.\n\nParagraph two."
+CTA: CtaLexicon = CtaLexicon.load()
 
 
 def response(text: str = "", structured: dict[str, object] | None = None) -> LlmResponse:
@@ -26,7 +29,7 @@ def response(text: str = "", structured: dict[str, object] | None = None) -> Llm
 
 
 def parse(text: str, max_body_paragraphs: int = 4) -> MergeAnswer | MergeReject:
-    return MergeAnswer.parse(response(text), max_body_paragraphs)
+    return MergeAnswer.parse(response(text), max_body_paragraphs, CTA)
 
 
 def accepted(text: str, max_body_paragraphs: int = 4) -> MergeAnswer:
@@ -253,7 +256,7 @@ REACHABILITY_CASES: list[tuple[LlmResponse, MergeRejectCode]] = [
 
 @pytest.mark.parametrize(("result", "code"), REACHABILITY_CASES)
 def test_every_code_is_reachable(result: LlmResponse, code: MergeRejectCode) -> None:
-    reject: MergeAnswer | MergeReject = MergeAnswer.parse(result, 4)
+    reject: MergeAnswer | MergeReject = MergeAnswer.parse(result, 4, CTA)
     assert isinstance(reject, MergeReject)
     assert reject.code is code
 
@@ -273,7 +276,7 @@ def test_list_value_detail_names_the_key() -> None:
 
 def test_structured_payload_wins_over_text() -> None:
     answer: MergeAnswer | MergeReject = MergeAnswer.parse(
-        response("garbage", structured={"title": "S", "description": TWO_PARAGRAPHS}), 4
+        response("garbage", structured={"title": "S", "description": TWO_PARAGRAPHS}), 4, CTA
     )
     assert isinstance(answer, MergeAnswer)
     assert answer.parse_mode is AnswerParseMode.STRUCTURED
@@ -298,12 +301,12 @@ def test_parse_never_raises_on_arbitrary_text() -> None:
     alphabet: str = '{}[]":,\\ntitledescription 🔹#🌐https://youtu.be/ абв\n\r\t0123'
     for _ in range(3000):
         text: str = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 200)))
-        assert isinstance(MergeAnswer.parse(response(text), rng.choice([4, 7])), (MergeAnswer, MergeReject))
+        assert isinstance(MergeAnswer.parse(response(text), rng.choice([4, 7]), CTA), (MergeAnswer, MergeReject))
         wrapped: str = json.dumps({"title": text[:50], "description": text})
-        assert isinstance(MergeAnswer.parse(response(wrapped), rng.choice([4, 7])), (MergeAnswer, MergeReject))
+        assert isinstance(MergeAnswer.parse(response(wrapped), rng.choice([4, 7]), CTA), (MergeAnswer, MergeReject))
 
 
-def test_log_lines_have_donor_keys_and_no_text() -> None:
+def test_log_lines_have_counts_and_no_text() -> None:
     secret_words: str = "Уникальнаяфразаописания"
     description: str = f"{secret_words} one.\n\n{secret_words} two.\n\n#tag"
     with LogCapture.on(LogArea.LLM, logging.INFO) as capture:
@@ -338,5 +341,18 @@ def test_the_emoji_pattern_has_one_source() -> None:
         module.key.text for module in SourceTree.from_root(REPO_ROOT).production
         if "EMOJI_PATTERN" in TopLevelNames(module).names()
     ]
-    assert declared == [SourceKey.of("app/llm/merges/description.py").text]
-    assert answer_module.EMOJI_PATTERN is description_module.EMOJI_PATTERN
+    assert declared == [SourceKey.of("app/llm/merges/emoji.py").text]
+    assert answer_module.EMOJI_PATTERN is emoji_module.EMOJI_PATTERN
+
+
+def test_the_schema_asks_for_exactly_the_keys_and_limits_the_parse_checks() -> None:
+    """Схема запроса и разбор ответа — одни ключи и один предел названия."""
+    schema: object = MergeAnswer.SCHEMA["schema"]
+    assert MergeAnswer.SCHEMA["name"] == "merge_summary_v2"
+    assert isinstance(schema, dict)
+    assert schema["required"] == ["title", "description"] and schema["additionalProperties"] is False
+    assert schema["properties"]["title"] == {
+        "type": "string", "minLength": rules.TITLE_MIN_CHARS, "maxLength": rules.TITLE_MAX_CHARS
+    }
+    long_title: MergeAnswer = accepted(json.dumps({"title": "t" * 150, "description": TWO_PARAGRAPHS}))
+    assert len(long_title.title) == rules.TITLE_MAX_CHARS == 99

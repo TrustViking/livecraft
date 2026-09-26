@@ -1,12 +1,11 @@
 """Служебные строки описания (вводная строка, заголовок ссылок, призыв) и их язык.
 
-Перенесено из restreamer `app\\llm\\merges\\quality_service_lines.py`, поведение как есть (CLAUDE.md §14 решение 23):
-- канонические строки на языке блока — `canonical_service_line`, ресурс `canonical_service_lines.json` побайтно;
-- призыв на языке блока с сохранением хештегов — `replace_cta_preserving_hashtags`;
-- язык служебной строки и абзаца — `detect_service_language`, `detect_paragraph_language`, `_detect_text_language`
-  (подсказки донора — ресурс `merge_service_language_hints.json` без правки значений), `is_wrong_service_language`,
-  `is_short_service_line`. Последний шаг — langdetect `core\\language.py::detect_language_from_text` донора, здесь —
-  `app\\texts\\language_detector.py::TextLanguageDetector` (та же чистка и тот же сид); «не решил» — `unknown`, как у донора.
+- канонические строки на языке блока — `ServiceLineCatalog`, ресурс `canonical_service_lines.json`;
+- призыв на языке блока с сохранением хештегов — `ServiceLineCatalog.cta_preserving_hashtags`;
+- язык служебной строки и абзаца — `ServiceLanguage`: фразы-подсказки (ресурс `merge_service_language_hints.json`),
+  буквы алфавита, слова-подсказки, затем `app\\texts\\language_detector.py::TextLanguageDetector`; «не решил» — `unknown`;
+- язык явно не тот — одно правило `LanguageMatch` для тезиса и для служебных строк: язык, который не определился
+  (`none`, `other`, `unknown`), несовпадением не считается.
 """
 from __future__ import annotations
 
@@ -14,30 +13,29 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Final
 
 from app.core.alphabet import RUSSIAN_LETTER_PATTERN, UKRAINIAN_LETTER_PATTERN, CoreLanguage
+from app.core.text_format import SPACE
+from app.llm.merges import rules
 from app.resources.loader import TextResource
-from app.texts.language_detector import TextLanguageDetector
 from app.texts.hashtags import HASHTAG_AFTER_SPACE_PATTERN
+from app.texts.language_detector import TextLanguageDetector
 from app.texts.paragraphs import collapse_spaces
 
 SERVICE_LINES_RESOURCE: Final[str] = "canonical_service_lines.json"
 LANGUAGE_HINTS_RESOURCE: Final[str] = "merge_service_language_hints.json"
-FALLBACK_LANGUAGE: Final[str] = "other"
 
-# Метки языка, которые не код языка: пустой текст, «прочий язык», langdetect не решил.
+# Метки языка, которые не код языка: пустой текст, «прочий язык», язык не определился.
 LANGUAGE_NONE: Final[str] = "none"
 LANGUAGE_OTHER: Final[str] = "other"
 LANGUAGE_UNKNOWN: Final[str] = "unknown"
 UNDECIDED_LANGUAGES: Final[frozenset[str]] = frozenset({LANGUAGE_NONE, LANGUAGE_OTHER, LANGUAGE_UNKNOWN})
-
-# Служебная строка — не длиннее 140 знаков; абзац короче 12 знаков язык не получает.
-SERVICE_LINE_MAX_CHARS: Final[int] = 140
-PARAGRAPH_MIN_CHARS: Final[int] = 12
-
+# Строки каталога для языка вне каталога.
+FALLBACK_LANGUAGE: Final[str] = LANGUAGE_OTHER
 
 HINT_KEYS: Final[tuple[str, ...]] = ("uk_phrases", "ru_phrases", "en_phrases", "uk_words", "ru_words")
+ALL_KEYS: Final[str] = "all"
 BAD_SERVICE_LINES: Final[str] = "resource {name}: language {language} lacks keys {keys}"
 BAD_HINTS: Final[str] = "resource {name}: key {key} must be a list of strings"
 
@@ -51,6 +49,21 @@ class ServiceLineKey(str, Enum):
 
 
 @dataclass(frozen=True)
+class LanguageMatch:
+    """Язык текста против языка блока."""
+
+    detected: str
+    expected: str
+
+    @property
+    def is_wrong(self) -> bool:
+        """Язык явно не тот: он определился, язык блока — uk, en или ru, и они различаются."""
+        if self.detected in UNDECIDED_LANGUAGES or not CoreLanguage.covers(self.expected):
+            return False
+        return self.detected != self.expected
+
+
+@dataclass(frozen=True)
 class ServiceLineCatalog:
     """Канонические служебные строки по языкам; для языка вне каталога — строки `other`."""
 
@@ -61,8 +74,8 @@ class ServiceLineCatalog:
         return cls.from_data(TextResource(SERVICE_LINES_RESOURCE).data)
 
     @classmethod
-    def from_data(cls, raw: Mapping[str, Any]) -> ServiceLineCatalog:
-        """Каталог из объекта JSON: не объекты пропускаются, как у донора; языку без нужного ключа — `ValueError`."""
+    def from_data(cls, raw: Mapping[str, object]) -> ServiceLineCatalog:
+        """Каталог из объекта JSON: не объекты пропускаются; языку без нужного ключа — `ValueError`."""
         lines: dict[str, Mapping[ServiceLineKey, str]] = {}
         for language, payload in raw.items():
             if not isinstance(payload, dict):
@@ -71,10 +84,10 @@ class ServiceLineCatalog:
             missing: list[str] = [key.value for key in ServiceLineKey if key.value not in texts]
             if missing:
                 raise ValueError(BAD_SERVICE_LINES.format(name=SERVICE_LINES_RESOURCE, language=language, keys=missing))
-            lines[str(language)] = MappingProxyType({key: texts[key.value] for key in ServiceLineKey})
+            lines[language] = MappingProxyType({key: texts[key.value] for key in ServiceLineKey})
         if FALLBACK_LANGUAGE not in lines:
             raise ValueError(
-                BAD_SERVICE_LINES.format(name=SERVICE_LINES_RESOURCE, language=FALLBACK_LANGUAGE, keys="all")
+                BAD_SERVICE_LINES.format(name=SERVICE_LINES_RESOURCE, language=FALLBACK_LANGUAGE, keys=ALL_KEYS)
             )
         return cls(lines=MappingProxyType(lines))
 
@@ -83,16 +96,16 @@ class ServiceLineCatalog:
 
     def cta_preserving_hashtags(self, text: str, language: str) -> str:
         """Канонический призыв языка, за ним — хештеги прежнего призыва через пробел."""
-        hashtags: list[str] = [match.group(1) for match in HASHTAG_AFTER_SPACE_PATTERN.finditer(text or "")]
+        hashtags: list[str] = [match.group(1) for match in HASHTAG_AFTER_SPACE_PATTERN.finditer(text)]
         base_text: str = self.line(language, ServiceLineKey.CTA)
         if hashtags:
-            return f"{base_text} {' '.join(hashtags)}".strip()
+            return SPACE.join((base_text, *hashtags)).strip()
         return base_text
 
 
 @dataclass(frozen=True)
 class ServiceLanguage:
-    """Язык служебной строки и абзаца: фразы-подсказки, буквы алфавита, слова-подсказки, затем langdetect."""
+    """Язык служебной строки и абзаца: фразы-подсказки, буквы алфавита, слова-подсказки, затем определитель языка."""
 
     uk_phrases: tuple[str, ...]
     ru_phrases: tuple[str, ...]
@@ -103,53 +116,51 @@ class ServiceLanguage:
 
     @classmethod
     def load(cls, detector: TextLanguageDetector | None = None) -> ServiceLanguage:
-        raw: Mapping[str, Any] = TextResource(LANGUAGE_HINTS_RESOURCE).data
-        hints: dict[str, tuple[str, ...]] = {key: cls._hint_list(raw, key) for key in HINT_KEYS}
+        raw: Mapping[str, object] = TextResource(LANGUAGE_HINTS_RESOURCE).data
+        hints: dict[str, tuple[str, ...]] = {key: cls._hints(raw, key) for key in HINT_KEYS}
         return cls(**hints, detector=detector or TextLanguageDetector.from_resources())
 
-    @staticmethod
-    def _hint_list(raw: Mapping[str, Any], key: str) -> tuple[str, ...]:
-        value: Any = raw.get(key)
+    @classmethod
+    def _hints(cls, raw: Mapping[str, object], key: str) -> tuple[str, ...]:
+        """Подсказки одного вида: список строк; иначе ресурс испорчен — `ValueError`."""
+        value: object = raw.get(key)
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise ValueError(BAD_HINTS.format(name=LANGUAGE_HINTS_RESOURCE, key=key))
         return tuple(value)
+
+    @property
+    def _phrases(self) -> tuple[tuple[CoreLanguage, tuple[str, ...]], ...]:
+        return (
+            (CoreLanguage.UK, self.uk_phrases),
+            (CoreLanguage.RU, self.ru_phrases),
+            (CoreLanguage.EN, self.en_phrases),
+        )
 
     def detect_service(self, text: str) -> str:
         """Язык служебной строки: пусто — `none`; фразы-подсказки uk, ru, en; дальше — правило текста."""
         normalized: str = collapse_spaces(text).lower()
         if not normalized:
             return LANGUAGE_NONE
-        for language, phrases in (("uk", self.uk_phrases), ("ru", self.ru_phrases), ("en", self.en_phrases)):
+        for language, phrases in self._phrases:
             if any(phrase in normalized for phrase in phrases):
-                return language
+                return language.value
         return self._detect_text(normalized)
 
     def detect_paragraph(self, text: str) -> str:
         """Язык абзаца: короче 12 знаков — `none`; иначе правило текста."""
         normalized: str = collapse_spaces(text)
-        if len(normalized) < PARAGRAPH_MIN_CHARS:
+        if len(normalized) < rules.SERVICE_PARAGRAPH_MIN_CHARS:
             return LANGUAGE_NONE
         return self._detect_text(normalized.lower())
 
     def _detect_text(self, normalized_text: str) -> str:
         if UKRAINIAN_LETTER_PATTERN.search(normalized_text):
-            return "uk"
+            return CoreLanguage.UK.value
         if RUSSIAN_LETTER_PATTERN.search(normalized_text):
-            return "ru"
-        padded: str = f" {normalized_text} "
+            return CoreLanguage.RU.value
+        padded: str = f"{SPACE}{normalized_text}{SPACE}"
         if any(word in padded for word in self.uk_words):
-            return "uk"
+            return CoreLanguage.UK.value
         if any(word in padded for word in self.ru_words):
-            return "ru"
+            return CoreLanguage.RU.value
         return self.detector.detect(normalized_text) or LANGUAGE_UNKNOWN
-
-    @staticmethod
-    def is_wrong(detected: str, expected: str) -> bool:
-        """Язык служебной строки явно не тот: определён, язык блока — uk, en или ru, и они различаются."""
-        if detected in UNDECIDED_LANGUAGES or not CoreLanguage.covers(expected):
-            return False
-        return detected != expected
-
-    @staticmethod
-    def is_short_service_line(text: str) -> bool:
-        return len(collapse_spaces(text)) <= SERVICE_LINE_MAX_CHARS

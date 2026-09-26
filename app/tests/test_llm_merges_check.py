@@ -12,80 +12,41 @@ from app.llm.merges.check import (
     MergeCheck,
     MergeCheckPassed,
     MergeCheckRequest,
-    MergeCheckRules,
     MergeDiagnostics,
 )
 from app.llm.merges.description import MergedDescription
 from app.llm.merges.links import OfficialLinkSelection
+from app.llm.merges.merge_rules import MergeLexicons
 from app.llm.merges.quality import QualityGateStatus, QualityNormalization, QualityReasonCode, QualityRequest
 from app.llm.merges.reject import MergeReject, MergeRejectCode, MergeRejectStage
 from app.observability.log_event import LogArea
-from app.sources.video import SourceVideo
 from app.tests.fixtures.logs import LogCapture
-from app.tests.test_llm_merges_source import merge_video
+from app.tests.fixtures.merges import (
+    EXPANDED_SOURCES,
+    HOOK,
+    LONG_ALPHA,
+    LONG_BETA,
+    STRONG_BULLETS,
+    STRONG_CLOSE,
+    STRONG_HOOK,
+    bullets,
+    sources_of,
+)
 
-RULES: MergeCheckRules = MergeCheckRules.load()
+LEXICONS: MergeLexicons = MergeLexicons.load()
 LABEL: MergeAttemptLabel = MergeAttemptLabel(slot_id="16-10-2026_1900_en", language="en", model="gpt-x", attempt=2)
 NEUTRAL: str = chr(0x1F539)
 EMOJI: tuple[str, ...] = tuple(
     chr(code) for code in (0x1F525, 0x1F6A8, 0x1F3AF, 0x1F9ED, 0x2728, 0x1F514, 0x1F4A5, 0x1F31F, 0x1F396, 0x1F3F3)
 )
-
-# Источники донорских тестов (`test_merge_contract_helpers.py::_expanded_validation_videos`, restreamer 35324e5).
-EXPANDED_SOURCES: tuple[tuple[str, str], ...] = (
-    (
-        "Brussels sanctions vote briefing",
-        "In Brussels, Anna Kovalenko tracks the March 18 sanctions vote, budget amendments, and customs delays after "
-        "the commission session.",
-    ),
-    (
-        "Kharkiv rail and drone update",
-        "In Kharkiv, Oleh Martynenko reports 17 drone strikes, rail hub outages, and evacuation routes for Saltivka "
-        "districts.",
-    ),
-    (
-        "Geneva relief corridor desk",
-        "From Geneva, Marta Leone outlines the aid corridor timetable, WHO cargo counts, and donor pledges for Odesa "
-        "and Mykolaiv hospitals.",
-    ),
-)
 TWO_SOURCES: tuple[tuple[str, str], ...] = (
     ("Source one", "Source one paragraph with concrete facts."),
     ("Source two", "Source two paragraph with concrete facts."),
 )
-STRONG_BULLETS: tuple[str, ...] = (
-    "Brussels sanctions vote, budget amendments, and customs delays after the March 18 commission session",
-    "Anna Kovalenko tracks coalition counts and the pressure points before the chamber debate",
-    "Kharkiv rail hub outages after 17 drone strikes across Saltivka districts",
-    "Oleh Martynenko details evacuation routes, depot damage, and recovery sequencing on the eastern line",
-    "Geneva aid corridor timetable, WHO cargo counts, and donor pledges for Odesa hospitals",
-    "Marta Leone breaks down how Mykolaiv deliveries depend on the next donor release window",
-)
-STRONG_HOOK: str = (
-    "Tonight we align the Brussels vote, the Kharkiv transport shock, and the Geneva aid timetable into one grounded "
-    "briefing. Each source keeps its own factual lane, and the summary stays concrete instead of leaning on editorial "
-    "gloss."
-)
-STRONG_CLOSE: str = (
-    "The closing paragraph ties the political vote, frontline logistics, and medical supply chain into a clear "
-    "next-step agenda without flattening the sources into one generic thesis."
-)
-# Перегруженные пункты (длиннее 500 знаков) без общих слов: соседние строки не повтор.
-LONG_ALPHA: str = "alpha " * 90
-LONG_BETA: str = "beta " * 110
-HOOK: str = "Tonight we map the sanctions vote and what it changes for the next operational window."
-
-
-def bullets(lines: tuple[str, ...] | list[str]) -> str:
-    return "\n".join(f"{NEUTRAL} {line}" for line in lines)
-
-
-def sources_of(pairs: tuple[tuple[str, str], ...]) -> tuple[SourceVideo, ...]:
-    return tuple(merge_video(index + 1, title, body) for index, (title, body) in enumerate(pairs))
 
 
 def request_of(title: str, answer: str, pairs: tuple[tuple[str, str], ...], language: str = "en") -> MergeCheckRequest:
-    return MergeCheckRequest.of(replace(LABEL, language=language), title, MergedDescription(answer), sources_of(pairs), RULES)
+    return MergeCheckRequest.of(replace(LABEL, language=language), title, MergedDescription(answer), sources_of(pairs), LEXICONS)
 
 
 def normalized_check(
@@ -93,19 +54,19 @@ def normalized_check(
 ) -> MergeCheck:
     """Проверка, как у исполнителя донора: ответ → нормализация качества с названием и числом источников."""
     request: MergeCheckRequest = request_of(title, answer, pairs, language)
-    normalization: QualityNormalization = MergedDescription(answer).quality_normalized(
-        QualityRequest(language=language, title=title, source_count=len(pairs)), RULES.quality
+    normalization: QualityNormalization = QualityNormalization.of(
+        MergedDescription(answer), QualityRequest(language=language, title=title, source_count=len(pairs)), LEXICONS
     )
-    return MergeCheck.of(request, normalization, RULES)
+    return MergeCheck.of(request, normalization, LEXICONS)
 
 
 def raw_check(answer: str, pairs: tuple[tuple[str, str], ...] = (), title: str = "Title") -> MergeCheck:
     """Проверка текста как есть: диагностика качества — от нормализации, текст — не нормализованный."""
-    normalization: QualityNormalization = MergedDescription(answer).quality_normalized(
-        QualityRequest(language="en", title=title, source_count=len(pairs)), RULES.quality
+    normalization: QualityNormalization = QualityNormalization.of(
+        MergedDescription(answer), QualityRequest(language="en", title=title, source_count=len(pairs)), LEXICONS
     )
     request: MergeCheckRequest = request_of(title, answer, pairs)
-    return MergeCheck.of(request, replace(normalization, description=MergedDescription(answer)), RULES)
+    return MergeCheck.of(request, replace(normalization, description=MergedDescription(answer)), LEXICONS)
 
 
 def reject_code(verdict: MergeCheckPassed | MergeReject) -> str:
@@ -435,7 +396,7 @@ def test_diagnostics_count_bullets_markers_entities_and_links() -> None:
     )
     request: MergeCheckRequest = request_of("Title", answer, pairs)
     diagnostics: MergeDiagnostics = MergeDiagnostics.of(
-        request, MergedDescription(answer), raw_check(answer, pairs).quality, RULES
+        request, MergedDescription(answer), raw_check(answer, pairs).quality, LEXICONS
     )
     assert diagnostics.bullet_points_count == 4
     assert diagnostics.semantic_bullets_count == diagnostics.bullets_with_emoji_count == 2
@@ -451,7 +412,7 @@ def test_diagnostics_count_bullets_markers_entities_and_links() -> None:
 
 def test_links_in_output_are_counted_on_the_answer_before_normalization() -> None:
     request: MergeCheckRequest = request_of("Title", "Body https://a.org https://b.org", (("One", "Body."),))
-    diagnostics: MergeDiagnostics = MergeDiagnostics.of(request, MergedDescription("Body"), raw_check("Body").quality, RULES)
+    diagnostics: MergeDiagnostics = MergeDiagnostics.of(request, MergedDescription("Body"), raw_check("Body").quality, LEXICONS)
     assert diagnostics.official_links_in_output == 2
     assert request.links == OfficialLinkSelection(found_in_sources=0, kept_links=())
 

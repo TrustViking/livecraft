@@ -1,22 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 from app.llm.merges.prompt_texts import MergePromptTexts
 from app.llm.merges.source import MergeSource, PreparedSourceDescription
-from app.sources.video import SourceVideo
-from app.tests.fixtures.sources import admitted_row, ready_source
+from app.tests.fixtures.merges import merge_video
 
-KYIV: ZoneInfo = ZoneInfo("Europe/Kyiv")
-START: datetime = datetime(2026, 10, 16, 19, 0, tzinfo=KYIV)
 TEXTS: MergePromptTexts = MergePromptTexts.load()
 HINTS: tuple[str, ...] = TEXTS.service_hints
-
-
-def merge_video(row_number: int, title: str, description: str, language: str = "en") -> SourceVideo:
-    """Годный источник слота без сети; ссылка своя на каждый ряд."""
-    return ready_source(admitted_row(row_number, f"https://youtu.be/{row_number:011d}", START), title, description, language)
 
 
 # --- подготовка описания

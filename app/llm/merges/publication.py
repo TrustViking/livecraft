@@ -23,27 +23,24 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 from app.core.sequence import unique_in_order
 from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
 from app.core.web_link import WebLink
 from app.llm.merges.description import MergedDescription
-from app.llm.merges.hook import BadHookLexicon
 from app.llm.merges.links import AuthoritativeLinks
-from app.llm.merges.quality import QualityRequest
+from app.llm.merges.merge_rules import MergeRules
+from app.llm.merges.quality import QualityNormalization, QualityRequest
 from app.observability.log_event import LogArea, LogValue, get_logger
 from app.slots.texts import SlotTextOrigin, SlotTexts
+from app.sources.video import SourceVideo
 from app.texts.composer import LAYOUT_EMPTY, DescriptionParts
 from app.texts.description_marks import BulletLine, CtaLexicon
 from app.texts.official_links import OfficialLinksBlocks
 from app.texts.paragraphs import collapse_spaces, has_duplicate_paragraphs, normalize_multiline_text, split_paragraphs
 from app.texts.source_link import LinkedText
 from app.texts.tail import EmbeddedTail, TailFragments, TrailingTail, clean_double_bullet_markers
-
-if TYPE_CHECKING:
-    from app.llm.merges.attempt import MergeRules
-    from app.sources.video import SourceVideo
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
@@ -181,30 +178,6 @@ class SanitizedDescription:
 
 
 @dataclass(frozen=True)
-class PublishGate:
-    """Проверка описания перед публикацией: повтор абзацев; призыв или негодный тезис в первом абзаце."""
-
-    bad_hooks: BadHookLexicon
-    cta: CtaLexicon
-
-    def has_duplicate_paragraphs(self, text: str) -> bool:
-        return has_duplicate_paragraphs(text)
-
-    def has_opener_cta(self, text: str) -> bool:
-        """Первая непустая строка или весь первый абзац — негодный тезис, или первая строка начинается с призыва."""
-        paragraphs: list[str] = split_paragraphs(text)
-        if not paragraphs:
-            return False
-        first_paragraph: str = paragraphs[0]
-        first_line: str = next((line.strip() for line in first_paragraph.split(NEWLINE) if line.strip()), "")
-        if not first_line:
-            return False
-        if self.bad_hooks.matches(first_line) or self.bad_hooks.matches(first_paragraph):
-            return True
-        return self.cta.starts_with_prefix(first_line)
-
-
-@dataclass(frozen=True)
 class MergePublication:
     """Название и описание принятого merge после санации и итог проверки перед публикацией.
 
@@ -227,7 +200,7 @@ class MergePublication:
         cls, title: str, description: str, sources: Sequence[SourceVideo], language: str, rules: MergeRules
     ) -> MergePublication:
         """Шаги `build_sanitized_merged_publication_payload` донора; строки лога — по ходу, итог — в конце."""
-        cta: CtaLexicon = rules.check.quality.cta
+        cta: CtaLexicon = rules.lexicons.cta
         blocks: OfficialLinksBlocks = OfficialLinksBlocks.of(description.strip())
         sanitized: SanitizedDescription = SanitizedDescription.of(blocks.cleaned_text, language, PRIMARY_SOURCE_LABEL, cta)
         text_urls: tuple[str, ...] = unique_in_order((*blocks.source_urls, *sanitized.source_urls))
@@ -236,17 +209,16 @@ class MergePublication:
         )
         body: str = sanitized.body
         if sources:
-            body = MergedDescription(body).quality_normalized(QualityRequest(language=language), rules.check.quality).description.text
+            body = QualityNormalization.of(MergedDescription(body), QualityRequest(language=language), rules.lexicons).description.text
         sanitized.drop_cta(language, PRIMARY_SOURCE_LABEL)
         parts: DescriptionParts = DescriptionParts(body=body, hashtags_line=sanitized.hashtags_line, official_urls=links.urls)
         final: str = parts.compose(language, rules.headings)
-        gate: PublishGate = PublishGate(bad_hooks=rules.check.bad_hooks, cta=cta)
         publication: MergePublication = cls(
             language=language,
             title=collapse_spaces(title),
             description=final,
-            has_duplicate=gate.has_duplicate_paragraphs(final),
-            has_opener_cta=gate.has_opener_cta(final),
+            has_duplicate=has_duplicate_paragraphs(final),
+            has_opener_cta=rules.gate.has_opener_cta(final),
             layout=parts.layout,
             sanitized=sanitized,
             blocks=blocks,

@@ -3,61 +3,49 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import pytest
 
 from app.llm.errors import LlmErrorKind
-from app.llm.merges.attempt import MergeRules
 from app.llm.merges.description import MergedDescription
-from app.llm.merges.job import MergeJob, MergeOutcome, MergeSkipReason, ParagraphEnforcement
+from app.llm.merges.job import MergeOutcome, MergeSkipReason, ParagraphEnforcement
+from app.llm.merges.merge_rules import MergeRules
 from app.llm.merges.prompt import MergePrompt
 from app.llm.merges.retry import RetryFacts, RetryProfile, RetrySignal
-from app.llm.merges.run import MergeRun, MergeStopReason, MergeTally
+from app.llm.merges.run import MergeStopReason, MergeTally
 from app.observability.log_event import LogArea
 from app.intake.builder import SlotGroup
 from app.slots.slot import SlotKey
 from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.sources.video import SourceVideo
-from app.tests.conftest import LLM_SETTINGS
 from app.tests.fixtures.logs import LogCapture
-from app.tests.test_llm_merges_attempt import (
+from app.tests.fixtures.merges import (
     ADJACENT_ANSWER,
     CTA_FIRST_ANSWER,
+    EXPANDED_SOURCES,
     MODEL,
+    NOT_JSON,
     OVERFLOW_ANSWER,
     OVERLOADED_ANSWER,
+    SLOT_START,
     STRONG_ANSWER,
+    STRONG_BULLETS,
+    STRONG_CLOSE,
+    STRONG_HOOK,
     THIN_ANSWER,
     TITLE,
     UNDERFLOW_ANSWER,
-    QueueBackend,
     answer,
+    bullets,
     error,
+    group_of,
+    job_of,
+    merge_video,
+    run_with,
 )
-from app.tests.test_llm_merges_check import EXPANDED_SOURCES, STRONG_BULLETS, STRONG_CLOSE, STRONG_HOOK, bullets
-from app.tests.test_llm_merges_source import merge_video
 
 RULES: MergeRules = MergeRules.load()
-START: datetime = datetime(2026, 10, 16, 19, 0, tzinfo=timezone(timedelta(hours=3)))
-NOT_JSON: str = "not json at all"
-
-
-def group_of(pairs: tuple[tuple[str, str], ...] = EXPANDED_SOURCES, start: datetime = START) -> SlotGroup:
-    videos: tuple[SourceVideo, ...] = tuple(
-        merge_video(index + 2, title, body) for index, (title, body) in enumerate(pairs)
-    )
-    return SlotGroup(SlotKey(start=start, language="en"), videos)
-
-
-def job_of(group: SlotGroup, merge_run: MergeRun) -> MergeJob:
-    """Merge слота группы: её ключ и источники в порядке рядов."""
-    return MergeJob(group.key, group.videos, merge_run)
-
-
-def run_with(*replies: object) -> tuple[MergeRun, QueueBackend]:
-    backend: QueueBackend = QueueBackend(replies=list(replies))
-    return MergeRun(backend=backend, model=MODEL, settings=LLM_SETTINGS, rules=RULES), backend
 
 
 def first_prompt(group: SlotGroup) -> MergePrompt:
@@ -217,7 +205,7 @@ def test_three_attempts_at_most(llm_log: LogCapture) -> None:
 def test_quota_stops_the_slot_and_every_later_slot_goes_without_a_request(llm_log: LogCapture) -> None:
     merge_run, backend = run_with(error(LlmErrorKind.QUOTA), answer(STRONG_ANSWER))
     first: MergeOutcome = job_of(group_of(), merge_run).run()
-    later_group: SlotGroup = group_of(start=START + timedelta(hours=1))
+    later_group: SlotGroup = group_of(start=SLOT_START + timedelta(hours=1))
     later: MergeOutcome = job_of(later_group, merge_run).run()
     assert merge_run.stop_reason is MergeStopReason.QUOTA and len(backend.requests) == 1
     assert first.attempts == 1 and first.reject_codes == ("quota_exhausted",) and first.is_final_failure
@@ -236,7 +224,7 @@ def test_quota_stops_the_slot_and_every_later_slot_goes_without_a_request(llm_lo
 def test_a_model_configuration_error_stops_merge_until_the_end_of_the_run(llm_log: LogCapture) -> None:
     merge_run, backend = run_with(error(LlmErrorKind.AUTH), answer(STRONG_ANSWER))
     first: MergeOutcome = job_of(group_of(), merge_run).run()
-    later: MergeOutcome = job_of(group_of(start=START + timedelta(hours=1)), merge_run).run()
+    later: MergeOutcome = job_of(group_of(start=SLOT_START + timedelta(hours=1)), merge_run).run()
     assert merge_run.stop_reason is MergeStopReason.MODEL and len(backend.requests) == 1
     assert first.reject_codes == ("authentication_failed",) and first.texts.origin is SlotTextOrigin.SOURCE_COMPOSED
     assert later.skipped_reason is MergeSkipReason.MODEL_CONFIGURATION and later.attempts == 0
@@ -322,7 +310,7 @@ def test_the_outcome_line_has_counts_and_no_texts() -> None:
 def test_no_model_answer_or_source_text_reaches_the_log(llm_log: LogCapture) -> None:
     merge_run, _ = run_with(answer(THIN_ANSWER), NOT_JSON, answer(OVERFLOW_ANSWER), answer(STRONG_ANSWER))
     job_of(group_of(), merge_run).run()
-    job_of(group_of(start=START + timedelta(hours=1)), merge_run).run()
+    job_of(group_of(start=SLOT_START + timedelta(hours=1)), merge_run).run()
     joined: str = "\n".join(llm_log.messages())
     fragments: list[str] = [STRONG_HOOK[:40], STRONG_BULLETS[0], STRONG_CLOSE[:40], NOT_JSON, "Paragraph number", TITLE]
     fragments.extend(body[:40] for _, body in EXPANDED_SOURCES)
@@ -356,7 +344,7 @@ def uk_group(pairs: tuple[tuple[str, str], ...]) -> SlotGroup:
     videos: tuple[SourceVideo, ...] = tuple(
         merge_video(index + 2, title, body, "uk") for index, (title, body) in enumerate(pairs)
     )
-    return SlotGroup(SlotKey(start=START, language="uk"), videos)
+    return SlotGroup(SlotKey(start=SLOT_START, language="uk"), videos)
 
 
 def test_an_accepted_answer_is_sanitized_before_it_becomes_the_slot_texts(llm_log: LogCapture) -> None:

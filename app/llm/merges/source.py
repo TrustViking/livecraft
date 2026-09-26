@@ -10,15 +10,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
+from app.llm.merges.prompt_texts import MergePromptTexts
+from app.sources.video import SourceVideo
 from app.texts.analysis_text import AnalysisTextReport
 from app.texts.phrase_lexicon import ServiceHints
-
-if TYPE_CHECKING:
-    from app.llm.merges.prompt_texts import MergePromptTexts
-    from app.sources.video import SourceVideo
 
 EXTRA_BREAKS_PATTERN: Final[re.Pattern[str]] = re.compile(r"\n{3,}")
 SOURCE_HEADER: Final[str] = "SOURCE {index}"

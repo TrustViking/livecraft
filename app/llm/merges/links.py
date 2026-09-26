@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 from app.core.text_format import NEWLINE
 from app.core.web_link import URL_PATTERN, WebLink
@@ -37,13 +37,11 @@ from app.llm.merges.rules import (
 )
 from app.observability.log_event import LogArea, get_logger
 from app.resources.loader import TextResource
+from app.sources.video import SourceVideo
 from app.texts.description_marks import is_official_links_heading
 from app.texts.paragraphs import normalize_newlines
 from app.texts.phrase_lexicon import PhraseLexicon
 from app.texts.source_link import SourceLink
-
-if TYPE_CHECKING:
-    from app.sources.video import SourceVideo
 
 LOGGER = get_logger(LogArea.LLM)
 

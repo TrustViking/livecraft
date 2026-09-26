@@ -625,6 +625,8 @@ MERGE_REJECT_TEXT: Final[dict[str, str]] = {
     "numbered_title_dump": "название перечисляет темы под номерами",
     "semantic_gate": "описание не прошло проверку языка и алфавита",
 }
+# Ресурс строк промта merge (app\llm\merges\prompt_texts.py): у каждого ключа — список строк.
+RESOURCE_PROBLEM_LINES: Final[str] = "нужен непустой список строк"
 
 # --- пробник нейросети (app\tools\llm_probe.py): модель, токены, стоимость; ни ключа, ни промта
 LLM_PROBE_TITLE: Final[str] = "Проверка нейросети OpenAI"

@@ -13,8 +13,8 @@
 ########################################
 # Секреты и настройки: всё, что в secrets\, — личное (CLAUDE.md §5, §7).
 # livecraft.json в git тоже нет: в нём ссылка на форму и другие настройки человека
-# (§14 решения 15, 16). Поставочный вид — app\ui\messages_ru.py::CONFIG_SETTINGS_TEMPLATE;
-# нет файла — программа кладёт его сама (app\config\loader.py::ShippedSettings).
+# (§14 решения 15, 16). Поставочный вид — app\resources\text\settings_shipped.json;
+# нет файла — программа кладёт его сама (app\config\files.py::ShippedSettings).
 # Явные строки ниже избыточны при /secrets/*, но оставлены как документ намерения:
 #   livecraft.json       — технические настройки и ссылка на форму ключей
 #   vault.dat            — поставочный сейф (ключ OpenAI, id таблицы, диапазон)

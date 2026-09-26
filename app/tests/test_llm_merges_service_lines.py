@@ -2,21 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from app.llm.merges.service_lines import (
-    LANGUAGE_HINTS_RESOURCE,
-    ServiceLanguage,
-    ServiceLineCatalog,
-    ServiceLineKey,
-)
-from app.resources.loader import TextResource
+from app.llm.merges.blocks import DescriptionBlocks
+from app.llm.merges.service_lines import LanguageMatch, ServiceLanguage, ServiceLineCatalog, ServiceLineKey
 from app.texts.language_detector import TextLanguageDetector
 from app.texts.phrase_lexicon import PhraseLexicon, ServiceHints
 
 CATALOG: ServiceLineCatalog = ServiceLineCatalog.load()
 SERVICE: ServiceLanguage = ServiceLanguage.load()
 
-# Списки донора `quality_service_lines.py` (restreamer 35324e5) — те же значения и порядок.
-DONOR_HINTS: dict[str, tuple[str, ...]] = {
+# Подсказки языка служебных строк — стартовые данные: значения и порядок ресурса.
+SHIPPED_HINTS: dict[str, tuple[str, ...]] = {
     "uk_phrases": ("у цьому стрімі", "офіційні ресурси", "дивіться ефір", "діліться думками"),
     "ru_phrases": ("в этом стриме", "официальные ссылки", "смотрите эфир", "делитесь мнением"),
     "en_phrases": ("in this stream", "official links", "watch the stream", "share your thoughts"),
@@ -25,13 +20,12 @@ DONOR_HINTS: dict[str, tuple[str, ...]] = {
 }
 
 
-def test_hint_file_keeps_donor_values_and_order() -> None:
-    for key, expected in DONOR_HINTS.items():
+def test_hint_file_keeps_its_values_and_order() -> None:
+    for key, expected in SHIPPED_HINTS.items():
         assert getattr(SERVICE, key) == expected
-    assert "restreamer" in TextResource(LANGUAGE_HINTS_RESOURCE).data["source"]
 
 
-def test_catalog_is_the_donor_file() -> None:
+def test_catalog_is_the_shipped_file() -> None:
     assert CATALOG.line("uk", ServiceLineKey.LEAD_IN) == "У цьому стрімі ви побачите:"
     assert CATALOG.line("ru", ServiceLineKey.LINKS_HEADING) == "🌐 Официальные ссылки:"
     assert CATALOG.line("en", ServiceLineKey.CTA) == "Watch the stream and share your thoughts."
@@ -92,12 +86,18 @@ def test_langdetect_undecided_is_unknown() -> None:
     [("en", "uk", True), ("uk", "uk", False), ("unknown", "uk", False), ("none", "ru", False),
      ("other", "en", False), ("en", "de", False), ("ru", "en", True)],
 )
-def test_is_wrong(detected: str, expected: str, wrong: bool) -> None:
-    assert ServiceLanguage.is_wrong(detected, expected) is wrong
+def test_a_language_is_wrong_only_when_it_is_decided_and_differs(detected: str, expected: str, wrong: bool) -> None:
+    """Одно правило для тезиса и служебных строк: язык, который не определился, несовпадением не считается."""
+    assert LanguageMatch(detected, expected).is_wrong is wrong
+
+
+def cta_blocks(cta: str) -> DescriptionBlocks:
+    return DescriptionBlocks(hook="", lead_in="", theses_lines=(), links_heading="", links_urls=(), cta=cta)
 
 
 def test_short_service_line_is_at_most_140_chars() -> None:
-    assert ServiceLanguage.is_short_service_line("a" * 140) is True
-    assert ServiceLanguage.is_short_service_line("a" * 141) is False
-    assert ServiceLanguage.is_short_service_line(" a  b " * 35) is True       # пробелы схлопываются: 139 знаков
-    assert ServiceLanguage.is_short_service_line(" a  b " * 36) is False
+    assert cta_blocks("a" * 140).has_short_cta is True
+    assert cta_blocks("a" * 141).has_short_cta is False
+    assert cta_blocks(" a  b " * 35).has_short_cta is True       # пробелы схлопываются: 139 знаков
+    assert cta_blocks(" a  b " * 36).has_short_cta is False
+    assert cta_blocks("").has_short_cta is False

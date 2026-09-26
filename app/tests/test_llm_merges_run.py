@@ -13,9 +13,18 @@ from app.llm.merges.run import MergeArtifactStatus, MergeDayBlocks, MergeStopRea
 from app.observability.log_event import LogArea
 from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.tests.fixtures.logs import LogCapture
-from app.tests.test_llm_merges_attempt import STRONG_ANSWER, UNDERFLOW_ANSWER, answer, error
-from app.tests.test_llm_merges_check import EXPANDED_SOURCES
-from app.tests.test_llm_merges_job import NOT_JSON, START, group_of, job_of, run_with
+from app.tests.fixtures.merges import (
+    EXPANDED_SOURCES,
+    NOT_JSON,
+    SLOT_START,
+    STRONG_ANSWER,
+    UNDERFLOW_ANSWER,
+    answer,
+    error,
+    group_of,
+    job_of,
+    run_with,
+)
 
 MERGED: SlotTexts = SlotTexts(title="T", description="D", origin=SlotTextOrigin.MERGED)
 FROM_SOURCES: SlotTexts = SlotTexts(title="T", description="D", origin=SlotTextOrigin.SOURCE_COMPOSED)
@@ -133,9 +142,9 @@ def test_a_run_of_slots_adds_up() -> None:
         error(LlmErrorKind.QUOTA),                              # слот 3: квота — остановка
     )
     outcomes: list[MergeOutcome] = [
-        job_of(group_of(start=START + timedelta(hours=hour)), merge_run).run() for hour in range(4)
+        job_of(group_of(start=SLOT_START + timedelta(hours=hour)), merge_run).run() for hour in range(4)
     ]
-    outcomes.append(job_of(group_of(EXPANDED_SOURCES[:1], START + timedelta(hours=5)), merge_run).run())
+    outcomes.append(job_of(group_of(EXPANDED_SOURCES[:1], SLOT_START + timedelta(hours=5)), merge_run).run())
     assert [item.merged for item in outcomes] == [True, False, False, False, False]
     assert outcomes[3].skipped_reason is MergeSkipReason.QUOTA_EXHAUSTED
     assert outcomes[4].skipped_reason is MergeSkipReason.INSUFFICIENT_DESCRIPTIONS

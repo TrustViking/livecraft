@@ -25,12 +25,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
-from app.llm.merges.attempt import STAGE_PRIMARY, AcceptedMerge, MergeAttempt, MergeAttemptResult, MergeRules
+from app.llm.merges.attempt import STAGE_PRIMARY, AcceptedMerge, MergeAttempt, MergeAttemptResult
 from app.llm.merges.check import MergeAttemptLabel
 from app.llm.merges.description import MergedDescription
 from app.llm.merges.layout import DescriptionLayout
+from app.llm.merges.merge_rules import MergeRules
 from app.llm.merges.prompt import MergePrompt, MergePromptRefusal
 from app.llm.merges.publication import MergePublication
 from app.llm.merges.retry import RetryProfile
@@ -42,12 +43,10 @@ from app.llm.merges.rules import (
 )
 from app.llm.merges.run import MergeRun, MergeStopReason
 from app.observability.log_event import LogArea, LogValue, get_logger
+from app.slots.slot import SlotKey
 from app.slots.texts import SlotTextOrigin, SlotTexts
+from app.sources.video import SourceVideo
 from app.texts.paragraphs import normalize_multiline_text
-
-if TYPE_CHECKING:
-    from app.slots.slot import SlotKey
-    from app.sources.video import SourceVideo
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)
 

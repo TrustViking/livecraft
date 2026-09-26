@@ -181,5 +181,29 @@ def test_needs_are_said_in_work_order_and_not_built_parts_stay_in_place() -> Non
     )
 
 
+VAULT_BROKEN: str = "файл ключей и ссылок не читается"
+
+
+def test_one_text_of_different_needs_is_one_line_naming_all_their_parts() -> None:
+    """Разные нужды с одним текстом (сломанный сейф) — одна строка со всеми частями, а не строка на нужду."""
+    mode: ModeReadiness = mode_of(
+        blocked(RunPart.PLAN, NeedGap(need=Need.SHEETS_VAULT, text=VAULT_BROKEN)),
+        blocked(RunPart.PACKAGE, NeedGap(need=Need.SETTINGS, text=VAULT_BROKEN)),
+    )
+    parts: str = msg.LIST_JOINER.join((RunPart.PLAN.human_label, RunPart.PACKAGE.human_label))
+    assert mode.lines == (msg.RUN_NEED_BLOCKED.format(parts=parts, gap=VAULT_BROKEN),)
+
+
+def test_a_broken_vault_for_the_plan_and_the_merge_is_one_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Когда нейросеть появится в запуске: сломанный сейф не даёт ни таблицы, ни ключа OpenAI — одна строка."""
+    monkeypatch.setattr("app.run.mode.NOT_BUILT_PARTS", NOT_BUILT_PARTS - {RunPart.MERGE})
+    mode: ModeReadiness = mode_of(
+        blocked(RunPart.PLAN, NeedGap(need=Need.SHEETS_VAULT, text=VAULT_BROKEN)),
+        blocked(RunPart.MERGE, NeedGap(need=Need.OPENAI_VAULT, text=VAULT_BROKEN)),
+    )
+    parts: str = msg.LIST_JOINER.join((RunPart.PLAN.human_label, RunPart.MERGE.human_label))
+    assert mode.lines == (msg.RUN_NEED_BLOCKED.format(parts=parts, gap=VAULT_BROKEN),)
+
+
 def test_a_ready_mode_says_nothing() -> None:
     assert mode_of(ready(RunPart.PLAN), ready(RunPart.PACKAGE)).lines == ()

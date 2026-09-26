@@ -18,21 +18,19 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final
+from enum import Enum
+from typing import Final
 
 from app.core.sequence import unique_in_order
 from app.core.text_format import NEWLINE
-from app.llm.merges.agenda import AgendaLexicon
+from app.llm.merges.contract import MergeContract
 from app.llm.merges.description import MergedDescription
-from app.llm.merges.hook import BadHookLexicon
-from app.llm.merges.links import OfficialLinkHints, OfficialLinkSelection
-from app.llm.merges.quality import (
-    QualityDiagnostics,
-    QualityGateStatus,
-    QualityNormalization,
-    QualityRequest,
-    QualityRules,
-)
+from app.llm.merges.emoji import EmojiCleanup, EmojiUsage
+from app.llm.merges.hook_echo import HookEcho
+from app.llm.merges.links import OfficialLinkSelection
+from app.llm.merges.merge_rules import MergeLexicons
+from app.llm.merges.opening import DescriptionOpening
+from app.llm.merges.quality import QualityDiagnostics, QualityGateStatus, QualityNormalization, QualityRequest
 from app.llm.merges.reject import MergeReject, MergeRejectCode
 from app.llm.merges.rules import (
     AGENDA_MIN_BULLETS,
@@ -42,21 +40,15 @@ from app.llm.merges.rules import (
     FORMATTING_RECOVERY_MIN_SOURCES,
     HOOK_MARKS,
     HOOK_MIN_CHARS,
-    MIN_BULLETS_EXTRA_OVER_SOURCES,
-    MIN_BULLETS_FLOOR,
     MIN_BULLETS_MIN_SOURCES,
     OVERLOADED_BULLETS_MIN_LIST,
     OVERLOADED_BULLETS_REJECT,
     STYLE_CONTRACT_VERSION,
 )
-from app.observability.log_event import LogArea, LogValue, get_logger
+from app.observability.log_event import LogArea, LogEvent, LogValue, get_logger
+from app.sources.video import SourceVideo
 from app.texts.description_marks import ALLOWED_BULLET_MARKERS, BulletLine, extract_named_entities
 from app.texts.paragraphs import normalize_newlines
-from app.texts.phrase_lexicon import ServiceHints
-
-if TYPE_CHECKING:
-    from app.texts.language_detector import TextLanguageDetector
-    from app.sources.video import SourceVideo
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
@@ -76,28 +68,6 @@ def _flag(value: bool) -> str:
 
 
 @dataclass(frozen=True)
-class MergeCheckRules:
-    """Всё, чем пользуется проверка ответа: правила качества (в них призывы), негодный тезис, заголовки повестки,
-    подсказки служебных строк и контекста официальных ссылок."""
-
-    quality: QualityRules
-    bad_hooks: BadHookLexicon
-    agenda: AgendaLexicon
-    service_hints: ServiceHints
-    link_hints: OfficialLinkHints
-
-    @classmethod
-    def load(cls, detector: TextLanguageDetector | None = None) -> MergeCheckRules:
-        return cls(
-            quality=QualityRules.load(detector),
-            bad_hooks=BadHookLexicon.load(),
-            agenda=AgendaLexicon.load(),
-            service_hints=ServiceHints.load(),
-            link_hints=OfficialLinkHints.load(),
-        )
-
-
-@dataclass(frozen=True)
 class MergeAttemptLabel:
     """Какая попытка merge проверяется: слот, язык блока, модель, номер попытки — начало строк лога."""
 
@@ -109,6 +79,10 @@ class MergeAttemptLabel:
     @property
     def prefix(self) -> str:
         return f"slot={self.slot_id} language={self.language} model={self.model} attempt={self.attempt}"
+
+    def event(self, name: Enum) -> LogEvent:
+        """Строка лога о попытке: имя события и те же поля, что в `prefix`."""
+        return LogEvent.of(name, slot=self.slot_id, language=self.language, model=self.model, attempt=self.attempt)
 
 
 @dataclass(frozen=True)
@@ -129,14 +103,14 @@ class MergeCheckRequest:
         title: str,
         answer: MergedDescription,
         sources: Sequence[SourceVideo],
-        rules: MergeCheckRules,
+        lexicons: MergeLexicons,
     ) -> MergeCheckRequest:
         """Запрос по разобранному ответу: ссылки источников отбираются, ссылки ответа считаются по его тексту."""
         return cls(
             label=label,
             title=title,
             sources=tuple(sources),
-            links=OfficialLinkSelection.for_sources(sources, rules.link_hints),
+            links=OfficialLinkSelection.for_sources(sources, lexicons.link_hints),
             links_in_answer=answer.official_link_count,
         )
 
@@ -171,7 +145,7 @@ class MergeDiagnostics:
         request: MergeCheckRequest,
         description: MergedDescription,
         quality: QualityDiagnostics,
-        rules: MergeCheckRules,
+        lexicons: MergeLexicons,
     ) -> MergeDiagnostics:
         """Диагностика описания; имена из источников — по названию и описанию видео до чистки, как у донора."""
         trimmed: MergedDescription = MergedDescription(str(description.text or "").strip())
@@ -185,7 +159,7 @@ class MergeDiagnostics:
         first: str = paragraphs[0] if paragraphs else ""
         return cls(
             hook_present=len(first) >= HOOK_MIN_CHARS and any(mark in first for mark in HOOK_MARKS),
-            agenda_block_present=len(markers) >= AGENDA_MIN_BULLETS or trimmed.contains_agenda_heading(rules.agenda),
+            agenda_block_present=len(markers) >= AGENDA_MIN_BULLETS or lexicons.agenda.matches(trimmed.text),
             bullet_points_count=len(markers),
             semantic_bullets_count=semantic,
             bullets_with_emoji_count=semantic,
@@ -193,7 +167,7 @@ class MergeDiagnostics:
             bullet_marker_types=unique_in_order(markers),
             named_entities_preserved=len(source_entities & answer_entities),
             source_named_entities_total=len(source_entities),
-            emoji_count=trimmed.emoji_count,
+            emoji_count=EmojiUsage(trimmed).count,
             official_links_found_in_sources=request.links.found_in_sources,
             official_links_kept=len(request.links.kept_links),
             official_links_in_output=request.links_in_answer,
@@ -268,15 +242,15 @@ class MergeCheck:
     description: MergedDescription
     quality: QualityDiagnostics
     diagnostics: MergeDiagnostics
-    rules: MergeCheckRules = field(repr=False)
+    lexicons: MergeLexicons = field(repr=False)
 
     @classmethod
-    def of(cls, request: MergeCheckRequest, normalization: QualityNormalization, rules: MergeCheckRules) -> MergeCheck:
+    def of(cls, request: MergeCheckRequest, normalization: QualityNormalization, lexicons: MergeLexicons) -> MergeCheck:
         """Проверка описания после нормализации качества; диагностика стиля строится по нему."""
         diagnostics: MergeDiagnostics = MergeDiagnostics.of(
-            request, normalization.description, normalization.diagnostics, rules
+            request, normalization.description, normalization.diagnostics, lexicons
         )
-        return cls(request, normalization.description, normalization.diagnostics, diagnostics, rules)
+        return cls(request, normalization.description, normalization.diagnostics, diagnostics, lexicons)
 
     def run(self) -> MergeCheckPassed | MergeReject:
         """Проверки в порядке донора; первая сработавшая — отказ."""
@@ -304,8 +278,8 @@ class MergeCheck:
             return MergeReject(MergeRejectCode.PER_SOURCE_ENUMERATION)
         if description.has_duplicate_paragraphs:
             return MergeReject(MergeRejectCode.DUPLICATE_PARAGRAPH)
-        if description.has_hook_echo_in_body:
-            repaired: MergedDescription | None = description.hook_echo_repaired()
+        if HookEcho(description).found:
+            repaired: MergedDescription | None = HookEcho(description).repaired()
             if repaired is None:
                 return MergeReject(MergeRejectCode.HOOK_ECHO_IN_BODY)
             description = repaired
@@ -316,10 +290,11 @@ class MergeCheck:
 
     def _opening_reject(self, description: MergedDescription) -> MergeReject | None:
         """Призыв в начальных строках раньше тезиса и пунктов; служебная строка или негодный тезис в первом абзаце."""
-        rules: MergeCheckRules = self.rules
-        if description.cta_in_opening_lines(rules.quality.cta, rules.bad_hooks, rules.service_hints):
+        lexicons: MergeLexicons = self.lexicons
+        opening: DescriptionOpening = DescriptionOpening(description)
+        if opening.cta_before_content(lexicons.cta, lexicons.bad_hooks, lexicons.service_hints):
             return MergeReject(MergeRejectCode.CTA_AS_FIRST_PARAGRAPH)
-        if description.cta_in_hook(rules.bad_hooks, rules.service_hints):
+        if opening.hook_is_service_line(lexicons.bad_hooks, lexicons.service_hints):
             return MergeReject(MergeRejectCode.CTA_IN_HOOK)
         return None
 
@@ -327,8 +302,7 @@ class MergeCheck:
         """Число пунктов, эмодзи, перегруженные пункты, название-перечень, призыв в тезисе, похожие начала абзацев."""
         bullets: int = self.diagnostics.bullet_points_count
         source_count: int = self.request.source_count
-        min_bullets: int = max(source_count + MIN_BULLETS_EXTRA_OVER_SOURCES, MIN_BULLETS_FLOOR)
-        if source_count >= MIN_BULLETS_MIN_SOURCES and bullets < min_bullets:
+        if source_count >= MIN_BULLETS_MIN_SOURCES and bullets < MergeContract.min_bullets(source_count):
             return MergeReject(MergeRejectCode.INSUFFICIENT_BULLET_COVERAGE)
         if source_count <= COMPACT_MAX_SOURCES and bullets > COMPACT_BULLET_MAX:
             return MergeReject(MergeRejectCode.COMPACT_BULLET_OVERFLOW)
@@ -340,11 +314,35 @@ class MergeCheck:
         if NUMBERED_DUMP_PATTERN.search(self.request.title):
             return MergeReject(MergeRejectCode.NUMBERED_TITLE_DUMP)
         paragraphs: list[str] = description.paragraphs
-        if paragraphs and self.rules.quality.cta.starts_with_prefix(paragraphs[0]):
+        if paragraphs and self.lexicons.cta.starts_with_prefix(paragraphs[0]):
             return MergeReject(MergeRejectCode.CTA_AS_FIRST_PARAGRAPH)
         if description.has_similar_paragraph_prefixes:
             return MergeReject(MergeRejectCode.DUPLICATE_PARAGRAPH)
         return None
+
+
+@dataclass(frozen=True)
+class FormattedDraft:
+    """Описание отказа «много эмодзи» после снятия эмодзи и нормализации качества и что с ним сделано
+    (`actions` — имена действий в строке лога)."""
+
+    description: MergedDescription
+    actions: tuple[str, ...]
+
+    @classmethod
+    def of(cls, check: MergeCheck) -> FormattedDraft:
+        """Эмодзи вне маркеров снимаются, затем качество нормализуется без названия и числа источников."""
+        trimmed: MergedDescription = MergedDescription(check.description.text.strip())
+        cleanup: EmojiCleanup = EmojiUsage(trimmed).cleaned()
+        description: MergedDescription = cleanup.description if cleanup.changed else trimmed
+        actions: list[str] = [ACTION_REDUCED_EMOJI] if cleanup.changed else []
+        normalized: MergedDescription = QualityNormalization.of(
+            description, QualityRequest(language=check.request.label.language), check.lexicons
+        ).description
+        if normalized.text != description.text:
+            description = normalized
+            actions.append(ACTION_REAPPLIED_QUALITY)
+        return cls(description=description, actions=tuple(actions))
 
 
 @dataclass(frozen=True)
@@ -364,35 +362,17 @@ class FormattingRecovery:
             return cls(verdict=reject, actions=())
         if MergeRejectCode.EXCESSIVE_EMOJI_USAGE.value not in reject.reason_codes:
             return cls(verdict=reject, actions=())
-        formatted, actions = cls._formatted(check, reject)
-        if formatted.text == check.description.text or not actions:
-            return cls(verdict=reject, actions=actions)
+        draft: FormattedDraft = FormattedDraft.of(check)
+        if draft.description.text == check.description.text or not draft.actions:
+            return cls(verdict=reject, actions=draft.actions)
         request: MergeCheckRequest = check.request
-        normalization: QualityNormalization = formatted.quality_normalized(
-            QualityRequest(language=request.label.language, title=request.title), check.rules.quality
+        normalization: QualityNormalization = QualityNormalization.of(
+            draft.description, QualityRequest(language=request.label.language, title=request.title), check.lexicons
         )
-        recovered: MergeCheck = MergeCheck.of(request, normalization, check.rules)
-        outcome: FormattingRecovery = cls(verdict=recovered.run(), actions=actions)
+        recovered: MergeCheck = MergeCheck.of(request, normalization, check.lexicons)
+        outcome: FormattingRecovery = cls(verdict=recovered.run(), actions=draft.actions)
         LOGGER.info("%s", outcome.log_line(check, reject, recovered.diagnostics.emoji_count))
         return outcome
-
-    @staticmethod
-    def _formatted(check: MergeCheck, reject: MergeReject) -> tuple[MergedDescription, tuple[str, ...]]:
-        """`_normalize_formatting_only_description` донора: эмодзи снимаются, затем нормализация качества."""
-        description: MergedDescription = MergedDescription(str(check.description.text or "").strip())
-        actions: list[str] = []
-        if MergeRejectCode.EXCESSIVE_EMOJI_USAGE.value in reject.reason_codes:
-            stripped, changed = description.without_non_structural_emoji()
-            if changed:
-                description = stripped
-                actions.append(ACTION_REDUCED_EMOJI)
-        normalized: MergedDescription = description.quality_normalized(
-            QualityRequest(language=check.request.label.language), check.rules.quality
-        ).description
-        if normalized.text != description.text:
-            description = normalized
-            actions.append(ACTION_REAPPLIED_QUALITY)
-        return description, tuple(actions)
 
     @property
     def passed(self) -> MergeCheckPassed | None:

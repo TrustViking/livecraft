@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import dataclasses
-from types import MappingProxyType
-
 import pytest
 
-from app.llm.merges.prompt_texts import MergePromptTexts
-from app.llm.merges.retry import RetryFacts, RetryMode, RetryProfile, RetrySignal
+from app.llm.merges.prompt_texts import MergePromptTexts, Placeholder
+from app.llm.merges.reject import MergeRejectCode
+from app.llm.merges.retry import SIGNAL_ORDER, RetryFacts, RetryMode, RetryProfile, RetrySignal
+from app.tests.fixtures.merges import texts_with
 
 TEXTS: MergePromptTexts = MergePromptTexts.load()
-NO_TEMPLATES: MergePromptTexts = dataclasses.replace(TEXTS, retry_reinforcements=MappingProxyType({}))
+NO_TEMPLATES: MergePromptTexts = texts_with(reinforcements={})
 
 
 # --- направленные профили
@@ -64,9 +63,8 @@ def test_fallback_lines_fill_the_same_numbers_as_the_template() -> None:
 
 
 def test_empty_template_lines_are_skipped_and_an_empty_list_falls_back() -> None:
-    texts: MergePromptTexts = dataclasses.replace(
-        TEXTS,
-        retry_reinforcements=MappingProxyType({"paragraph_underflow": ("  ", "  Only {x} line  "), "cta_as_first_paragraph": ("",)}),
+    texts: MergePromptTexts = texts_with(
+        reinforcements={"paragraph_underflow": ("  ", "  Only {x} line  "), "cta_as_first_paragraph": ("",)}
     )
     underflow: RetryProfile = RetryProfile.targeted(RetrySignal.PARAGRAPH_UNDERFLOW, RetryFacts(), texts)
     assert underflow.reinforcement_lines == ("Only {x} line",)
@@ -137,6 +135,20 @@ def test_the_first_signal_in_donor_order_wins(codes: tuple[str, ...], signal: Re
 
 def test_every_targeted_signal_has_a_place_in_the_order() -> None:
     assert {RetrySignal.first_of((signal.value,)) for signal in RetrySignal} == set(RetrySignal)
+
+
+def test_every_signal_is_a_reject_code_and_the_order_names_reject_codes() -> None:
+    """Сигнал повтора — тот же код отказа: строки повтора и порядок выбора заданы кодами отказа."""
+    assert all(MergeRejectCode.of(signal.value) is not None for signal in RetrySignal)
+    assert all(isinstance(code, MergeRejectCode) for code, _ in SIGNAL_ORDER)
+
+
+def test_the_facts_fill_the_placeholders_of_each_signal() -> None:
+    facts: RetryFacts = RetryFacts(source_count=4, actual_bullets=3, required_bullets=5)
+    assert facts.placeholders(RetrySignal.INSUFFICIENT_BULLET_COVERAGE) == {
+        Placeholder.ACTUAL_BULLETS: 3, Placeholder.REQUIRED_BULLETS: 5, Placeholder.SOURCE_COUNT: 4
+    }
+    assert facts.placeholders(RetrySignal.HOOK_ECHO_IN_BODY) == {}
 
 
 def test_a_reject_without_a_profile_gets_the_standard_retry_with_its_signals() -> None:

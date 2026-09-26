@@ -1,23 +1,21 @@
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import json
 import logging
 from collections.abc import Iterator
-from types import MappingProxyType
 
 import pytest
 
 from app.llm.merges.contract import MergeContractMode
-from app.llm.merges.prompt import MergePrompt, MergePromptRefusal, language_full_name
+from app.llm.merges.prompt import MergePrompt, MergePromptRefusal
 from app.llm.merges.prompt_texts import MergePromptTexts
 from app.llm.merges.retry import RetryFacts, RetryProfile, RetrySignal
 from app.observability.log_event import LogArea
 from app.resources.loader import TextResource
 from app.sources.video import SourceVideo
 from app.tests.fixtures.logs import LogCapture
-from app.tests.test_llm_merges_source import merge_video
+from app.tests.fixtures.merges import merge_video, texts_with
 
 TEXTS: MergePromptTexts = MergePromptTexts.load()
 
@@ -113,14 +111,15 @@ def donor_test_texts(
     expanded: str = DONOR_TEST_EXPANDED,
     narrative: str = DONOR_TEST_NARRATIVE,
 ) -> MergePromptTexts:
-    return dataclasses.replace(
-        TEXTS,
+    return texts_with(
+        contracts={
+            MergeContractMode.COMPACT: compact,
+            MergeContractMode.EXPANDED: expanded,
+            MergeContractMode.NARRATIVE: narrative,
+        },
+        reinforcements={},
         title_description=prompt,
         structural_rules=rules,
-        contracts=MappingProxyType(
-            {MergeContractMode.COMPACT: compact, MergeContractMode.EXPANDED: expanded, MergeContractMode.NARRATIVE: narrative}
-        ),
-        retry_reinforcements=MappingProxyType({}),
         no_description="no description",
     )
 
@@ -437,7 +436,9 @@ def test_log_lines_have_counters_and_no_source_text(llm_log: LogCapture) -> None
 def test_narrative_log_line_has_no_bullet_range() -> None:
     description: str = "John Smith met Mary Jones while Alex Brown and Nina White and Oleg Ivanov reported."
     prompt: MergePrompt = build("en", (merge_video(2, "A", description), merge_video(3, "B", description)), TEXTS)
-    assert prompt.log_lines[-1].endswith("contract_mode=narrative expected_bullet_range=None expanded_structure_enabled=no narrative_trigger=yes")
+    assert prompt.log_lines[-1].endswith(
+        "contract_mode=narrative expected_bullet_range=- expanded_structure_enabled=no narrative_trigger=yes"
+    )
 
 
 @pytest.mark.parametrize("count", [0, 1])
@@ -456,5 +457,5 @@ def test_fewer_than_two_sources_is_a_refusal_value(count: int, llm_log: LogCaptu
     [("uk", "Ukrainian"), ("ru", "Russian"), ("en", "English"), ("de", "German"), (" EN ", "English"),
      ("xx", "XX"), (" zz ", "ZZ"), ("", "Unknown"), ("   ", "Unknown")],
 )
-def test_language_full_name(code: str, name: str) -> None:
-    assert language_full_name(code) == name
+def test_language_name(code: str, name: str) -> None:
+    assert build(code, two_videos(), TEXTS).language_name == name

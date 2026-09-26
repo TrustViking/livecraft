@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import pytest
-
 from app.llm.merges.blocks import DescriptionBlocks
-from app.llm.merges.quality import QualityRules
 from app.texts.description_marks import CtaLexicon
 
 CTA: CtaLexicon = CtaLexicon.load()
-ALLOWED: frozenset[str] = QualityRules.load().allowed_latin_tokens
 
 
 def blocks(text: str) -> DescriptionBlocks:
@@ -86,32 +82,4 @@ def test_render_joins_blocks_and_strips_the_root_url_slash() -> None:
     )
     assert parsed.render() == (
         "Hook with spaces\n\nLead:\n🔹 one\n\n🌐 Links:\nhttps://site.org\nhttps://site.org/page/\n\nWatch now"
-    )
-
-
-@pytest.mark.parametrize(
-    ("hook", "language", "expected"),
-    [
-        ("Цей текст містить мiксоване слово.", "uk", ("мiксоване",)),
-        ("Ця новина про budget reform сьогодні.", "uk", ("budget", "reform")),
-        ("OpenAI, YouTube, NASA, AI, Google, Kyiv — допустимі.", "uk", ()),
-        ("Сайт news.bbc.co.uk, пошта team@site.org, #hashtag і https://x.org/latin", "ru", ()),
-        ("The word пример appears here.", "en", ("пример",)),
-        ("The letter я alone is fine.", "en", ()),
-        ("Das Wort mиксed ist egal.", "de", ()),
-        ("Слово cat коротке, tree — вже ні.", "ru", ("tree",)),
-    ],
-)
-def test_script_mix_suspects(hook: str, language: str, expected: tuple[str, ...]) -> None:
-    parsed: DescriptionBlocks = DescriptionBlocks(hook, "", (), "", (), "")
-    assert parsed.script_mix_suspects("", language, ALLOWED) == expected
-
-
-def test_script_mix_checks_title_then_hook_then_theses_and_stops_at_five() -> None:
-    parsed: DescriptionBlocks = DescriptionBlocks(
-        hook="Текст alpha bravo", lead_in="", theses_lines=("🔹 charlie delta echo foxtrot",), links_heading="",
-        links_urls=(), cta="",
-    )
-    assert parsed.script_mix_suspects("Заголовок FЕКРИС", "ru", ALLOWED) == (
-        "FЕКРИС", "alpha", "bravo", "charlie", "delta",
     )

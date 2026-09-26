@@ -1,14 +1,13 @@
-"""Заголовок повестки в описании («Что в этом стриме:», «In this stream —»): признак пересказа вместо описания.
+"""Заголовок повестки в описании («Что в этом стриме:», «In this stream \u2014»): признак пересказа вместо описания.
 
-Правило — `merge_text_utils.py::_contains_agenda_heading` restreamer; заголовки — ресурс `merge_agenda_headings.txt`
-побайтно из restreamer.
+Заголовки \u2014 ресурс `merge_agenda_headings.txt`, в нижнем регистре.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Final
 
-from app.core.text_format import WHITESPACE_RUN_PATTERN
+from app.core.text_format import NEWLINE, SPACE, WHITESPACE_RUN_PATTERN
 from app.resources.loader import TextResource
 from app.texts.paragraphs import normalize_newlines
 
@@ -30,15 +29,18 @@ class AgendaLexicon:
         return cls(headings=TextResource(AGENDA_HEADINGS_RESOURCE).lines)
 
     def matches(self, text: str) -> bool:
-        """Хотя бы одна строка текста — заголовок повестки или начинается с него и двоеточия либо тире."""
-        for raw_line in normalize_newlines(text).split("\n"):
+        """Хотя бы одна строка текста \u2014 заголовок повестки или начинается с него и двоеточия либо тире."""
+        for raw_line in normalize_newlines(text).split(NEWLINE):
             if not raw_line.strip():
                 continue
-            line: str = WHITESPACE_RUN_PATTERN.sub(" ", raw_line.strip().lower()).strip(HEADING_EDGE_CHARS)
-            if any(self._is_heading(line, heading) for heading in self.headings):
+            line: str = WHITESPACE_RUN_PATTERN.sub(SPACE, raw_line.strip().lower()).strip(HEADING_EDGE_CHARS)
+            if self._is_heading(line):
                 return True
         return False
 
-    @staticmethod
-    def _is_heading(line: str, heading: str) -> bool:
-        return line == heading or any(line.startswith(f"{heading}{tail}") for tail in HEADING_CONTINUATIONS)
+    def _is_heading(self, line: str) -> bool:
+        """Строка \u2014 сам заголовок или заголовок с продолжением через двоеточие или тире."""
+        return any(
+            line == heading or any(line.startswith(f"{heading}{tail}") for tail in HEADING_CONTINUATIONS)
+            for heading in self.headings
+        )

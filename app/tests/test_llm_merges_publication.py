@@ -7,18 +7,18 @@ from collections.abc import Iterator
 
 import pytest
 
-from app.llm.merges.attempt import MergeRules
-from app.llm.merges.publication import PRIMARY_SOURCE_LABEL, MergePublication, PublishGate, SanitizedDescription
+from app.llm.merges.merge_rules import MergeRules
+from app.llm.merges.publication import PRIMARY_SOURCE_LABEL, MergePublication, SanitizedDescription
 from app.observability.log_event import LogArea
 from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.sources.video import SourceVideo
 from app.tests.fixtures.logs import LogCapture
-from app.tests.test_llm_merges_source import merge_video
+from app.tests.fixtures.merges import merge_video
 from app.texts.description_marks import CtaLexicon
+from app.texts.paragraphs import has_duplicate_paragraphs
 
 RULES: MergeRules = MergeRules.load()
-CTA: CtaLexicon = RULES.check.quality.cta
-GATE: PublishGate = PublishGate(bad_hooks=RULES.check.bad_hooks, cta=CTA)
+CTA: CtaLexicon = RULES.lexicons.cta
 HEADING: str = "\U0001F310 Official links:"
 TITLE: str = "Merged title"
 
@@ -126,23 +126,8 @@ def test_a_bullet_block_with_a_cta_word_is_kept() -> None:
     ],
 )
 def test_gate_duplicate_paragraphs(text: str, expected: bool) -> None:
-    assert GATE.has_duplicate_paragraphs(text) is expected
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("Climate change accelerates in Arctic regions.\n\n\U0001F539 New data shows...", False),
-        ("Subscribe to our channel for updates!\n\n\U0001F539 Today we discuss...", True),
-        ("Leave a comment with what stood out most.\n\n\U0001F539 Today we discuss...", True),
-        ("Напишіть у коментар ваші думки.\n\n\U0001F539 Сьогодні розглянемо...", True),
-        ("Оставляйте комментарии по фактам.\n\n\U0001F539 Сегодня разберем...", True),
-        ("This video is part of our coverage of the vote.\n\n\U0001F539 Facts.", True),
-        ("", False),
-    ],
-)
-def test_gate_opener_cta(text: str, expected: bool) -> None:
-    assert GATE.has_opener_cta(text) is expected
+    """Повтор абзацев перед публикацией — то же правило, что у текста описания."""
+    assert has_duplicate_paragraphs(text) is expected
 
 
 # --- публикация целиком

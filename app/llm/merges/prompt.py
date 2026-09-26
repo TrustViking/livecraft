@@ -1,10 +1,9 @@
-"""Промт merge для слота (restreamer `app\\llm\\merges\\merge_prompt.py::build_llm_merge_prompt_text`).
+"""Промт merge для слота: источники, контракт и тексты промта в одном объекте.
 
 `MergePrompt.of` готовит источники (`MergeSource`), выбирает контракт (`MergeContract`) по очищенным описаниям и пишет в лог
-три строки донора: по источнику, итог по источникам, выбранный контракт. `MergePrompt.text` — промт по боевому шаблону:
-шаблон с блоком правил и контракта, затем политика смешения тем и политика ссылок, а инструкция повтора — последней, чтобы
-начало промта (правила, контракт, источники) у первой попытки и у повтора совпадало. Запасной ветки донора без шаблона нет:
-шаблон всегда приходит из ресурсов программы.
+строку по каждому источнику, итог по источникам и выбранный контракт. `MergePrompt.text` — промт по шаблону: шаблон с
+блоком правил и контракта, затем политика смешения тем и политика ссылок, а инструкция повтора — последней, чтобы
+начало промта (правила, контракт, источники) у первой попытки и у повтора совпадало.
 
 Меньше двух источников — не исключение, а `MergePromptRefusal`: такой слот merge не делает.
 """
@@ -13,39 +12,34 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final
+from enum import Enum
+from typing import Final
 
 import pycountry
 
 from app.core.text_format import PARAGRAPH_BREAK
+from app.llm.merges import rules
 from app.llm.merges.contract import MergeContract
 from app.llm.merges.prompt_texts import MergeContractMode, MergePromptTexts
 from app.llm.merges.retry import RetryProfile
 from app.llm.merges.source import MergeSource
-from app.observability.log_event import LogArea, LogValue, get_logger
-
-if TYPE_CHECKING:
-    from app.sources.video import SourceVideo
+from app.observability.log_event import LogArea, LogEvent, get_logger
+from app.sources.video import SourceVideo
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
-MIN_SOURCES: Final[int] = 2
 UNKNOWN_LANGUAGE_NAME: Final[str] = "Unknown"
+LANGUAGE_NAME_FIELD: Final[str] = "name"           # английское название языка в записи справочника pycountry
 MERGE_CONTRACT_PLACEHOLDER: Final[str] = "{merge_contract_block}"
+HARD_TRUNCATION_DISABLED: Final[str] = "disabled"   # тексты источников в промт идут целиком
 
 
-def language_full_name(language: str) -> str:
-    """Английское название языка по pycountry («uk» → «Ukrainian»); нет в pycountry — код заглавными; пусто — «Unknown».
+class PromptEvent(str, Enum):
+    """События промта в логе."""
 
-    Донор: `core\\language_display.py::language_full_name` (запасное — `language_display_name`).
-    """
-    code: str = str(language or "").strip().lower()
-    if not code:
-        return UNKNOWN_LANGUAGE_NAME
-    found: Any = pycountry.languages.get(alpha_2=code)
-    if found is not None:
-        return str(found.name)
-    return str(language or "").strip().upper()
+    REFUSED = "merge_prompt_refused"
+    SOURCES_READY = "merge_prompt_sources_ready"
+    CONTRACT_SELECTED = "merge_prompt_contract_selected"
 
 
 @dataclass(frozen=True)
@@ -56,8 +50,13 @@ class MergePromptRefusal:
     source_count: int
 
     @property
-    def log_line(self) -> str:
-        return f"merge_prompt_refused language={self.language} source_count={self.source_count} min_sources={MIN_SOURCES}"
+    def event(self) -> LogEvent:
+        return LogEvent.of(
+            PromptEvent.REFUSED,
+            language=self.language,
+            source_count=self.source_count,
+            min_sources=rules.PROMPT_MIN_SOURCES,
+        )
 
 
 @dataclass(frozen=True)
@@ -78,9 +77,9 @@ class MergePrompt:
         texts: MergePromptTexts,
         retry: RetryProfile | None = None,
     ) -> MergePrompt | MergePromptRefusal:
-        if len(videos) < MIN_SOURCES:
+        if len(videos) < rules.PROMPT_MIN_SOURCES:
             refusal: MergePromptRefusal = MergePromptRefusal(language=language, source_count=len(videos))
-            LOGGER.warning(refusal.log_line)
+            refusal.event.emit(LOGGER, logging.WARNING)
             return refusal
         sources: tuple[MergeSource, ...] = tuple(MergeSource.of(video, texts) for video in videos)
         contract: MergeContract = MergeContract.select(tuple(source.prompt_description for source in sources), texts)
@@ -95,7 +94,13 @@ class MergePrompt:
 
     @property
     def language_name(self) -> str:
-        return language_full_name(self.language)
+        """Английское название языка блока по справочнику pycountry («uk» → «Ukrainian»); кода нет в справочнике —
+        код заглавными; кода нет — «Unknown»."""
+        code: str = self.language.strip().lower()
+        if not code:
+            return UNKNOWN_LANGUAGE_NAME
+        record: object | None = pycountry.languages.get(alpha_2=code)
+        return code.upper() if record is None else str(getattr(record, LANGUAGE_NAME_FIELD))
 
     @property
     def sources_block(self) -> str:
@@ -104,7 +109,7 @@ class MergePrompt:
     def contract_block_with(self, retry: RetryProfile | None) -> str:
         """Правила структуры первыми (общее начало всех промтов), затем контракт; с профилем — ещё инструкция повтора.
 
-        Донор: `_merge_contract_block_with_retry`. В промт блок идёт без повтора (`contract_block`).
+        В промт блок идёт без повтора (`contract_block`): инструкция повтора стоит в конце промта.
         """
         block: str = self.contract.block.strip()
         rules_text: str = self.texts.structural_rules.strip()
@@ -123,7 +128,7 @@ class MergePrompt:
 
     @property
     def text(self) -> str:
-        """Полный текст промта (ветка донора с шаблоном `llm.merge_title_description_prompt`)."""
+        """Полный текст промта по шаблону `merge_prompt_title_description.txt`."""
         template: str = self.texts.title_description.strip()
         contract_block: str = self.contract_block
         formatted: str = template.format(
@@ -142,21 +147,28 @@ class MergePrompt:
 
     @property
     def log_lines(self) -> tuple[str, ...]:
-        """Строки лога донора: `merge_source_text_prepared` на источник, `merge_prompt_sources_ready`,
+        """Строки лога: `merge_source_text_prepared` на источник, `merge_prompt_sources_ready`,
         `merge_prompt_contract_selected` — счётчики и контракт, без текста источников."""
-        raw_total: int = sum(source.description.raw_chars for source in self.sources)
-        cleaned_total: int = sum(len(source.prompt_description) for source in self.sources)
         contract: MergeContract = self.contract
+        sources_ready: LogEvent = LogEvent.of(
+            PromptEvent.SOURCES_READY,
+            language=self.language,
+            source_count=len(self.sources),
+            raw_source_chars_total=sum(source.description.raw_chars for source in self.sources),
+            cleaned_source_chars_total=sum(len(source.prompt_description) for source in self.sources),
+            hard_truncation=HARD_TRUNCATION_DISABLED,
+        )
+        contract_selected: LogEvent = LogEvent.of(
+            PromptEvent.CONTRACT_SELECTED,
+            language=self.language,
+            source_count=contract.source_count,
+            contract_mode=contract.mode,
+            expected_bullet_range=contract.bullet_range_label,
+            expanded_structure_enabled=contract.expanded_structure_enabled,
+            narrative_trigger=contract.mode is MergeContractMode.NARRATIVE,
+        )
         return (
             *(source.log_line(index, self.language) for index, source in enumerate(self.sources, start=1)),
-            (
-                f"merge_prompt_sources_ready language={self.language} source_count={len(self.sources)} "
-                f"raw_source_chars_total={raw_total} cleaned_source_chars_total={cleaned_total} hard_truncation=disabled"
-            ),
-            (
-                f"merge_prompt_contract_selected language={self.language} source_count={contract.source_count} "
-                f"contract_mode={contract.mode.value} expected_bullet_range={contract.bullet_range_label} "
-                f"expanded_structure_enabled={LogValue.YES.value if contract.expanded_structure_enabled else LogValue.NO.value} "
-                f"narrative_trigger={LogValue.YES.value if contract.mode is MergeContractMode.NARRATIVE else LogValue.NO.value}"
-            ),
+            sources_ready.text,
+            contract_selected.text,
         )

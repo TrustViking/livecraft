@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.llm.merges.layout import DescriptionLayout, LayoutRecovery, TailBlock
+from app.llm.merges.layout import BodyRecovery, DescriptionLayout, LayoutRecovery, TailBlock, TailSplit
 from app.llm.merges.reject import MergeRejectCode
+from app.observability.log_event import LogEvent
 
 REALISTIC: str = (
     "Tonight we track the conference agenda and initiative updates with concrete facts.\n\n"
@@ -138,10 +139,30 @@ def test_crlf_is_normalized() -> None:
     assert layout.full_text == "One.\n\nTwo.\n\n#t"
 
 
-def test_log_fields_have_the_donor_keys_and_no_text() -> None:
+def test_the_event_gets_counts_and_blocks_and_no_text() -> None:
     layout: DescriptionLayout = DescriptionLayout.of(REALISTIC, 4)
-    assert layout.log_fields == (
-        "raw_paragraph_count=8 tail_separated=yes tail_blocks=youtube_links,youtube_links,official_links,hashtags "
+    assert layout.extend(LogEvent.of("tail")).text == (
+        "tail raw_paragraph_count=8 tail_separated=yes tail_blocks=youtube_links,youtube_links,official_links,hashtags "
         "body_paragraph_count=4 recovery_applied=no body_paragraph_count_after_recovery=4"
     )
+    assert DescriptionLayout.of("One.\n\nTwo.", 4).extend(LogEvent.of("tail")).text == (
+        "tail raw_paragraph_count=2 tail_separated=no tail_blocks=- body_paragraph_count=2 recovery_applied=no "
+        "body_paragraph_count_after_recovery=2"
+    )
     assert "conference" not in repr(layout)
+
+
+def test_the_tail_split_keeps_the_order_of_both_parts() -> None:
+    split: TailSplit = TailSplit.of(["Body one.", "#tag", "Body two.", "#one #two"])
+    assert split == TailSplit(body=("Body one.", "#tag", "Body two."), tail=("#one #two",), blocks=(TailBlock.HASHTAGS,))
+
+
+def test_body_recovery_leaves_a_body_within_the_limit_as_it_is() -> None:
+    assert BodyRecovery.of(("One.", "Two."), 4) == BodyRecovery(("One.", "Two."), LayoutRecovery.NOT_NEEDED)
+
+
+def test_body_recovery_groups_extra_paragraphs_older_groups_first() -> None:
+    body: tuple[str, ...] = tuple(f"P{index}." for index in range(7))
+    assert BodyRecovery.of(body, 4) == BodyRecovery(
+        ("P0.\nP1.", "P2.\nP3.", "P4.\nP5.", "P6."), LayoutRecovery.COLLAPSED
+    )

@@ -1,64 +1,59 @@
 """Качество описания merge: нормализация пунктов и служебных строк, диагностика с кодами причин и статусом.
 
-Перенесено из restreamer, поведение как есть (CLAUDE.md §14 решение 23):
-- `quality_normalizer.py`: `_normalize_bullets` → `BulletNormalization`, `_split_bullet_marker` → её правило,
-  `_trim_compact_bullet_overflow` → `CompactTrim`, замена служебных строк не того языка → `ServiceLineFix`;
-  сама нормализация — `MergedDescription.quality_normalized` (`description.py`);
-- `quality_diagnostics.py`: `MergeQualityDiagnostics` и `build_diagnostics` → `QualityDiagnostics.of`,
-  `MergeQualityNormalizationResult` → `QualityNormalization`.
+`QualityNormalization.of` — описание в нормальном виде и диагностика итогового текста. Шаги по порядку: разбор на
+блоки → снятие повторов тезиса → служебные строки не того языка — канонические (`ServiceLineFix`) → маркеры пунктов
+(`BulletNormalization`) → лишние пункты компактного контракта (`CompactTrim`) → сборка текста. Любая правка текста —
+причина `missing_block_spacing` (историческое имя: «нормализация изменила текст»).
 
-Одно отличие от донора — исправление его ошибки: простой маркер пункта («- », «1) ») донор снимал шаблоном
-распознавания, который захватывал и первое слово («- first point» → «🔹 point»); здесь снимается только маркер.
+`QualityDiagnostics` — коды причин и статус semantic gate: смесь алфавитов и тезис явно не на языке блока — жёсткий
+отказ. Язык тезиса, который не определился, — не отказ: правило «язык явно не тот» одно для тезиса и служебных строк
+(`service_lines.py::LanguageMatch`).
+
+Простой маркер пункта («- », «1) ») снимается один, без первого слова пункта («- first point» → «🔹 first point»).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
-from app.core.alphabet import CoreLanguage
+from app.core.text_format import SPACE
+from app.llm.merges import rules
 from app.llm.merges.blocks import DescriptionBlocks
-from app.llm.merges.rules import ACCENT_MARKER_CAP, COMPACT_BULLET_MAX, COMPACT_MAX_SOURCES
-from app.llm.merges.service_lines import (
-    LANGUAGE_NONE,
-    LANGUAGE_OTHER,
-    ServiceLanguage,
-    ServiceLineCatalog,
-    ServiceLineKey,
-)
-from app.resources.loader import TextResource
-from app.texts.language_detector import TextLanguageDetector
-from app.texts.description_marks import (
-    ACCENT_BULLET_MARKERS,
-    ALLOWED_BULLET_MARKERS,
-    NEUTRAL_BULLET_MARKER,
-    BulletLine,
-    CtaLexicon,
-)
+from app.llm.merges.description import MergedDescription
+from app.llm.merges.merge_rules import MergeLexicons
+from app.llm.merges.service_lines import LanguageMatch, ServiceLanguage, ServiceLineKey
+from app.observability.log_event import LogArea, LogEvent, get_logger
+from app.texts.description_marks import ACCENT_BULLET_MARKERS, ALLOWED_BULLET_MARKERS, NEUTRAL_BULLET_MARKER, BulletLine
 from app.texts.paragraphs import collapse_spaces
 
-if TYPE_CHECKING:
-    from app.llm.merges.description import MergedDescription
+LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
-ALLOWED_LATIN_TOKENS_RESOURCE: Final[str] = "merge_allowed_latin_tokens.txt"
+PLAIN_MARKER: Final[str] = "plain"       # простой маркер («- », «1) »): дальше он станет 🔹
+
+
+class QualityEvent(str, Enum):
+    """События нормализации качества в логе."""
+
+    COMPACT_BULLET_TRIMMED = "merge_compact_bullet_trimmed"
 
 
 class QualityReasonCode(str, Enum):
-    """Причины диагностики — коды донора в донорском порядке проверки."""
+    """Причины диагностики в порядке проверки."""
 
     ACCENT_MARKER_OVERFLOW = "accent_marker_overflow"
-    # Историческое имя донора: код значит «нормализация изменила текст», а не «нет пустой строки между блоками».
+    # Историческое имя: код значит «нормализация изменила текст», а не «нет пустой строки между блоками».
     MISSING_BLOCK_SPACING = "missing_block_spacing"
     WRONG_LANGUAGE_HEADING_DETECTED = "wrong_language_heading_detected"
     OFFICIAL_LINKS_HEADING_MISMATCH = "official_links_heading_mismatch"
     SCRIPT_MIX_CONTAMINATION = "script_mix_contamination"
     INCONSISTENT_BLOCK_LANGUAGE = "inconsistent_block_language"
 
-
-class QualityGateStatus(str, Enum):
-    OK = "ok"
-    NEEDS_NORMALIZATION = "needs_normalization"
-    HARD_REJECT = "hard_reject"
+    @property
+    def is_hard_reject(self) -> bool:
+        """Причина, которую нормализация не исправляет: ответ отвергается."""
+        return self in HARD_REJECT_CODES
 
 
 HARD_REJECT_CODES: Final[frozenset[QualityReasonCode]] = frozenset(
@@ -66,24 +61,17 @@ HARD_REJECT_CODES: Final[frozenset[QualityReasonCode]] = frozenset(
 )
 
 
-@dataclass(frozen=True)
-class QualityRules:
-    """Всё, чем пользуются нормализация и диагностика: призывы, канонические строки, язык служебных строк,
-    латинские слова, допустимые в тексте кириллицей."""
-
-    cta: CtaLexicon
-    catalog: ServiceLineCatalog
-    service: ServiceLanguage
-    allowed_latin_tokens: frozenset[str]
+class QualityGateStatus(str, Enum):
+    OK = "ok"
+    NEEDS_NORMALIZATION = "needs_normalization"
+    HARD_REJECT = "hard_reject"
 
     @classmethod
-    def load(cls, detector: TextLanguageDetector | None = None) -> QualityRules:
-        return cls(
-            cta=CtaLexicon.load(),
-            catalog=ServiceLineCatalog.load(),
-            service=ServiceLanguage.load(detector),
-            allowed_latin_tokens=frozenset(TextResource(ALLOWED_LATIN_TOKENS_RESOURCE).lines),
-        )
+    def of(cls, codes: tuple[QualityReasonCode, ...]) -> QualityGateStatus:
+        """Есть неисправимая причина — отказ; есть любая — нужна нормализация; нет причин — всё в порядке."""
+        if any(code.is_hard_reject for code in codes):
+            return cls.HARD_REJECT
+        return cls.NEEDS_NORMALIZATION if codes else cls.OK
 
 
 @dataclass(frozen=True)
@@ -93,6 +81,23 @@ class QualityRequest:
     language: str
     title: str = field(default="", repr=False)
     source_count: int = 0
+
+
+@dataclass(frozen=True)
+class MarkedBullet:
+    """Пункт: маркер и текст. Строка без маркера-эмодзи получает маркер `plain` (дальше он станет 🔹)."""
+
+    marker: str
+    content: str
+
+    @classmethod
+    def of(cls, line: str) -> MarkedBullet:
+        bullet: BulletLine = BulletLine.of(line)
+        if bullet.emoji_marker:
+            return cls(bullet.emoji_marker, bullet.content)
+        if bullet.content:
+            return cls(PLAIN_MARKER, bullet.content)
+        return cls(NEUTRAL_BULLET_MARKER, bullet.text)
 
 
 @dataclass(frozen=True)
@@ -119,11 +124,10 @@ class BulletNormalization:
             if index == 0 and not BulletLine.of(line).is_list_item:
                 lines.append(collapse_spaces(line))
                 continue
-            marker, content = cls._split_marker(line)
-            if marker not in ALLOWED_BULLET_MARKERS:
-                marker = NEUTRAL_BULLET_MARKER
+            bullet: MarkedBullet = MarkedBullet.of(line)
+            marker: str = bullet.marker if bullet.marker in ALLOWED_BULLET_MARKERS else NEUTRAL_BULLET_MARKER
             if marker in ACCENT_BULLET_MARKERS:
-                if accent_count >= ACCENT_MARKER_CAP:
+                if accent_count >= rules.ACCENT_MARKER_CAP:
                     marker, overflow = NEUTRAL_BULLET_MARKER, True
                 else:
                     accent_count += 1
@@ -131,18 +135,8 @@ class BulletNormalization:
                         accent_types.append(marker)
             if marker == NEUTRAL_BULLET_MARKER:
                 neutral_count += 1
-            lines.append(f"{marker} {content}".strip())
+            lines.append(SPACE.join((marker, bullet.content)).strip())
         return cls(tuple(lines), overflow, tuple(accent_types), neutral_count, accent_count)
-
-    @staticmethod
-    def _split_marker(line: str) -> tuple[str, str]:
-        """Маркер и текст пункта; строка без маркера-эмодзи получает маркер `plain` (дальше он станет 🔹)."""
-        bullet: BulletLine = BulletLine.of(line)
-        if bullet.emoji_marker:
-            return bullet.emoji_marker, bullet.content
-        if bullet.content:
-            return "plain", bullet.content
-        return NEUTRAL_BULLET_MARKER, bullet.text
 
 
 @dataclass(frozen=True)
@@ -158,23 +152,26 @@ class CompactTrim:
     @classmethod
     def of(cls, theses_lines: tuple[str, ...], source_count: int) -> CompactTrim:
         bullet_count: int = sum(1 for line in theses_lines if BulletLine.of(line).is_list_item)
-        if source_count <= 0 or source_count > COMPACT_MAX_SOURCES or bullet_count <= COMPACT_BULLET_MAX:
+        if source_count <= 0 or source_count > rules.COMPACT_MAX_SOURCES or bullet_count <= rules.COMPACT_BULLET_MAX:
             return cls(theses_lines, False, bullet_count, bullet_count, source_count)
         kept_lines: list[str] = []
         kept_bullets: int = 0
         for line in theses_lines:
             if not BulletLine.of(line).is_list_item:
                 kept_lines.append(line)
-            elif kept_bullets < COMPACT_BULLET_MAX:
+            elif kept_bullets < rules.COMPACT_BULLET_MAX:
                 kept_lines.append(line)
                 kept_bullets += 1
         return cls(tuple(kept_lines), True, bullet_count, kept_bullets, source_count)
 
     @property
-    def log_line(self) -> str:
-        return (
-            f"source_count={self.source_count} bullets_before={self.bullets_before} "
-            f"bullets_after={self.bullets_after} cap={COMPACT_BULLET_MAX}"
+    def event(self) -> LogEvent:
+        return LogEvent.of(
+            QualityEvent.COMPACT_BULLET_TRIMMED,
+            source_count=self.source_count,
+            bullets_before=self.bullets_before,
+            bullets_after=self.bullets_after,
+            cap=rules.COMPACT_BULLET_MAX,
         )
 
 
@@ -187,9 +184,9 @@ class ServiceLineFix:
     official_links_heading_mismatch: bool
 
     @classmethod
-    def of(cls, blocks: DescriptionBlocks, language: str, rules: QualityRules) -> ServiceLineFix:
-        """Правила донора: повторы снимаются по исходным блокам, замены смотрят на исходные служебные строки —
-        поэтому призыв, снятый как повтор тезиса, может вернуться каноническим."""
+    def of(cls, blocks: DescriptionBlocks, language: str, lexicons: MergeLexicons) -> ServiceLineFix:
+        """Повторы снимаются по исходным блокам, замены смотрят на исходные служебные строки — поэтому призыв,
+        снятый как повтор тезиса, может вернуться каноническим."""
         fixed: DescriptionBlocks = blocks
         if blocks.is_single_echo_cta:
             fixed = replace(fixed, cta="")
@@ -197,23 +194,19 @@ class ServiceLineFix:
             fixed = replace(fixed, hook="")
         wrong_heading: bool = False
         mismatch: bool = False
-        service: ServiceLanguage = rules.service
-        if blocks.lead_in and service.is_wrong(service.detect_service(blocks.lead_in), language):
-            lead_in: str = rules.catalog.line(language, ServiceLineKey.LEAD_IN)
+        service: ServiceLanguage = lexicons.service
+        if blocks.lead_in and LanguageMatch(service.detect_service(blocks.lead_in), language).is_wrong:
+            lead_in: str = lexicons.catalog.line(language, ServiceLineKey.LEAD_IN)
             fixed = replace(fixed, theses_lines=(lead_in, *fixed.theses_lines[1:]))
             wrong_heading = True
         if blocks.links_heading:
-            expected: str = rules.catalog.line(language, ServiceLineKey.LINKS_HEADING)
+            expected: str = lexicons.catalog.line(language, ServiceLineKey.LINKS_HEADING)
             mismatch = blocks.links_heading != expected
-            if mismatch or service.is_wrong(service.detect_service(blocks.links_heading), language):
+            if mismatch or LanguageMatch(service.detect_service(blocks.links_heading), language).is_wrong:
                 fixed = replace(fixed, links_heading=expected)
                 wrong_heading = True
-        if (
-            blocks.cta
-            and service.is_short_service_line(blocks.cta)
-            and service.is_wrong(service.detect_service(blocks.cta), language)
-        ):
-            fixed = replace(fixed, cta=rules.catalog.cta_preserving_hashtags(blocks.cta, language))
+        if blocks.has_short_cta and LanguageMatch(service.detect_service(blocks.cta), language).is_wrong:
+            fixed = replace(fixed, cta=lexicons.catalog.cta_preserving_hashtags(blocks.cta, language))
         return cls(fixed, wrong_heading, mismatch)
 
 
@@ -228,10 +221,22 @@ class QualityFindings:
     official_links_heading_mismatch: bool
     bullets: BulletNormalization
 
+    def reason_codes(self, suspects: tuple[str, ...], hook_language: str) -> tuple[QualityReasonCode, ...]:
+        """Причины в порядке проверки; тезис на языке, который не определился, — не причина."""
+        checks: tuple[tuple[bool, QualityReasonCode], ...] = (
+            (self.bullets.accent_overflow, QualityReasonCode.ACCENT_MARKER_OVERFLOW),
+            (not self.block_spacing_ok, QualityReasonCode.MISSING_BLOCK_SPACING),
+            (self.wrong_language_heading_detected, QualityReasonCode.WRONG_LANGUAGE_HEADING_DETECTED),
+            (self.official_links_heading_mismatch, QualityReasonCode.OFFICIAL_LINKS_HEADING_MISMATCH),
+            (bool(suspects), QualityReasonCode.SCRIPT_MIX_CONTAMINATION),
+            (LanguageMatch(hook_language, self.request.language).is_wrong, QualityReasonCode.INCONSISTENT_BLOCK_LANGUAGE),
+        )
+        return tuple(code for is_found, code in checks if is_found)
+
 
 @dataclass(frozen=True)
 class QualityDiagnostics:
-    """Диагностика качества описания — поля донора; `semantic_gate_*` — статус и причины."""
+    """Диагностика качества описания; `semantic_gate_*` — статус и причины."""
 
     neutral_bullets_count: int
     accent_bullets_count: int
@@ -251,22 +256,22 @@ class QualityDiagnostics:
     semantic_gate_reason_codes: tuple[QualityReasonCode, ...]
 
     @classmethod
-    def of(cls, findings: QualityFindings, rules: QualityRules) -> QualityDiagnostics:
-        language: str = findings.request.language
-        blocks: DescriptionBlocks = DescriptionBlocks.of(findings.description_text, rules.cta)
-        service: ServiceLanguage = rules.service
+    def of(cls, findings: QualityFindings, lexicons: MergeLexicons) -> QualityDiagnostics:
+        request: QualityRequest = findings.request
+        blocks: DescriptionBlocks = DescriptionBlocks.of(findings.description_text, lexicons.cta)
+        service: ServiceLanguage = lexicons.service
         hook_language: str = service.detect_paragraph(blocks.hook)
-        suspects: tuple[str, ...] = blocks.script_mix_suspects(
-            findings.request.title, language, rules.allowed_latin_tokens
+        suspects: tuple[str, ...] = lexicons.script_mix.suspects(
+            (request.title, blocks.hook, *blocks.theses_lines), request.language
         )
-        codes: tuple[QualityReasonCode, ...] = cls._reason_codes(findings, suspects, hook_language)
+        codes: tuple[QualityReasonCode, ...] = findings.reason_codes(suspects, hook_language)
         return cls(
             neutral_bullets_count=findings.bullets.neutral_bullets_count,
             accent_bullets_count=findings.bullets.accent_bullets_count,
             accent_marker_types=findings.bullets.accent_marker_types,
             accent_overflow=findings.bullets.accent_overflow,
             block_spacing_ok=findings.block_spacing_ok,
-            block_language_expected=language,
+            block_language_expected=request.language,
             hook_language_detected=hook_language,
             lead_in_language_detected=service.detect_service(blocks.lead_in),
             links_heading_language_detected=service.detect_service(blocks.links_heading),
@@ -275,38 +280,9 @@ class QualityDiagnostics:
             wrong_language_heading_detected=findings.wrong_language_heading_detected,
             script_mix_detected=bool(suspects),
             script_mix_suspects=suspects,
-            semantic_gate_status=cls._status(codes),
+            semantic_gate_status=QualityGateStatus.of(codes),
             semantic_gate_reason_codes=codes,
         )
-
-    @staticmethod
-    def _reason_codes(
-        findings: QualityFindings, suspects: tuple[str, ...], hook_language: str
-    ) -> tuple[QualityReasonCode, ...]:
-        checks: tuple[tuple[bool, QualityReasonCode], ...] = (
-            (findings.bullets.accent_overflow, QualityReasonCode.ACCENT_MARKER_OVERFLOW),
-            (not findings.block_spacing_ok, QualityReasonCode.MISSING_BLOCK_SPACING),
-            (findings.wrong_language_heading_detected, QualityReasonCode.WRONG_LANGUAGE_HEADING_DETECTED),
-            (findings.official_links_heading_mismatch, QualityReasonCode.OFFICIAL_LINKS_HEADING_MISMATCH),
-            (bool(suspects), QualityReasonCode.SCRIPT_MIX_CONTAMINATION),
-            (_core_language_mismatch(hook_language, findings.request.language), QualityReasonCode.INCONSISTENT_BLOCK_LANGUAGE),
-        )
-        return tuple(code for is_found, code in checks if is_found)
-
-    @staticmethod
-    def _status(codes: tuple[QualityReasonCode, ...]) -> QualityGateStatus:
-        if any(code in HARD_REJECT_CODES for code in codes):
-            return QualityGateStatus.HARD_REJECT
-        if codes:
-            return QualityGateStatus.NEEDS_NORMALIZATION
-        return QualityGateStatus.OK
-
-
-def _core_language_mismatch(detected: str, expected: str) -> bool:
-    """Язык тезиса явно не язык блока: определён (в том числе `unknown` — как у донора) и блок uk, en или ru."""
-    if detected in {LANGUAGE_NONE, LANGUAGE_OTHER} or not CoreLanguage.covers(expected):
-        return False
-    return detected != expected
 
 
 @dataclass(frozen=True)
@@ -315,3 +291,26 @@ class QualityNormalization:
 
     description: MergedDescription
     diagnostics: QualityDiagnostics
+
+    @classmethod
+    def of(cls, description: MergedDescription, request: QualityRequest, lexicons: MergeLexicons) -> QualityNormalization:
+        """Описание в нормальном виде и диагностика итогового текста; пустое описание — пустое, без правок."""
+        source_text: str = description.trimmed_lines_text
+        if not source_text:
+            empty: QualityFindings = QualityFindings("", request, True, False, False, BulletNormalization(lines=()))
+            return cls(MergedDescription(""), QualityDiagnostics.of(empty, lexicons))
+        fix: ServiceLineFix = ServiceLineFix.of(DescriptionBlocks.of(source_text, lexicons.cta), request.language, lexicons)
+        bullets: BulletNormalization = BulletNormalization.of(fix.blocks.theses_lines)
+        trim: CompactTrim = CompactTrim.of(bullets.lines, request.source_count)
+        if trim.applied:
+            trim.event.emit(LOGGER)
+        rendered: str = replace(fix.blocks, theses_lines=trim.lines).render()
+        findings: QualityFindings = QualityFindings(
+            rendered,
+            request,
+            rendered == source_text,
+            fix.wrong_language_heading_detected,
+            fix.official_links_heading_mismatch,
+            bullets,
+        )
+        return cls(MergedDescription(rendered), QualityDiagnostics.of(findings, lexicons))

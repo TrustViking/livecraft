@@ -21,7 +21,7 @@ from app.observability.log_event import LogArea, LogValue, get_logger
 if TYPE_CHECKING:
     from app.config.loader import LlmSettings
     from app.llm.backend import LlmBackend
-    from app.llm.merges.attempt import MergeRules
+    from app.llm.merges.merge_rules import MergeRules
     from app.llm.merges.job import MergeOutcome
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)

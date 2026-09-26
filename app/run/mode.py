@@ -8,7 +8,7 @@
 Часть знает себя: своё имя для людей, реализована ли она в этой версии, на каком этапе появится и что ей нужно
 (`RunPart.needs`). Удовлетворена ли нужда и что сделать, если нет, решает `Readiness.gap` (app\\setup\\readiness.py):
 там прочитанные сейф и конфиги. Итог — `PartReadiness` на каждую часть и `ModeReadiness` на режим: одна строка
-на каждую нужду, которой не хватает, с перечнем частей, которым она нужна. Что делает запуск режима (`ModeStep`)
+на каждый текст нужды, которой не хватает, с перечнем частей, которым она нужна. Что делает запуск режима (`ModeStep`)
 и каков исход готовности, решает сам `ModeReadiness`, а не запуск.
 """
 from __future__ import annotations
@@ -181,9 +181,10 @@ class PartReadiness:
             return PartState.NOT_BUILT
         return PartState.BLOCKED if self.unmet else PartState.READY
 
-    def lacks(self, need: Need) -> bool:
-        """Не готова ли часть из-за этой нужды."""
-        return self.state is PartState.BLOCKED and any(gap.need is need for gap in self.unmet)
+    def lacks(self, text: str) -> bool:
+        """Не готова ли часть из-за нужды с этим текстом: две нужды с одним текстом — одна беда (сломанный сейф
+        не даёт ни таблицы, ни ключа OpenAI)."""
+        return self.state is PartState.BLOCKED and any(gap.text == text for gap in self.unmet)
 
 
 @dataclass(frozen=True)
@@ -236,15 +237,16 @@ class ModeReadiness:
     @property
     def lines(self) -> tuple[str, ...]:
         """Строки для консоли по порядку работы: нереализованная часть — своя строка; нехватка — одна строка
-        на нужду с перечнем частей, которым её не хватает, на месте первой такой части."""
+        на текст нужды с перечнем частей, которым её не хватает, на месте первой такой части. Разные нужды с одним
+        текстом — одна строка: человеку одно действие."""
         lines: list[str] = []
-        said: set[Need] = set()
+        said: set[str] = set()
         for part in self.parts:
             if part.state is PartState.NOT_BUILT:
                 lines.append(part.part.not_built_line)
             for gap in part.unmet if part.state is PartState.BLOCKED else ():
-                if gap.need not in said:
-                    said.add(gap.need)
+                if gap.text not in said:
+                    said.add(gap.text)
                     lines.append(self._need_line(gap))
         return tuple(lines)
 
@@ -260,8 +262,8 @@ class ModeReadiness:
         )
 
     def _need_line(self, gap: NeedGap) -> str:
-        """Нужда и все части режима, которым её не хватает."""
-        labels: tuple[str, ...] = tuple(part.part.human_label for part in self.parts if part.lacks(gap.need))
+        """Текст нужды и все части режима, которым не хватает нужды с этим текстом."""
+        labels: tuple[str, ...] = tuple(part.part.human_label for part in self.parts if part.lacks(gap.text))
         return msg.RUN_NEED_BLOCKED.format(parts=msg.LIST_JOINER.join(labels), gap=gap.text)
 
     def _part_ids(self, state: PartState) -> tuple[RunPart, ...]:

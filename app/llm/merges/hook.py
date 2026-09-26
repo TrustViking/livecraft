@@ -1,8 +1,8 @@
 """Негодный первый абзац описания: самореклама канала, призыв, редакторская преамбула вместо факта.
 
-Правило — `merge_validation_helpers.py::looks_like_bad_hook_paragraph` restreamer; список признаков донора
-(`_BAD_HOOK_PATTERNS`, в коде) вынесен ресурсом `merge_bad_hook_patterns.txt` без правки строк
-(CLAUDE.md §14 решение 23). Пользуется им проверка покрытия (задача 3.12b).
+Абзац негоден, если в нём есть хотя бы один признак — подстрока ресурса `merge_bad_hook_patterns.txt` (стартовые
+данные, CLAUDE.md §14 решение 23). Им пользуются начало описания (`opening.py`) и проверка перед публикацией
+(`merge_rules.py::PublishGate`).
 """
 from __future__ import annotations
 
