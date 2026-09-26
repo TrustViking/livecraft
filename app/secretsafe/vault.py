@@ -16,34 +16,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from enum import Enum
 from typing import Final
 
 from app.core.text_format import SPACE
 from app.observability.log_event import LogValue
+from app.secretsafe.field import SecretField, VaultOrigin
 from app.secretsafe.log_filter import SecretScrubber
-from app.secretsafe.value import SecretField, SecretValue
+from app.secretsafe.value import SecretValue
 from app.ui import messages_ru as msg
 
 LOG_ENTRY_TEMPLATE: Final[str] = "{label}={origin}"
-
-
-class VaultOrigin(str, Enum):
-    """Откуда взялось значение поля. Значение — английский идентификатор, для человека — `human_label`."""
-
-    SUPPLIED = "supplied"   # пришло со сборкой: поставочный сейф Артура (§7.2)
-    OWN = "own"             # вписал сам пользователь: локальный сейф под его Windows-аккаунтом
-
-    @property
-    def human_label(self) -> str:
-        """Русское название; текст — в messages_ru (§11), здесь только отображение на него."""
-        return _ORIGIN_LABELS[self]
-
-
-_ORIGIN_LABELS: Final[dict[VaultOrigin, str]] = {
-    VaultOrigin.SUPPLIED: msg.VAULT_ORIGIN_SUPPLIED,
-    VaultOrigin.OWN: msg.VAULT_ORIGIN_OWN,
-}
 
 
 @dataclass(frozen=True)
@@ -79,20 +61,39 @@ class Vault:
         """Сейф, в котором ещё ничего нет: так выглядит чистая установка до настройщика (§8)."""
         return cls(entries={})
 
+    def entry(self, field: SecretField) -> VaultEntry | None:
+        """Заполненное поле целиком — секрет и его происхождение; поля нет — None. Единственный поиск поля."""
+        return self.entries.get(field)
+
     def get(self, field: SecretField) -> SecretValue | None:
         """Значение поля как объект-секрет; поля нет — None."""
-        entry: VaultEntry | None = self.entries.get(field)
+        entry: VaultEntry | None = self.entry(field)
         return None if entry is None else entry.secret
 
     def origin_of(self, field: SecretField) -> VaultOrigin | None:
         """Откуда взялось поле: поставка или своё; поля нет — None."""
-        entry: VaultEntry | None = self.entries.get(field)
+        entry: VaultEntry | None = self.entry(field)
         return None if entry is None else entry.origin
+
+    def missing_of(self, fields: tuple[SecretField, ...]) -> tuple[SecretField, ...]:
+        """Каких из названных полей нет — в порядке `fields`."""
+        return tuple(field for field in fields if self.entry(field) is None)
 
     @property
     def missing(self) -> tuple[SecretField, ...]:
         """Каких полей не хватает для запуска — в порядке объявления SecretField; устаревшие не требуются."""
-        return tuple(field for field in SecretField.current() if field not in self.entries)
+        return self.missing_of(SecretField.current())
+
+    def overlaid_by(self, other: Vault) -> Vault:
+        """Этот сейф, поверх которого лёг `other`: поле `other` перекрывает своё (§7.3).
+
+        Единственное место правила «своё перекрывает поставочное»: личный слой кладётся поверх поставочного.
+        """
+        return Vault(entries={**self.entries, **other.entries})
+
+    def only(self, origin: VaultOrigin) -> Vault:
+        """Слой одного происхождения: только поля, пришедшие оттуда, — так из сейфа выделяется личный слой."""
+        return Vault(entries={field: entry for field, entry in self.entries.items() if entry.origin is origin})
 
     @property
     def is_ready(self) -> bool:

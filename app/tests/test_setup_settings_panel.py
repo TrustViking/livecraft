@@ -7,13 +7,8 @@ from typing import Any
 
 import pytest
 
-from app.config.loader import (
-    LivecraftSettings,
-    ReasoningEffort,
-    ServiceTier,
-    load_settings,
-    render_settings_file,
-)
+from app.config.files import SettingsFile
+from app.config.settings import LivecraftSettings, ReasoningEffort, ServiceTier
 from app.paths import LivecraftPaths
 from app.setup.fields.settings_draft import SettingsDraft
 from app.setup.panels.settings_panel import SettingsPanel, SettingsPanelEdit
@@ -25,7 +20,7 @@ FORM_URL: str = "https://docs.google.com/forms/d/e/1FAIpQLSf-own-form/viewform"
 
 
 def _shipped() -> LivecraftSettings:
-    return load_settings(SHIPPED_SETTINGS_FILE)
+    return SettingsFile(SHIPPED_SETTINGS_FILE).load()
 
 
 def _applied(panel: SettingsPanel, **changes: Any) -> SettingsPanel:
@@ -207,7 +202,7 @@ def test_save_writes_the_form_url_and_keeps_the_form_contract(ready_paths: Livec
         key: value for key, value in before["form"].items() if key != "url"
     }
     assert {key for key in before if before[key] != after[key]} == {"form"}
-    assert load_settings(ready_paths.config_file).form.url == FORM_URL
+    assert SettingsFile(ready_paths.config_file).load().form.url == FORM_URL
     assert saved.draft.form_url == FORM_URL and not saved.is_dirty
 
 
@@ -243,7 +238,7 @@ def test_without_a_settings_file_the_panel_opens_on_the_template(livecraft_paths
     assert panel.is_dirty
     assert not livecraft_paths.config_file.exists()
     saved: SettingsPanel = panel.save(livecraft_paths)
-    assert load_settings(livecraft_paths.config_file) == panel.settings
+    assert SettingsFile(livecraft_paths.config_file).load() == panel.settings
     assert saved.notices == ()
 
 
@@ -256,8 +251,8 @@ def test_a_broken_settings_file_is_named_and_replaced_only_on_save(livecraft_pat
     assert len(panel.notices) == 1
     assert livecraft_paths.config_file.read_bytes() == BROKEN_JSON
     panel.save(livecraft_paths)
-    assert livecraft_paths.config_file.read_text(encoding="utf-8") == render_settings_file(panel.settings)
-    assert load_settings(livecraft_paths.config_file) == panel.settings
+    assert livecraft_paths.config_file.read_text(encoding="utf-8") == SettingsFile(livecraft_paths.config_file).render(panel.settings)
+    assert SettingsFile(livecraft_paths.config_file).load() == panel.settings
 
 
 def test_a_settings_file_missing_a_field_opens_on_the_template(livecraft_paths: LivecraftPaths) -> None:

@@ -66,7 +66,9 @@ RUN_PART_STAGES: Final[dict[str, str]] = {
     "broadcast": "Эфиры",
     "packages_in": "Эфиры",
 }
-RUN_PART_BLOCKED: Final[str] = "Не готово — {part}: {gaps}."
+# Одна строка на нужду, которой не хватает (app\run\mode.py::Need): {parts} — части режима, которым она нужна,
+# {gap} — что задать и где (Readiness.gap).
+RUN_NEED_BLOCKED: Final[str] = "Не готово — {parts}: {gap}."
 RUN_PART_NOT_BUILT: Final[str] = "Пока нет — {part}: будет на этапе «{stage}», в этой версии не выполняется."
 # Свои строки нереализованных частей, где общей мало: без нейросети запуск идёт дальше на текстах видео.
 RUN_PART_NOT_BUILT_TEXTS: Final[dict[str, str]] = {
@@ -85,6 +87,8 @@ READINESS_GAP_CLIENT_SECRET: Final[str] = "нет файла входа в Googl
 # Полная проверка (окно настройщика, --check, --status): нет файла каналов — не ошибка, а «ещё не задано».
 READINESS_CHANNELS_MISSING: Final[str] = "Каналы YouTube не заданы — добавьте их на вкладке «Каналы YouTube»."
 CONFIG_FIX_IN_SETUP: Final[str] = "{error}. Исправьте в настройщике, вкладка «{tab}»."
+# Те же строки в окне настройщика (Readiness.window_line): окно уже открыто — только вкладка.
+CONFIG_FIX_ON_TAB: Final[str] = "{error}. Исправьте на вкладке «{tab}»."
 # Однократный перенос ссылки на форму из старого места в настройки (app\setup\migration.py, §14 решение 15).
 # Самой ссылки в строках нет: в консоль она не уходит.
 FORM_URL_MIGRATED: Final[str] = "Ссылка на форму ключей перенесена в настройки программы — вводить её заново не нужно."
@@ -93,7 +97,7 @@ FORM_URL_MIGRATION_FAILED: Final[str] = (
     "Впишите её на вкладке «Настройки запуска»: livecraft.bat --setup."
 )
 
-# livecraft.json в git нет (§5): нет файла — программа сама кладёт поставочный вид (CONFIG_SETTINGS_TEMPLATE).
+# livecraft.json в git нет (§5): нет файла — программа сама кладёт поставочный вид (ресурс settings_shipped.json).
 SETTINGS_FILE_CREATED: Final[str] = "Настройки программы созданы из поставочного шаблона: {path}"
 
 # --- готовность к запуску (app\setup\readiness.py): сводка без значений — только откуда что взялось (§7.4)
@@ -107,9 +111,10 @@ READINESS_CHANNELS_LINE: Final[str] = "  каналов: {count}, языки с�
 READINESS_CHANNELS_ABSENT: Final[str] = "  каналы: не прочитаны"
 # Личный сейф есть, но не читается: молчаливый откат на поставку недопустим (§16) — иначе получатель
 # незаметно работает на ключе OpenAI и таблице того, кто передал ему программу.
+# {fields} — названия нынешних полей сейфа (SecretField.current).
 VAULT_LOCAL_UNREADABLE: Final[str] = (
     "ВНИМАНИЕ: ваши собственные ключи и ссылки не прочитаны — программа работает на значениях, пришедших "
-    "вместе с ней (ключ OpenAI, таблица плана, форма ключей). Так бывает после переноса программы на другой "
+    "вместе с ней ({fields}). Так бывает после переноса программы на другой "
     "компьютер или смены пользователя Windows. Введите свои значения заново: livecraft.bat --setup."
 )
 # Файл ключей и ссылок не читается (app\secretsafe\crypto.py::VaultFormatError): причина — по-русски, английская
@@ -130,12 +135,28 @@ VAULT_FILE_ADVICE_LOCAL: Final[str] = (
     "заменит этот файл."
 )
 VAULT_FILE_ADVICE_SUPPLIED: Final[str] = "Переустановите программу."
+# Тот же совет в окне настройщика: окно уже открыто.
+VAULT_FILE_ADVICE_WINDOW: Final[str] = (
+    "Введите свои значения заново на вкладке «Ключи и ссылки» — сохранение заменит этот файл."
+)
+# Блоб поля сейфа не расшифровался (app\secretsafe\crypto.py::VaultDecryptError). Ключи — значения DecryptReason.
+VAULT_DECRYPT_FAILED: Final[str] = "Значение «{field}» не расшифровывается: {reason}"
+VAULT_DECRYPT_REASON_TEXT: Final[dict[str, str]] = {
+    "tag_mismatch": "файл изменён или записан другим ключом",
+    "not_text": "внутри не текст",
+}
+# DPAPI недоступен (app\secretsafe\dpapi.py::DpapiUnavailable). Ключи — значения DpapiReason.
+DPAPI_UNAVAILABLE: Final[str] = "Свои ключи и ссылки на этом компьютере не сохранить: {reason}"
+DPAPI_REASON_TEXT: Final[dict[str, str]] = {
+    "not_loaded": "защита данных Windows (DPAPI) не загрузилась — нужна Windows",
+    "call_failed": "защита данных Windows (DPAPI) отказала",
+}
 
 # --- конфиги (CLAUDE.md §5): два JSON, все поля обязательные, умолчаний и копирования примеров нет
 CONFIG_ERROR: Final[str] = "Ошибка в конфиге {path}: {key} — {problem}"
 CONFIG_ROOT_KEY: Final[str] = "(корень файла)"
 # Что вписать в каждое поле channels.json: идёт в лог (DEBUG) перед шаблоном, когда файл сломан.
-# {languages} — CONFIG_LANGUAGES_RULE, {privacy} и {platform} — допустимые значения из config\loader.py.
+# {languages} — CONFIG_LANGUAGES_RULE, {privacy} и {platform} — допустимые значения из config\channel.py.
 CONFIG_CHANNELS_FIELDS: Final[tuple[str, ...]] = (
     "  account_name — название канала как на YouTube: оно уходит в форму как «Название канала»;",
     "  handle — ник канала на YouTube, начинается с @ (Студия -> аватар вверху справа); "
@@ -146,60 +167,13 @@ CONFIG_CHANNELS_FIELDS: Final[tuple[str, ...]] = (
     "  platform — {platform}.",
 )
 CONFIG_LANGUAGES_RULE: Final[str] = 'непустой список двухбуквенных кодов ISO 639-1 без повторов, например ["uk"]'
-# Точные шаблоны файлов: идут в лог (DEBUG), когда файл сломан; окно настройщика открывается на шаблоне настроек.
-# В код как умолчания не идут.
-# Шаблон настроек совпадает с поставочным secrets\livecraft.json — это проверяет тест.
+# Точный шаблон channels.json: идёт в лог (DEBUG), когда файл сломан. Шаблон livecraft.json — ресурс
+# settings_shipped.json (app\config\files.py::ShippedSettings). В код как умолчания не идут.
 CONFIG_CHANNELS_TEMPLATE: Final[str] = """{
   "channels": [
     {"platform": "youtube", "account_name": "Название канала на YouTube", "handle": "@ник_канала", "google_account": "you@gmail.com",
      "languages": ["ru"], "privacy": "unlisted"}
   ]
-}"""
-CONFIG_SETTINGS_TEMPLATE: Final[str] = """{
-  "min_lead_minutes": 60,
-  "keep_days": 30,
-  "auto_start": true,
-  "set_thumbnail": true,
-  "category_id": "22",
-  "youtube_pause_seconds": 0.5,
-  "image_dir_template": "{date}/{language}",
-  "timezone": "Europe/Kyiv",
-  "llm": {
-    "model": "gpt-5.6-sol",
-    "fallback_model": "gpt-5.4",
-    "reasoning_effort": "medium",
-    "service_tier": "flex",
-    "timeout_sec": 900,
-    "max_output_tokens": 8000
-  },
-  "form": {
-    "url": "",
-    "fields": {
-      "language": "Язык стрима ( Language of stream)",
-      "account_name": "Название канала ( Channel name)",
-      "date": "Время стрима ( Stream time )",
-      "platform": "Платформа (Platform)",
-      "stream_key": "You Tube Stream Key",
-      "stream_url": "Stream-URL (YT)",
-      "time": null,
-      "broadcast_url": null,
-      "slot_id": null
-    },
-    "values": {
-      "language": {
-        "uk": "Украинский ( Ukranian)",
-        "ru": "Русский ( Russian)",
-        "en": "Английский ( English)",
-        "hu": "Венгерский (Hungarian, Magyar)"
-      },
-      "platform": {
-        "youtube": "You Tube",
-        "facebook": "Facebook",
-        "rumble": "Rumble"
-      }
-    },
-    "date_format": "%d.%m.%Y"
-  }
 }"""
 CONFIG_PROBLEM_FILE_MISSING: Final[str] = "файла нет"
 CONFIG_PROBLEM_JSON: Final[str] = "файл не читается как JSON: {error}"

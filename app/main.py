@@ -26,7 +26,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import uuid4
 
-from app.config.loader import LivecraftSettings, ShippedSettings
+from app.config.files import SettingsFile, ShippedSettings
 from app.core.clock import Clock
 from app.intake.intake import IntakeRequest, IntakeResult, PlanIntake
 from app.observability.log_event import MESSAGE_TEMPLATE, LogArea, LogEvent, get_logger
@@ -38,13 +38,13 @@ from app.run.request import RunRequest
 from app.runtime.single_instance import AnotherInstanceRunning, InstanceLock
 from app.secretsafe.vault import Vault
 from app.setup.migration import FormUrlMigration, FormUrlMigrationResult
-from app.setup.readiness import Readiness
+from app.setup.readiness import PlanBasis, Readiness
 from app.ui import messages_ru as msg
 from app.ui.console import Console
 from app.version import APP_VERSION
 
 LOGGER = get_logger(LogArea.MAIN)
-SHIPPED_SETTINGS: ShippedSettings = ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE)
+SHIPPED_SETTINGS: ShippedSettings = ShippedSettings()
 
 
 class LaunchEvent(str, Enum):
@@ -55,8 +55,6 @@ class LaunchEvent(str, Enum):
     INTERRUPTED = "run_interrupted"
     CRASHED = "run_crashed"
     SETTINGS_FILE_CREATED = "settings_file_created"
-    FORM_URL_MIGRATED = "form_url_migrated"
-    FORM_URL_NOT_MIGRATED = "form_url_not_migrated"
     SETUP_WINDOW_FAILED = "setup_window_failed"
 
 
@@ -93,7 +91,7 @@ class Launch:
         """Готовность решает Readiness; здесь — только порядок шагов и печать (§8.2, §10)."""
         self._install_settings()
         readiness: Readiness = Readiness.check(self.paths)
-        vault: Vault | None = readiness.vault
+        vault: Vault | None = readiness.vault.vault
         if vault is not None:
             self.log.protect(vault.log_filter())     # сразу после чтения сейфа, до любых строк лога (§7.4)
         readiness = self._migrate_form_url(readiness)
@@ -130,27 +128,27 @@ class Launch:
         self.console.say_lines(readiness.summary_lines)
         self.console.say_lines(mode.lines)
         code: ExitCode = mode.outcome.exit_code
-        settings: LivecraftSettings | None = readiness.settings
-        vault: Vault | None = readiness.vault
-        if step is ModeStep.REPORT or settings is None or vault is None:    # готовая таблица — прочитаны оба
+        basis: PlanBasis | None = readiness.plan_basis(mode)
+        if basis is None:           # таблица плана этому режиму не нужна или не готова
             return code
-        result: IntakeResult = self._intake(settings, vault)
+        result: IntakeResult = self._intake(basis)
         self.console.say_lines(result.console_lines)
         return code.combined(result.outcome.exit_code)
 
-    def _intake(self, settings: LivecraftSettings, vault: Vault) -> IntakeResult:
+    def _intake(self, basis: PlanBasis) -> IntakeResult:
         """Прогон контура A: «сейчас» — в зоне программы, id пакета — новый на каждый запуск.
 
         Первый вход оператора открывает браузер — перед этим строка в консоль.
         """
+        now: datetime = Clock(basis.settings.zone).now()
         request: IntakeRequest = IntakeRequest(
-            paths=self.paths, settings=settings, vault=vault, now=Clock(settings.zone).now(), package_id=uuid4().hex
+            paths=self.paths, settings=basis.settings, vault=basis.vault, now=now, package_id=uuid4().hex
         )
         return PlanIntake.of(request, on_login=lambda: self.console.say(msg.SHEETS_LOGIN_BROWSER)).run()
 
     def _install_settings(self) -> None:
         """livecraft.json в git нет (§5): нет файла — программа кладёт поставочный вид сама, человеку делать нечего."""
-        if not SHIPPED_SETTINGS.install(self.paths.config_file):
+        if not SettingsFile.of(self.paths).install_shipped():
             return
         LogEvent.of(LaunchEvent.SETTINGS_FILE_CREATED, path=self.paths.config_file).emit(LOGGER)
         self.console.say(msg.SETTINGS_FILE_CREATED.format(path=self.paths.config_file))
@@ -165,10 +163,7 @@ class Launch:
             return readiness
         result: FormUrlMigrationResult = migration.run()
         self.console.say(result.console_line)
-        name: LaunchEvent = LaunchEvent.FORM_URL_MIGRATED if result.moved else LaunchEvent.FORM_URL_NOT_MIGRATED
-        event: LogEvent = LogEvent.of(name, outcome=result.outcome, source=result.source, value=result.label)
-        level: int = logging.INFO if result.moved else logging.WARNING
-        event.extended(local_cleared=result.local_cleared).emit(LOGGER, level)
+        result.event.emit(LOGGER, result.log_level)
         return Readiness.check(self.paths) if result.moved else readiness
 
     def _setup(self) -> RunOutcome:

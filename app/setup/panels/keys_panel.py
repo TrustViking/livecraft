@@ -21,8 +21,9 @@ from enum import Enum
 from typing import Final
 
 from app.secretsafe.store import LocalVaultState, VaultLoad, VaultStore
-from app.secretsafe.value import SecretField, SecretValue
-from app.secretsafe.vault import Vault, VaultEntry, VaultOrigin
+from app.secretsafe.field import SecretField, VaultOrigin
+from app.secretsafe.value import SecretValue
+from app.secretsafe.vault import Vault, VaultEntry
 from app.setup.fields.secret_input import SecretInput
 from app.ui import messages_ru as msg
 
@@ -147,7 +148,7 @@ class KeysPanel:
     @property
     def vault(self) -> Vault:
         """Сейф, с которым будет работать запуск: личный слой поверх поставочного (правило §7.3 — одно)."""
-        return VaultLoad.from_layers(supplied=self.supplied, own=self.own, local_state=self.local_state).vault
+        return self.supplied.overlaid_by(self.own)
 
     @property
     def rows(self) -> tuple[KeyRow, ...]:
@@ -158,7 +159,7 @@ class KeysPanel:
         """Строка одного поля: запись итогового сейфа и то, есть ли под ней поставочное значение."""
         return KeyRow.of(
             field,
-            self.vault.entries.get(field),
+            self.vault.entry(field),
             self.can_save_own,
             has_supplied=self.supplied.get(field) is not None,
         )

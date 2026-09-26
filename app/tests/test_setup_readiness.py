@@ -8,32 +8,40 @@ from typing import Any
 
 import pytest
 
-from app.config.loader import ConfigProblem
-from app.core.text_format import TEXT_ENCODING
-from app.paths import LivecraftPaths
-from app.secretsafe.crypto import KEY_FIELDS, KEY_SALT, KEY_VERSION, KEY_WRAPPED, SALT_BYTES
-from app.secretsafe.store import LocalVaultState, VaultStore
-from app.secretsafe.value import SecretField, SecretValue
-from app.secretsafe.vault import Vault, VaultOrigin
+from app.config.files import ShippedSettings
+from app.config.json_node import ConfigError, ConfigProblem
+from app.core.text_format import NEWLINE, TEXT_ENCODING
 from app.observability.log_event import LogArea, get_logger
+from app.paths import LivecraftPaths
 from app.run.exit_code import RunOutcome
-from app.run.mode import ModeReadiness, ModeStep, PartReadiness, RunMode, RunPart
-from app.setup.readiness import Readiness
-from app.tests.conftest import (
-    REPO_CHANNELS_EXAMPLE,
-    SHIPPED_SETTINGS_FILE,
-    SUPPLIED_VALUES,
-    write_supplied_vault,
-)
+from app.run.mode import ModeReadiness, ModeStep, Need, PartReadiness, PartState, RunMode, RunPart
+from app.secretsafe.crypto import SALT_BYTES, VaultFileKey
+from app.secretsafe.field import SecretField, VaultOrigin
+from app.secretsafe.store import LocalVaultState, VaultStore
+from app.secretsafe.value import SecretValue
+from app.secretsafe.vault import Vault
+from app.setup.readiness import PlanBasis, Readiness
+from app.tests.conftest import FORM_URL, REPO_CHANNELS_EXAMPLE, SHIPPED_SETTINGS_FILE
 from app.tests.fixtures.logs import LogCapture
+from app.tests.fixtures.settings import set_form_url
+from app.tests.fixtures.vault import SUPPLIED_VALUES, write_supplied_vault
 from app.ui import messages_ru as msg
 
 OWN_SHEETS_ID: str = "1own-B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ-own-table"
+NOT_UTF8_BYTES: bytes = b"\xff\xfe\x00vault\x80\x81"
+SETTINGS_TEMPLATE: str = ShippedSettings().template.rstrip(NEWLINE)
+SETUP_WINDOW_NAME: str = "«Livecraft — настройка»"
 
 
 def _copy_configs(paths: LivecraftPaths) -> None:
     shutil.copyfile(SHIPPED_SETTINGS_FILE, paths.config_file)
     shutil.copyfile(REPO_CHANNELS_EXAMPLE, paths.channels_file)
+
+
+def _break_setting(paths: LivecraftPaths, key: str, value: Any) -> None:
+    data: dict[str, Any] = json.loads(paths.config_file.read_text(encoding=TEXT_ENCODING))
+    data[key] = value
+    paths.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding=TEXT_ENCODING)
 
 
 def _save_own_sheets_id(paths: LivecraftPaths) -> None:
@@ -44,8 +52,18 @@ def _save_own_sheets_id(paths: LivecraftPaths) -> None:
     VaultStore.open(paths).save_local(own)
 
 
+def _configured(paths: LivecraftPaths) -> Readiness:
+    """Всё настроено, и форма тоже: готовы все реализованные части."""
+    set_form_url(paths, FORM_URL)
+    return Readiness.check(paths)
+
+
+def _gaps_text(part: PartReadiness) -> str:
+    return NEWLINE.join(gap.text for gap in part.unmet)
+
+
 def _mode_texts(readiness: Readiness) -> tuple[str, ...]:
-    """Строки частей и строки лога всех режимов, с нейросетью и без."""
+    """Строки нужд и строки лога всех режимов, с нейросетью и без."""
     texts: list[str] = []
     for mode in RunMode:
         for no_llm in (False, True):
@@ -56,9 +74,9 @@ def _mode_texts(readiness: Readiness) -> tuple[str, ...]:
 
 def _every_text(readiness: Readiness) -> str:
     """Всё, что Readiness отдаёт наружу — людям и в лог."""
-    return "\n".join(
-        (*readiness.summary_lines, *readiness.problems, *readiness.warnings, *readiness.template_lines,
-         readiness.event.text, *_mode_texts(readiness))
+    return NEWLINE.join(
+        (*readiness.summary_lines, *readiness.problems, readiness.window_line, *readiness.warnings,
+         *readiness.template_lines, readiness.event.text, *_mode_texts(readiness))
     )
 
 
@@ -68,14 +86,13 @@ def _every_text(readiness: Readiness) -> str:
 def test_a_clean_root_is_not_ready(livecraft_paths: LivecraftPaths) -> None:
     """Ни конфигов, ни сейфа: обе ошибки названы — сначала настройки, потом каналы; шаблонов нет (файлов нет)."""
     readiness: Readiness = Readiness.check(livecraft_paths)
+    settings_error: ConfigError | None = readiness.settings.error
     assert not readiness.is_ready
-    assert readiness.settings is None and readiness.channels is None and readiness.config is None
-    assert readiness.settings_error is not None and readiness.settings_error.config_path == livecraft_paths.config_file
-    assert readiness.channels_error is not None and readiness.channels_error.kind is ConfigProblem.FILE_MISSING
-    assert readiness.config_errors == (readiness.settings_error, readiness.channels_error)
-    assert readiness.problems[0] == msg.CONFIG_FIX_IN_SETUP.format(
-        error=readiness.settings_error, tab=msg.SETUP_TAB_SETTINGS
-    )
+    assert readiness.settings.value is None and readiness.channels.value is None
+    assert settings_error is not None and settings_error.config_path == livecraft_paths.config_file
+    assert readiness.channels.is_missing and readiness.channels.error is not None
+    assert readiness.channels.error.reason is ConfigProblem.FILE_MISSING
+    assert readiness.problems[0] == msg.CONFIG_FIX_IN_SETUP.format(error=settings_error, tab=msg.SETUP_TAB_SETTINGS)
     assert readiness.problems[1] == msg.READINESS_CHANNELS_MISSING
     assert readiness.template_lines == ()
 
@@ -84,8 +101,8 @@ def test_settings_are_read_without_channels(livecraft_paths: LivecraftPaths) -> 
     """Боевой случай 24-09-2026: нет channels.json — livecraft.json всё равно прочитан."""
     shutil.copyfile(SHIPPED_SETTINGS_FILE, livecraft_paths.config_file)
     readiness: Readiness = Readiness.check(livecraft_paths)
-    assert readiness.settings is not None and readiness.settings_error is None
-    assert readiness.channels is None and readiness.config is None
+    assert readiness.settings.value is not None and readiness.settings.error is None
+    assert readiness.channels.value is None
     assert msg.READINESS_FIELD_LINE.format(
         label=msg.FORM_URL_LABEL, origin=msg.READINESS_FORM_NOT_CONFIGURED
     ) in readiness.summary_lines
@@ -94,15 +111,9 @@ def test_settings_are_read_without_channels(livecraft_paths: LivecraftPaths) -> 
 def test_channels_are_read_without_settings(livecraft_paths: LivecraftPaths) -> None:
     shutil.copyfile(REPO_CHANNELS_EXAMPLE, livecraft_paths.channels_file)
     readiness: Readiness = Readiness.check(livecraft_paths)
-    assert readiness.channels is not None and len(readiness.channels) == 2
-    assert readiness.settings is None and readiness.settings_error is not None
+    assert readiness.channels.value is not None and len(readiness.channels.value.channels) == 2
+    assert readiness.settings.value is None and readiness.settings.error is not None
     assert readiness.summary_lines[-1] == msg.READINESS_CHANNELS_LINE.format(count=2, languages="ru, uk")
-
-
-def test_the_config_property_joins_both_files(ready_paths: LivecraftPaths) -> None:
-    readiness: Readiness = Readiness.check(ready_paths)
-    assert readiness.config is not None
-    assert readiness.config.settings == readiness.settings and readiness.config.channels == readiness.channels
 
 
 # --- конфиги на месте, сейфа нет
@@ -112,7 +123,7 @@ def test_configs_without_a_vault_leave_only_the_vault_problem(livecraft_paths: L
     _copy_configs(livecraft_paths)
     readiness: Readiness = Readiness.check(livecraft_paths)
     assert not readiness.is_ready
-    assert readiness.config_errors == () and readiness.vault_error is None
+    assert readiness.settings.error is None and readiness.channels.error is None and readiness.vault.error is None
     assert readiness.problems == (Vault.empty().admission_reason,)
     for field in SecretField.current():
         assert field.human_label in readiness.problems[0]
@@ -122,39 +133,37 @@ def test_configs_without_a_vault_leave_only_the_vault_problem(livecraft_paths: L
 
 def test_a_broken_config_field_is_named_with_where_to_fix_it(livecraft_paths: LivecraftPaths) -> None:
     _copy_configs(livecraft_paths)
-    data: dict[str, Any] = json.loads(livecraft_paths.config_file.read_text(encoding="utf-8"))
-    data["keep_days"] = 0
-    livecraft_paths.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    _break_setting(livecraft_paths, "keep_days", 0)
     readiness: Readiness = Readiness.check(livecraft_paths)
-    assert readiness.settings_error is not None and readiness.settings_error.key_path == "keep_days"
+    assert readiness.settings.error is not None and readiness.settings.error.key_path == "keep_days"
     line: str = readiness.problems[0]
     assert str(livecraft_paths.config_file) in line and "keep_days" in line and msg.SETUP_TAB_SETTINGS in line
-    assert readiness.channels is not None                  # каналы от сломанных настроек не зависят
-    assert readiness.template_lines == (msg.CONFIG_SETTINGS_TEMPLATE,)       # только для лога
+    assert readiness.channels.value is not None                  # каналы от сломанных настроек не зависят
+    assert readiness.template_lines == (SETTINGS_TEMPLATE,)      # только для лога
 
 
 def test_a_broken_channels_file_is_named_with_its_tab_and_template(livecraft_paths: LivecraftPaths) -> None:
     _copy_configs(livecraft_paths)
-    livecraft_paths.channels_file.write_text('{"channels": []}', encoding="utf-8")
+    livecraft_paths.channels_file.write_text('{"channels": []}', encoding=TEXT_ENCODING)
     readiness: Readiness = Readiness.check(livecraft_paths)
-    assert readiness.channels_error is not None
+    assert readiness.channels.is_broken
     assert msg.SETUP_TAB_CHANNELS in readiness.problems[0]
     assert str(livecraft_paths.channels_file) in readiness.problems[0]
     lines: tuple[str, ...] = readiness.template_lines
     assert lines[-1] == msg.CONFIG_CHANNELS_TEMPLATE
     assert len(lines) == len(msg.CONFIG_CHANNELS_FIELDS) + 1
-    body: str = "\n".join(lines[:-1])
+    body: str = NEWLINE.join(lines[:-1])
     assert msg.CONFIG_LANGUAGES_RULE in body and "public, unlisted" in body and "youtube" in body
 
 
 def test_a_missing_config_field_brings_the_template_for_the_log(livecraft_paths: LivecraftPaths) -> None:
     _copy_configs(livecraft_paths)
-    data: dict[str, Any] = json.loads(livecraft_paths.config_file.read_text(encoding="utf-8"))
+    data: dict[str, Any] = json.loads(livecraft_paths.config_file.read_text(encoding=TEXT_ENCODING))
     del data["timezone"]
-    livecraft_paths.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    livecraft_paths.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding=TEXT_ENCODING)
     readiness: Readiness = Readiness.check(livecraft_paths)
-    assert readiness.settings_error is not None and readiness.settings_error.key_path == "timezone"
-    assert readiness.template_lines == (msg.CONFIG_SETTINGS_TEMPLATE,)
+    assert readiness.settings.error is not None and readiness.settings.error.key_path == "timezone"
+    assert readiness.template_lines == (SETTINGS_TEMPLATE,)
 
 
 # --- готово
@@ -164,7 +173,8 @@ def test_a_supplied_vault_and_configs_are_ready(ready_paths: LivecraftPaths) -> 
     readiness: Readiness = Readiness.check(ready_paths)
     assert readiness.is_ready
     assert readiness.problems == () and readiness.warnings == () and readiness.template_lines == ()
-    assert readiness.vault_load is not None and readiness.vault_load.local_state is LocalVaultState.ABSENT
+    assert readiness.window_line == msg.SETUP_READY
+    assert readiness.vault.load is not None and readiness.vault.load.local_state is LocalVaultState.ABSENT
 
 
 def test_the_summary_names_every_field_and_its_origin(ready_paths: LivecraftPaths) -> None:
@@ -193,24 +203,30 @@ def test_an_own_value_shows_as_own_in_the_summary(ready_paths: LivecraftPaths) -
     assert msg.READINESS_FIELD_LINE.format(
         label=SecretField.OPENAI_API_KEY.human_label, origin=msg.VAULT_ORIGIN_SUPPLIED
     ) in readiness.summary_lines
-    assert readiness.vault_load is not None and readiness.vault_load.local_state is LocalVaultState.READ
+    assert readiness.vault.load is not None and readiness.vault.load.local_state is LocalVaultState.READ
 
 
 # --- личный сейф не читается: громко, но работа идёт
 
 
 def test_an_unreadable_own_vault_warns_and_runs_on_supplied_values(ready_paths: LivecraftPaths) -> None:
-    """§16: молчаливый откат недопустим — получатель незаметно работал бы на чужом ключе и таблице."""
+    """§16: молчаливый откат недопустим — получатель незаметно работал бы на чужом ключе и таблице.
+
+    Предупреждение называет поля сейфа нынешними названиями — без формы ключей: её в сейфе больше нет.
+    """
     _save_own_sheets_id(ready_paths)
     data: dict[str, Any] = json.loads(ready_paths.vault_local_file.read_text(encoding=TEXT_ENCODING))
-    wrapped: bytes = base64.b64decode(data[KEY_WRAPPED], validate=True)
-    data[KEY_WRAPPED] = base64.b64encode(wrapped[:-1] + bytes([wrapped[-1] ^ 0xFF])).decode("ascii")
+    key: str = VaultFileKey.WRAPPED_KEY.value
+    wrapped: bytes = base64.b64decode(data[key], validate=True)
+    data[key] = base64.b64encode(wrapped[:-1] + bytes([wrapped[-1] ^ 0xFF])).decode("ascii")
     ready_paths.vault_local_file.write_text(json.dumps(data), encoding=TEXT_ENCODING)
     readiness: Readiness = Readiness.check(ready_paths)
-    assert readiness.warnings == (msg.VAULT_LOCAL_UNREADABLE,)
+    fields: str = msg.LIST_JOINER.join(field.human_label for field in SecretField.current())
+    assert readiness.warnings == (msg.VAULT_LOCAL_UNREADABLE.format(fields=fields),)
+    assert SecretField.KEY_FORM_URL.human_label not in readiness.warnings[0]
     assert readiness.is_ready                                  # запуск идёт — на поставочных значениях
-    assert readiness.vault is not None
-    assert all(readiness.vault.origin_of(field) is VaultOrigin.SUPPLIED for field in SecretField.current())
+    vault: Vault | None = readiness.vault.vault
+    assert vault is not None and all(vault.origin_of(field) is VaultOrigin.SUPPLIED for field in SecretField.current())
     assert "local=unreadable" in readiness.event.text
 
 
@@ -224,29 +240,28 @@ def test_no_warning_without_an_own_vault(ready_paths: LivecraftPaths) -> None:
 def test_a_vault_file_of_an_unknown_format_is_named(ready_paths: LivecraftPaths) -> None:
     """§7.3: неизвестная версия формата — ошибка с именем файла и код 2, а не тихое игнорирование."""
     ready_paths.vault_local_file.write_text(
-        json.dumps({KEY_VERSION: 7, KEY_SALT: base64.b64encode(bytes(SALT_BYTES)).decode("ascii"), KEY_FIELDS: {}}),
+        json.dumps({
+            VaultFileKey.VERSION.value: 7,
+            VaultFileKey.SALT.value: base64.b64encode(bytes(SALT_BYTES)).decode("ascii"),
+            VaultFileKey.FIELDS.value: {},
+        }),
         encoding=TEXT_ENCODING,
     )
     readiness: Readiness = Readiness.check(ready_paths)
-    assert readiness.vault_error is not None
-    assert not readiness.is_ready
+    error = readiness.vault.error
+    assert error is not None and not readiness.is_ready
     assert any(ready_paths.vault_local_file.name in line for line in readiness.problems)
-    assert readiness.problems[-1] == readiness.vault_error.human
-    assert msg.VAULT_FILE_ADVICE_LOCAL in readiness.problems[-1]
-    assert readiness.vault_error.detail not in readiness.problems[-1]
+    assert readiness.problems[-1] == error.human and msg.VAULT_FILE_ADVICE_LOCAL in readiness.problems[-1]
+    assert error.detail not in readiness.problems[-1]
     assert "vault=broken" in readiness.event.text
-
-
-NOT_UTF8_BYTES: bytes = b"\xff\xfe\x00vault\x80\x81"
 
 
 def _assert_broken_local_file(paths: LivecraftPaths, readiness: Readiness) -> None:
     """Повреждённый личный файл — не «чужой сейф»: отказ с именем файла, а не предупреждение и поставка."""
     assert not readiness.is_ready
-    assert readiness.vault_error is not None
-    assert readiness.vault is None
+    assert readiness.vault.error is not None and readiness.vault.vault is None
     assert any(paths.vault_local_file.name in line for line in readiness.problems)
-    assert readiness.problems[-1] == readiness.vault_error.human
+    assert readiness.problems[-1] == readiness.vault.error.human
     assert readiness.warnings == ()
 
 
@@ -275,9 +290,10 @@ def test_no_value_and_no_mask_leaves_readiness(ready_paths: LivecraftPaths, own:
     if own:
         _save_own_sheets_id(ready_paths)
     readiness: Readiness = Readiness.check(ready_paths)
-    assert readiness.vault is not None
+    vault: Vault | None = readiness.vault.vault
+    assert vault is not None
     text: str = _every_text(readiness)
-    for secret in readiness.vault.secrets():
+    for secret in vault.secrets():
         assert secret.reveal() not in text
         assert secret.masked not in text
     for value in (*SUPPLIED_VALUES.values(), OWN_SHEETS_ID):     # и перекрытое поставочное тоже
@@ -298,17 +314,17 @@ def test_no_value_leaves_readiness_when_things_are_broken(ready_paths: Livecraft
 def test_a_vault_without_the_form_url_is_ready(ready_paths: LivecraftPaths) -> None:
     """Ссылки на форму в сейфе нет, form.url пуст — программа готова: форма — открытая настройка (§14 решение 15)."""
     readiness: Readiness = Readiness.check(ready_paths)
-    assert readiness.vault is not None and readiness.vault.get(SecretField.KEY_FORM_URL) is None
-    assert readiness.config is not None and not readiness.config.settings.form.is_configured
+    assert readiness.vault.vault is not None and readiness.vault.vault.get(SecretField.KEY_FORM_URL) is None
+    assert readiness.settings.value is not None and not readiness.settings.value.form.is_configured
     assert readiness.is_ready
 
 
 def test_the_log_line_carries_labels_and_state_only(ready_paths: LivecraftPaths) -> None:
     readiness: Readiness = Readiness.check(ready_paths)
-    assert readiness.vault is not None
+    assert readiness.vault.vault is not None
     line: str = readiness.event.text
     assert line.startswith("readiness settings=ok channels=2 local=absent vault=")
-    assert readiness.vault.log_line in line
+    assert readiness.vault.vault.log_line in line
     assert line.endswith(" ready=yes")
     assert line.isascii()
 
@@ -322,19 +338,19 @@ def test_check_prints_nothing(livecraft_paths: LivecraftPaths, capsys: pytest.Ca
 
 def test_the_readiness_object_is_frozen(ready_paths: LivecraftPaths) -> None:
     with pytest.raises(Exception):
-        Readiness.check(ready_paths).settings = None     # type: ignore[misc]
+        Readiness.check(ready_paths).has_client_secret = False     # type: ignore[misc]
 
 
 # --- форма ключей в сводке: по livecraft.json, а не по сейфу (§14 решение 15)
 
-FORM_URL: str = "https://forms.gle/AbCdEf123456"
 LEGACY_FORM_LABEL: str = SecretField.KEY_FORM_URL.human_label
 
 
-def _set_form_url(paths: LivecraftPaths, url: str) -> None:
-    data: dict[str, Any] = json.loads(paths.config_file.read_text(encoding="utf-8"))
+def _write_form_url(paths: LivecraftPaths, url: str) -> None:
+    """Ссылка в файле как есть, в обход разбора: так в файле оказывается и негодная ссылка."""
+    data: dict[str, Any] = json.loads(paths.config_file.read_text(encoding=TEXT_ENCODING))
     data["form"]["url"] = url
-    paths.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    paths.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding=TEXT_ENCODING)
 
 
 def test_the_summary_says_the_form_is_not_configured_on_the_shipped_settings(ready_paths: LivecraftPaths) -> None:
@@ -345,20 +361,18 @@ def test_the_summary_says_the_form_is_not_configured_on_the_shipped_settings(rea
 
 @pytest.mark.parametrize("url", ["https://docs.google.com]/forms/x", "https://[bad"])
 def test_an_unparsable_form_url_is_a_settings_problem_not_a_crash(ready_paths: LivecraftPaths, url: str) -> None:
-    _set_form_url(ready_paths, url)
+    _write_form_url(ready_paths, url)
     readiness: Readiness = Readiness.check(ready_paths)
-    assert readiness.settings is None
-    assert readiness.settings_error is not None
-    assert readiness.settings_error.key_path == "form.url"
-    assert readiness.settings_error.problem == msg.CONFIG_PROBLEM_FORM_URL
+    error: ConfigError | None = readiness.settings.error
+    assert readiness.settings.value is None and error is not None
+    assert (error.key_path, error.problem) == ("form.url", msg.CONFIG_PROBLEM_FORM_URL)
 
 
 def test_the_summary_says_the_form_is_configured_and_hides_the_link(ready_paths: LivecraftPaths) -> None:
-    _set_form_url(ready_paths, FORM_URL)
-    readiness: Readiness = Readiness.check(ready_paths)
+    readiness: Readiness = _configured(ready_paths)
     lines: tuple[str, ...] = readiness.summary_lines
     assert msg.READINESS_FIELD_LINE.format(label=msg.FORM_URL_LABEL, origin=msg.READINESS_FORM_CONFIGURED) in lines
-    assert FORM_URL not in "\n".join(lines) + readiness.event.text
+    assert FORM_URL not in NEWLINE.join(lines) + readiness.event.text
 
 
 @pytest.mark.parametrize("in_vault", [False, True])
@@ -378,107 +392,110 @@ def test_without_readable_settings_there_is_no_form_line(livecraft_paths: Livecr
     assert not any(msg.FORM_URL_LABEL in line for line in lines)
 
 
-# --- готовность по частям режима (задача 3.8, §10)
-
-
-def _configured(paths: LivecraftPaths) -> Readiness:
-    """Всё настроено, и форма тоже: готовы все реализованные части."""
-    _set_form_url(paths, FORM_URL)
-    return Readiness.check(paths)
-
-
-def _gaps_text(part: PartReadiness) -> str:
-    assert part.action is not None
-    return part.action
+# --- нужды частей: одна строка «что задать и где» на нужду (Readiness.gap)
 
 
 def test_a_fully_configured_root_has_every_built_part_ready(ready_paths: LivecraftPaths) -> None:
     readiness: Readiness = _configured(ready_paths)
+    for need in Need:
+        assert readiness.gap(need) is None
     for part in RunPart:
         state: PartReadiness = readiness.part(part)
-        assert state.is_built is part.is_built
-        assert state.is_ready is part.is_built
-        assert (state.action is None) is part.is_built
+        assert state.state is (PartState.READY if part.is_built else PartState.NOT_BUILT)
+        assert state.unmet == ()
 
 
 def test_without_channels_the_table_and_package_are_ready(ready_paths: LivecraftPaths) -> None:
     """Эфиров в этой версии нет: нехватка каналов — не «не готово», а та же строка «появится позже»."""
-    _set_form_url(ready_paths, FORM_URL)
+    set_form_url(ready_paths, FORM_URL)
     ready_paths.channels_file.unlink()
     readiness: Readiness = Readiness.check(ready_paths)
-    assert readiness.part(RunPart.PLAN).is_ready
-    assert readiness.part(RunPart.PACKAGE).is_ready
-    broadcast: PartReadiness = readiness.part(RunPart.BROADCAST)
-    assert not broadcast.is_blocked and not broadcast.is_built
-    assert broadcast.action == RunPart.BROADCAST.not_built_line
-    assert msg.READINESS_GAP_CHANNELS_MISSING not in _gaps_text(broadcast)
+    assert readiness.part(RunPart.PLAN).state is PartState.READY
+    assert readiness.part(RunPart.PACKAGE).state is PartState.READY
+    assert readiness.part(RunPart.BROADCAST).state is PartState.NOT_BUILT
+    assert readiness.gap(Need.CHANNELS) == msg.READINESS_GAP_IN_SETUP.format(
+        what=msg.READINESS_GAP_CHANNELS_MISSING, tab=msg.SETUP_TAB_CHANNELS
+    )
+    mode: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=True)
+    assert all(msg.READINESS_GAP_CHANNELS_MISSING not in line for line in mode.lines)
 
 
 def test_the_all_mode_without_the_openai_key_blocks_nothing(ready_paths: LivecraftPaths) -> None:
     """Нейросети в этой версии нет: режим «всё» без --no-llm ключа OpenAI не требует и «эфиры» готовыми не
     показывает; с --no-llm строки о нейросети нет вовсе."""
-    _set_form_url(ready_paths, FORM_URL)
+    set_form_url(ready_paths, FORM_URL)
     write_supplied_vault(ready_paths, {k: v for k, v in SUPPLIED_VALUES.items() if k is not SecretField.OPENAI_API_KEY})
     readiness: Readiness = Readiness.check(ready_paths)
-    merge: PartReadiness = readiness.part(RunPart.MERGE)
-    assert not merge.is_blocked and not merge.is_built and merge.action == RunPart.MERGE.not_built_line
+    assert readiness.part(RunPart.MERGE).state is PartState.NOT_BUILT
+    assert readiness.gap(Need.OPENAI_VAULT) is not None
     with_llm: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=False)
-    assert with_llm.blocked == ()
-    assert RunPart.BROADCAST not in [part.part for part in with_llm.ready]
+    assert with_llm.in_state(PartState.BLOCKED) == ()
+    assert RunPart.BROADCAST not in [part.part for part in with_llm.in_state(PartState.READY)]
     assert with_llm.lines.count(RunPart.MERGE.not_built_line) == 1
     without_llm: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=True)
-    assert without_llm.blocked == () and RunPart.MERGE.not_built_line not in without_llm.lines
+    assert without_llm.in_state(PartState.BLOCKED) == () and RunPart.MERGE.not_built_line not in without_llm.lines
 
 
 def test_without_the_form_the_package_waits(ready_paths: LivecraftPaths) -> None:
     readiness: Readiness = Readiness.check(ready_paths)       # поставочная ссылка на форму пуста
     state: PartReadiness = readiness.part(RunPart.PACKAGE)
-    assert state.is_blocked
-    assert msg.READINESS_GAP_FORM in _gaps_text(state) and msg.SETUP_TAB_SETTINGS in _gaps_text(state)
-    assert readiness.part(RunPart.PLAN).is_ready
+    assert state.state is PartState.BLOCKED and [gap.need for gap in state.unmet] == [Need.FORM]
+    assert _gaps_text(state) == msg.READINESS_GAP_IN_SETUP.format(what=msg.READINESS_GAP_FORM, tab=msg.SETUP_TAB_SETTINGS)
+    assert readiness.part(RunPart.PLAN).state is PartState.READY
 
 
 def test_without_client_secret_the_table_waits(ready_paths: LivecraftPaths) -> None:
     ready_paths.client_secret_file.unlink()
     readiness: Readiness = _configured(ready_paths)
     plan: PartReadiness = readiness.part(RunPart.PLAN)
-    assert plan.is_blocked
-    assert str(ready_paths.client_secret_file) in _gaps_text(plan)
+    assert plan.state is PartState.BLOCKED
+    assert _gaps_text(plan) == msg.READINESS_GAP_CLIENT_SECRET.format(path=ready_paths.client_secret_file)
     assert readiness.for_mode(RunMode.BROADCAST, no_llm=False).is_nothing_ready     # основа режима А не готова
 
 
-def test_without_the_table_fields_the_table_waits_and_names_both(ready_paths: LivecraftPaths) -> None:
+def test_without_the_table_fields_one_line_names_both(ready_paths: LivecraftPaths) -> None:
+    """Нужда «сейф таблицы» — одна строка, в ней оба поля, которых нет."""
     write_supplied_vault(ready_paths, {SecretField.OPENAI_API_KEY: SUPPLIED_VALUES[SecretField.OPENAI_API_KEY]})
     plan: PartReadiness = _configured(ready_paths).part(RunPart.PLAN)
-    assert plan.is_blocked
-    for field in (SecretField.SHEETS_ID, SecretField.SHEETS_RANGE):
-        assert field.human_label in _gaps_text(plan)
+    labels: str = msg.LIST_JOINER.join((SecretField.SHEETS_ID.human_label, SecretField.SHEETS_RANGE.human_label))
+    assert plan.state is PartState.BLOCKED and len(plan.unmet) == 1
+    assert _gaps_text(plan) == msg.READINESS_GAP_IN_SETUP.format(what=labels, tab=msg.SETUP_TAB_KEYS)
 
 
 def test_a_broken_settings_file_blocks_the_parts_that_need_it_with_the_key(ready_paths: LivecraftPaths) -> None:
-    data: dict[str, Any] = json.loads(ready_paths.config_file.read_text(encoding="utf-8"))
-    data["keep_days"] = 0
-    ready_paths.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    _break_setting(ready_paths, "keep_days", 0)
     readiness: Readiness = Readiness.check(ready_paths)
     for part in (RunPart.PLAN, RunPart.PACKAGE):
         action: str = _gaps_text(readiness.part(part))
         assert "keep_days" in action and msg.SETUP_TAB_SETTINGS in action
+    assert readiness.gap(Need.FORM) is None           # о сломанных настройках говорит их собственная нужда
+
+
+def test_a_broken_settings_file_is_one_line_for_the_table_and_the_package(ready_paths: LivecraftPaths) -> None:
+    """Сломанный livecraft.json в режиме «всё» — одна строка про настройки, в ней и таблица плана, и пакет."""
+    _break_setting(ready_paths, "keep_days", 0)
+    mode: ModeReadiness = Readiness.check(ready_paths).for_mode(RunMode.ALL, no_llm=False)
+    settings_lines: list[str] = [line for line in mode.lines if "keep_days" in line]
+    assert len(settings_lines) == 1
+    assert RunPart.PLAN.human_label in settings_lines[0] and RunPart.PACKAGE.human_label in settings_lines[0]
+    assert settings_lines[0] == msg.RUN_NEED_BLOCKED.format(
+        parts=msg.LIST_JOINER.join((RunPart.PLAN.human_label, RunPart.PACKAGE.human_label)),
+        gap=Readiness.check(ready_paths).gap(Need.SETTINGS),
+    )
 
 
 def test_parts_not_built_are_not_blocked(ready_paths: LivecraftPaths) -> None:
     """Частей, которых нет в этой версии, настройкой не починить: строка «появится позже», а не «не готово»."""
     readiness: Readiness = Readiness.check(ready_paths)
     for part in (RunPart.MERGE, RunPart.ANNOUNCE, RunPart.BROADCAST, RunPart.PACKAGES_IN):
-        state: PartReadiness = readiness.part(part)
-        assert not state.is_built and not state.is_blocked and not state.is_ready
-        assert state.action == part.not_built_line
+        assert readiness.part(part).state is PartState.NOT_BUILT
 
 
 def test_the_announce_mode_with_everything_set_blocks_nothing(ready_paths: LivecraftPaths) -> None:
     mode: ModeReadiness = _configured(ready_paths).for_mode(RunMode.ANNOUNCE, no_llm=False)
-    assert [part.part for part in mode.ready] == [RunPart.PLAN, RunPart.PACKAGE]
-    assert mode.blocked == ()
-    assert [part.part for part in mode.not_built] == [RunPart.MERGE, RunPart.ANNOUNCE]
+    assert [part.part for part in mode.in_state(PartState.READY)] == [RunPart.PLAN, RunPart.PACKAGE]
+    assert mode.in_state(PartState.BLOCKED) == ()
+    assert [part.part for part in mode.in_state(PartState.NOT_BUILT)] == [RunPart.MERGE, RunPart.ANNOUNCE]
     assert mode.lines == (RunPart.MERGE.not_built_line, RunPart.ANNOUNCE.not_built_line)
     assert not mode.is_nothing_ready
     assert mode.is_part_ready(RunPart.PLAN) and not mode.is_part_ready(RunPart.MERGE)
@@ -490,8 +507,8 @@ def test_the_from_package_mode_needs_no_table_and_no_key(ready_paths: LivecraftP
     ready_paths.vault_file.unlink()
     ready_paths.client_secret_file.unlink()
     mode: ModeReadiness = _configured(ready_paths).for_mode(RunMode.FROM_PACKAGE, no_llm=False)
-    assert mode.ready == () and mode.blocked == ()
-    assert [part.part for part in mode.not_built] == [RunPart.PACKAGES_IN, RunPart.BROADCAST]
+    assert mode.in_state(PartState.READY) == () and mode.in_state(PartState.BLOCKED) == ()
+    assert [part.part for part in mode.in_state(PartState.NOT_BUILT)] == [RunPart.PACKAGES_IN, RunPart.BROADCAST]
     assert not mode.is_nothing_ready
 
 
@@ -503,12 +520,16 @@ def test_a_clean_root_has_nothing_ready(livecraft_paths: LivecraftPaths) -> None
         assert state.is_nothing_ready and state.is_fixable_in_setup
 
 
-def test_the_mode_lines_come_one_per_part_in_work_order(ready_paths: LivecraftPaths) -> None:
+def test_the_mode_lines_follow_the_work_order(ready_paths: LivecraftPaths) -> None:
     ready_paths.channels_file.unlink()
-    mode: ModeReadiness = Readiness.check(ready_paths).for_mode(RunMode.ALL, no_llm=False)
-    parts: list[RunPart] = [part.part for part in mode.parts if part.action is not None]
-    assert parts == [RunPart.MERGE, RunPart.PACKAGE, RunPart.ANNOUNCE, RunPart.BROADCAST]
-    assert len(mode.lines) == 4
+    readiness: Readiness = Readiness.check(ready_paths)
+    mode: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=False)
+    assert mode.lines == (
+        RunPart.MERGE.not_built_line,
+        msg.RUN_NEED_BLOCKED.format(parts=RunPart.PACKAGE.human_label, gap=readiness.gap(Need.FORM)),
+        RunPart.ANNOUNCE.not_built_line,
+        RunPart.BROADCAST.not_built_line,
+    )
 
 
 def test_a_broken_own_vault_file_blocks_the_table_and_is_fixable_in_the_window(ready_paths: LivecraftPaths) -> None:
@@ -517,10 +538,10 @@ def test_a_broken_own_vault_file_blocks_the_table_and_is_fixable_in_the_window(r
     readiness: Readiness = _configured(ready_paths)
     mode: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=False)
     assert mode.is_nothing_ready and mode.is_fixable_in_setup
-    assert readiness.vault_error is not None
-    gap: str = msg.READINESS_GAP_VAULT_BROKEN.format(problem=readiness.vault_error.problem)
-    assert gap in mode.parts[0].action     # type: ignore[operator]
-    assert ready_paths.vault_local_file.name in mode.parts[0].action     # type: ignore[operator]
+    assert readiness.vault.error is not None
+    gap: str = msg.READINESS_GAP_VAULT_BROKEN.format(problem=readiness.vault.error.problem)
+    assert _gaps_text(mode.parts[0]) == gap
+    assert ready_paths.vault_local_file.name in gap
 
 
 def test_a_broken_supplied_vault_file_blocks_the_table_and_is_not_fixable_in_the_window(
@@ -531,12 +552,42 @@ def test_a_broken_supplied_vault_file_blocks_the_table_and_is_not_fixable_in_the
     readiness: Readiness = _configured(ready_paths)
     mode: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=False)
     assert mode.is_nothing_ready and not mode.is_fixable_in_setup
-    assert ready_paths.vault_file.name in mode.parts[0].action     # type: ignore[operator]
-    assert readiness.problems[-1] == readiness.vault_error.human     # type: ignore[union-attr]
+    assert ready_paths.vault_file.name in _gaps_text(mode.parts[0])
+    assert readiness.vault.error is not None and readiness.problems[-1] == readiness.vault.error.human
     assert msg.VAULT_FILE_ADVICE_SUPPLIED in readiness.problems[-1]
 
 
-# --- что делает запуск режима (ModeReadiness.step) и что уходит в лог (Readiness.log)
+# --- строка готовности окна настройщика: окно уже открыто
+
+
+def test_the_window_line_does_not_send_to_the_open_window(ready_paths: LivecraftPaths) -> None:
+    """Проблема настроек в окне — без совета открыть «Livecraft — настройка»: только вкладка."""
+    _break_setting(ready_paths, "keep_days", 0)
+    readiness: Readiness = Readiness.check(ready_paths)
+    error: ConfigError | None = readiness.settings.error
+    assert error is not None
+    assert readiness.window_line == msg.CONFIG_FIX_ON_TAB.format(error=error, tab=msg.SETUP_TAB_SETTINGS)
+    assert SETUP_WINDOW_NAME not in readiness.window_line and "в настройщике" not in readiness.window_line
+    assert readiness.problems[0] == msg.CONFIG_FIX_IN_SETUP.format(error=error, tab=msg.SETUP_TAB_SETTINGS)
+
+
+def test_the_window_line_of_a_broken_own_vault_names_the_tab_not_the_window(ready_paths: LivecraftPaths) -> None:
+    ready_paths.vault_local_file.write_bytes(NOT_UTF8_BYTES)
+    readiness: Readiness = Readiness.check(ready_paths)
+    assert readiness.vault.error is not None
+    assert readiness.window_line == msg.VAULT_FILE_BROKEN.format(
+        problem=readiness.vault.error.problem, advice=msg.VAULT_FILE_ADVICE_WINDOW
+    )
+    assert SETUP_WINDOW_NAME not in readiness.window_line
+
+
+def test_the_window_line_of_a_clean_root_lists_every_problem(livecraft_paths: LivecraftPaths) -> None:
+    lines: list[str] = Readiness.check(livecraft_paths).window_line.split(NEWLINE)
+    assert len(lines) == 3 and lines[1] == msg.READINESS_CHANNELS_MISSING
+    assert all(SETUP_WINDOW_NAME not in line for line in lines)
+
+
+# --- что делает запуск режима (ModeReadiness.step), с чем идёт прогон и что уходит в лог
 
 
 def test_a_clean_root_opens_the_setup_window(livecraft_paths: LivecraftPaths) -> None:
@@ -562,6 +613,22 @@ def test_the_package_mode_only_reports(ready_paths: LivecraftPaths) -> None:
     assert mode.step is ModeStep.REPORT and mode.outcome is RunOutcome.DONE
 
 
+def test_a_ready_table_gives_the_run_its_settings_and_vault_at_once(ready_paths: LivecraftPaths) -> None:
+    readiness: Readiness = Readiness.check(ready_paths)
+    basis: PlanBasis | None = readiness.plan_basis(readiness.for_mode(RunMode.ALL, no_llm=True))
+    assert basis == PlanBasis(settings=readiness.settings.value, vault=readiness.vault.vault)   # type: ignore[arg-type]
+
+
+def test_a_mode_without_the_table_gets_no_plan_run(ready_paths: LivecraftPaths) -> None:
+    ready: Readiness = _configured(ready_paths)
+    assert ready.plan_basis(ready.for_mode(RunMode.FROM_PACKAGE, no_llm=False)) is None
+
+
+def test_a_table_that_is_not_ready_gets_no_plan_run(livecraft_paths: LivecraftPaths) -> None:
+    clean: Readiness = Readiness.check(livecraft_paths)
+    assert clean.plan_basis(clean.for_mode(RunMode.ALL, no_llm=False)) is None
+
+
 def _logged(readiness: Readiness) -> list[str]:
     with LogCapture.on(LogArea.MAIN) as capture:
         readiness.log(get_logger(LogArea.MAIN))
@@ -585,4 +652,4 @@ def test_the_log_names_a_broken_vault_file_with_its_reason(ready_paths: Livecraf
     vault_line: str = "vault_error file=vault.dat source=supplied reason=damaged detail=vault file is not valid JSON"
     assert any(line.startswith(vault_line) for line in lines)
     for value in SUPPLIED_VALUES.values():
-        assert value not in "\n".join(lines)
+        assert value not in NEWLINE.join(lines)

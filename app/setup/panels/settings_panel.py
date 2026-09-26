@@ -2,32 +2,23 @@
 
 Вкладка держит настройки, какими они будут записаны (всегда годные), и то, какими они прочитаны с диска.
 Своих правил проверки у неё нет: черновик переводится в данные livecraft.json и разбирается тем же
-загрузчиком, что читает файл (`parse_settings`); ошибка разбора и есть проблема поля. Контракт формы на
-вкладке не правится и переносится при записи как есть. Пишет только загрузчик (`save_settings_file`).
+разбором, что читает файл (`SettingsFile.parse`); ошибка разбора и есть проблема поля. Контракт формы на
+вкладке не правится и переносится при записи как есть. Пишет только файл настроек (`SettingsFile.save`).
 
-Нет или не читается livecraft.json — вкладка открывается на шаблоне программы (`CONFIG_SETTINGS_TEMPLATE`,
-тест держит его равным поставочному файлу), говорит об этом и пишет файл только по «сохранить»: загрузчик
-по-прежнему умолчаний не подставляет (§16, решения к задаче 2.2).
+Нет или не читается livecraft.json — вкладка открывается на поставочном шаблоне программы (`ShippedSettings`),
+говорит об этом и пишет файл только по «сохранить»: разбор по-прежнему умолчаний не подставляет (§16, решения
+к задаче 2.2).
 
 Вкладка неизменяемая: `apply` и `save` отдают новую. Окно Tk (задача 2.3) только рисует её ответы.
 """
 from __future__ import annotations
 
 import dataclasses
-import json
 from dataclasses import dataclass
-from pathlib import Path
 
-from app.config.loader import (
-    ConfigError,
-    LivecraftSettings,
-    ReasoningEffort,
-    ServiceTier,
-    SettingProblem,
-    load_settings,
-    parse_settings,
-    save_settings_file,
-)
+from app.config.files import SettingsFile, ShippedSettings
+from app.config.json_node import ConfigError, SettingProblem
+from app.config.settings import LivecraftSettings, ReasoningEffort, ServiceTier
 from app.paths import LivecraftPaths
 from app.setup.fields.settings_draft import SettingsDraft
 from app.ui import messages_ru as msg
@@ -51,27 +42,28 @@ class SettingsPanel:
     """Вкладка «Настройки запуска».
 
     `settings` — настройки, какими будут записаны; всегда прошли загрузчик. `loaded` — как прочитано с диска
-    (None — не прочитано), `load_problem` — почему. `config_file` — путь для ошибок разбора.
+    (None — не прочитано), `load_problem` — почему. `file` — файл настроек: его разбор проверяет правки.
     """
 
     settings: LivecraftSettings
     loaded: LivecraftSettings | None
     load_problem: SettingProblem | None
-    config_file: Path
+    file: SettingsFile
 
     @classmethod
     def from_paths(cls, paths: LivecraftPaths) -> SettingsPanel:
-        """Прочитать livecraft.json. Не прочитался — вкладка на шаблоне программы и с причиной от загрузчика."""
+        """Прочитать livecraft.json. Не прочитался — вкладка на шаблоне программы и с причиной от разбора."""
+        file: SettingsFile = SettingsFile.of(paths)
         try:
-            settings: LivecraftSettings = load_settings(paths.config_file)
+            settings: LivecraftSettings = file.load()
         except ConfigError as error:
             return cls(
-                settings=parse_settings(json.loads(msg.CONFIG_SETTINGS_TEMPLATE), paths.config_file),
+                settings=ShippedSettings().settings,
                 loaded=None,
                 load_problem=SettingProblem(key=error.key_path, text=error.problem),
-                config_file=paths.config_file,
+                file=file,
             )
-        return cls(settings=settings, loaded=settings, load_problem=None, config_file=paths.config_file)
+        return cls(settings=settings, loaded=settings, load_problem=None, file=file)
 
     @property
     def draft(self) -> SettingsDraft:
@@ -103,7 +95,7 @@ class SettingsPanel:
     def apply(self, draft: SettingsDraft) -> SettingsPanelEdit:
         """Принять поля вкладки: разбор загрузчиком; негодно — та же вкладка и проблема с путём поля."""
         try:
-            settings: LivecraftSettings = parse_settings(draft.to_data(self.settings.form), self.config_file)
+            settings: LivecraftSettings = self.file.parse(draft.to_data(self.settings.form))
         except ConfigError as error:
             return SettingsPanelEdit(panel=self, problem=SettingProblem(key=error.key_path, text=error.problem))
         return SettingsPanelEdit(panel=dataclasses.replace(self, settings=settings), problem=None)
@@ -113,5 +105,5 @@ class SettingsPanel:
 
         OSError — наружу: сказать о нём человеку — дело окна (задача 2.3).
         """
-        save_settings_file(paths.config_file, self.settings)
+        SettingsFile.of(paths).save(self.settings)
         return SettingsPanel.from_paths(paths)

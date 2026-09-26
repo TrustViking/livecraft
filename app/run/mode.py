@@ -1,14 +1,15 @@
-"""Режим запуска и его части (CLAUDE.md §10, §14 решения 17, 18).
+"""Режим запуска, его части и их нужды (CLAUDE.md §10, §14 решения 17, 18).
 
 Режим — всё, что запросил ярлык, одним полем. Режим А из таблицы: «объявления» (--announce), «эфиры» (--broadcast),
 «всё» (без ключа); режим Б «эфиры из пакетов» (--from-package). Служебные запуски — настройщик (--setup), проверка
 каналов (--check), вход (--auth), сверка (--status): частей работы у них нет.
 
-Режим работы — упорядоченный набор частей; готовность считается по частям: не готова часть — остальное делается,
-по ней одна строка. Часть знает только себя: своё имя для людей, реализована ли она в этой версии и на каком этапе
-появится. Что нужно части для готовности, решает Readiness (app\\setup\\readiness.py): там прочитанные сейф и конфиги.
-Итог — `PartReadiness` на каждую часть и `ModeReadiness` на режим; что делает запуск режима (`ModeStep`) и каков
-исход готовности, решает сам `ModeReadiness`, а не запуск.
+Режим работы — упорядоченный набор частей; готовность считается по частям: не готова часть — остальное делается.
+Часть знает себя: своё имя для людей, реализована ли она в этой версии, на каком этапе появится и что ей нужно
+(`RunPart.needs`). Удовлетворена ли нужда и что сделать, если нет, решает `Readiness.gap` (app\\setup\\readiness.py):
+там прочитанные сейф и конфиги. Итог — `PartReadiness` на каждую часть и `ModeReadiness` на режим: одна строка
+на каждую нужду, которой не хватает, с перечнем частей, которым она нужна. Что делает запуск режима (`ModeStep`)
+и каков исход готовности, решает сам `ModeReadiness`, а не запуск.
 """
 from __future__ import annotations
 
@@ -20,6 +21,17 @@ from app.observability.log_event import LogEvent
 from app.run.exit_code import RunOutcome
 from app.run.flag import CliFlag
 from app.ui import messages_ru as msg
+
+
+class Need(str, Enum):
+    """Что нужно части запуска, чтобы работать. Значение — английский идентификатор для лога."""
+
+    SHEETS_VAULT = "sheets_vault"        # id и диапазон таблицы плана в сейфе
+    OPENAI_VAULT = "openai_vault"        # ключ OpenAI в сейфе
+    SETTINGS = "settings"                # livecraft.json прочитан
+    FORM = "form"                        # ссылка на форму ключей задана
+    CHANNELS = "channels"                # channels.json прочитан
+    CLIENT_SECRET = "client_secret"      # client_secret.json рядом с программой (§9)
 
 
 class RunPart(str, Enum):
@@ -42,10 +54,13 @@ class RunPart(str, Enum):
         return self not in NOT_BUILT_PARTS
 
     @property
-    def not_built_line(self) -> str | None:
-        """Одна строка о нереализованной части: когда появится. Реализованная — None."""
-        if self.is_built:
-            return None
+    def needs(self) -> tuple[Need, ...]:
+        """Что нужно части — в том порядке, в каком об этом говорить человеку."""
+        return PART_NEEDS[self]
+
+    @property
+    def not_built_line(self) -> str:
+        """Одна строка о части, которой в этой версии нет: когда появится."""
         template: str = msg.RUN_PART_NOT_BUILT_TEXTS.get(self.value, msg.RUN_PART_NOT_BUILT)
         return template.format(part=self.human_label, stage=msg.RUN_PART_STAGES[self.value])
 
@@ -55,6 +70,16 @@ class RunPart(str, Enum):
 NOT_BUILT_PARTS: Final[frozenset[RunPart]] = frozenset(
     {RunPart.MERGE, RunPart.ANNOUNCE, RunPart.BROADCAST, RunPart.PACKAGES_IN}
 )
+# Что нужно каждой части (§7.5, §9): таблице — сейф таблицы, настройки и вход в Google; нейросети — ключ OpenAI;
+# пакету — настройки и форма; эфирам — каналы, настройки и форма. Объявлениям и чтению пакетов — появится с ними.
+PART_NEEDS: Final[dict[RunPart, tuple[Need, ...]]] = {
+    RunPart.PLAN: (Need.SHEETS_VAULT, Need.SETTINGS, Need.CLIENT_SECRET),
+    RunPart.MERGE: (Need.OPENAI_VAULT,),
+    RunPart.PACKAGE: (Need.SETTINGS, Need.FORM),
+    RunPart.ANNOUNCE: (),
+    RunPart.BROADCAST: (Need.CHANNELS, Need.SETTINGS, Need.FORM),
+    RunPart.PACKAGES_IN: (),
+}
 
 
 class RunMode(str, Enum):
@@ -122,28 +147,43 @@ class ModeStep(str, Enum):
     """Что делает запуск режима по его готовности. Значение — идентификатор для лога."""
 
     REFUSE = "refuse"            # не готово ничего, и окно не поможет: строки проблем, код 2
-    OPEN_SETUP = "open_setup"    # не готово ничего: строки частей, окно настройщика, код 2
-    REPORT = "report"            # таблица плана режиму не нужна: сводка и строки частей
-    RUN_PLAN = "run_plan"        # таблица готова: сводка, строки частей, прогон контура A
+    OPEN_SETUP = "open_setup"    # не готово ничего: строки нужд, окно настройщика, код 2
+    REPORT = "report"            # таблица плана режиму не нужна: сводка и строки нужд
+    RUN_PLAN = "run_plan"        # таблица готова: сводка, строки нужд, прогон контура A
+
+
+class PartState(str, Enum):
+    """Состояние части режима. Значение — идентификатор для лога."""
+
+    READY = "ready"              # реализована, и всё нужное есть
+    BLOCKED = "blocked"          # реализована, но чего-то не хватает
+    NOT_BUILT = "not_built"      # в этой версии её ещё нет
+
+
+@dataclass(frozen=True)
+class NeedGap:
+    """Нужда, которой не хватает, и одна строка для человека: что задать и где (§7.4: без значений)."""
+
+    need: Need
+    text: str
 
 
 @dataclass(frozen=True)
 class PartReadiness:
-    """Готовность одной части режима: готова ли, реализована ли в этой версии и что сделать, если нет.
-
-    `action` — одна строка для оператора: у не готовой части — что задать и где, у нереализованной — когда
-    появится; у готовой — None. Ни значений, ни путей к файлам ключей в строке нет (§7.4).
-    """
+    """Готовность одной части режима: чего ей не хватает (`unmet`) и что из этого следует (`state`)."""
 
     part: RunPart
-    is_ready: bool
-    is_built: bool
-    action: str | None
+    unmet: tuple[NeedGap, ...]
 
     @property
-    def is_blocked(self) -> bool:
-        """Часть есть в этой версии, но не настроена."""
-        return self.is_built and not self.is_ready
+    def state(self) -> PartState:
+        if not self.part.is_built:
+            return PartState.NOT_BUILT
+        return PartState.BLOCKED if self.unmet else PartState.READY
+
+    def lacks(self, need: Need) -> bool:
+        """Не готова ли часть из-за этой нужды."""
+        return self.state is PartState.BLOCKED and any(gap.need is need for gap in self.unmet)
 
 
 @dataclass(frozen=True)
@@ -161,17 +201,9 @@ class ModeReadiness:
     parts: tuple[PartReadiness, ...]
     is_fixable_in_setup: bool
 
-    @property
-    def ready(self) -> tuple[PartReadiness, ...]:
-        return tuple(part for part in self.parts if part.is_built and part.is_ready)
-
-    @property
-    def blocked(self) -> tuple[PartReadiness, ...]:
-        return tuple(part for part in self.parts if part.is_blocked)
-
-    @property
-    def not_built(self) -> tuple[PartReadiness, ...]:
-        return tuple(part for part in self.parts if not part.is_built)
+    def in_state(self, state: PartState) -> tuple[PartReadiness, ...]:
+        """Части режима в этом состоянии, по порядку работы."""
+        return tuple(part for part in self.parts if part.state is state)
 
     @property
     def is_nothing_ready(self) -> bool:
@@ -180,15 +212,14 @@ class ModeReadiness:
         Режим, в котором реализованных частей ещё нет (режим Б этой версии), настройкой не лечится: окно
         для него не открывается, строки «пока нет» говорят сами за себя.
         """
-        base: PartReadiness | None = self.parts[0] if self.parts else None
-        if base is not None and base.is_blocked:
+        if self.parts and self.parts[0].state is PartState.BLOCKED:
             return True
-        has_built: bool = any(part.is_built for part in self.parts)
-        return has_built and not self.ready
+        has_built: bool = any(part.state is not PartState.NOT_BUILT for part in self.parts)
+        return has_built and not self.in_state(PartState.READY)
 
     def is_part_ready(self, part: RunPart) -> bool:
         """Часть есть в режиме, реализована и готова."""
-        return any(ready.part is part for ready in self.ready)
+        return any(ready.part is part for ready in self.in_state(PartState.READY))
 
     @property
     def step(self) -> ModeStep:
@@ -200,12 +231,22 @@ class ModeReadiness:
     @property
     def outcome(self) -> RunOutcome:
         """Исход готовности режима: есть реализованная, но не настроенная часть — ошибка (§10, код 1)."""
-        return RunOutcome.FAILED if self.blocked else RunOutcome.DONE
+        return RunOutcome.FAILED if self.in_state(PartState.BLOCKED) else RunOutcome.DONE
 
     @property
     def lines(self) -> tuple[str, ...]:
-        """Строки для консоли: по одной на каждую не готовую и каждую нереализованную часть, по порядку работы."""
-        return tuple(part.action for part in self.parts if part.action is not None)
+        """Строки для консоли по порядку работы: нереализованная часть — своя строка; нехватка — одна строка
+        на нужду с перечнем частей, которым её не хватает, на месте первой такой части."""
+        lines: list[str] = []
+        said: set[Need] = set()
+        for part in self.parts:
+            if part.state is PartState.NOT_BUILT:
+                lines.append(part.part.not_built_line)
+            for gap in part.unmet if part.state is PartState.BLOCKED else ():
+                if gap.need not in said:
+                    said.add(gap.need)
+                    lines.append(self._need_line(gap))
+        return tuple(lines)
 
     @property
     def event(self) -> LogEvent:
@@ -213,10 +254,15 @@ class ModeReadiness:
         return LogEvent.of(
             ModeEvent.READINESS,
             mode=self.mode,
-            ready=self._part_ids(self.ready),
-            blocked=self._part_ids(self.blocked),
-            not_built=self._part_ids(self.not_built),
+            ready=self._part_ids(PartState.READY),
+            blocked=self._part_ids(PartState.BLOCKED),
+            not_built=self._part_ids(PartState.NOT_BUILT),
         )
 
-    def _part_ids(self, parts: tuple[PartReadiness, ...]) -> tuple[RunPart, ...]:
-        return tuple(part.part for part in parts)
+    def _need_line(self, gap: NeedGap) -> str:
+        """Нужда и все части режима, которым её не хватает."""
+        labels: tuple[str, ...] = tuple(part.part.human_label for part in self.parts if part.lacks(gap.need))
+        return msg.RUN_NEED_BLOCKED.format(parts=msg.LIST_JOINER.join(labels), gap=gap.text)
+
+    def _part_ids(self, state: PartState) -> tuple[RunPart, ...]:
+        return tuple(part.part for part in self.in_state(state))

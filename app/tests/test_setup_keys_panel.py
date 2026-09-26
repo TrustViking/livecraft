@@ -9,11 +9,12 @@ import pytest
 
 from app.core.text_format import TEXT_ENCODING
 from app.paths import LivecraftPaths
-from app.secretsafe.crypto import KEY_WRAPPED, VaultFormatError
+from app.secretsafe.crypto import VaultFileKey, VaultFormatError
 from app.secretsafe.dpapi import Dpapi, DpapiUnavailable
 from app.secretsafe.store import LocalVaultState, ProgramKey, VaultStore
-from app.secretsafe.value import SecretField, SecretValue
-from app.secretsafe.vault import Vault, VaultOrigin
+from app.secretsafe.field import SecretField, VaultOrigin
+from app.secretsafe.value import SecretValue
+from app.secretsafe.vault import Vault
 from app.setup.panels.keys_panel import KeyRow, KeysPanel, KeysPanelEdit, RowAction
 from app.tests.conftest import SUPPLIED_VALUES, write_supplied_vault
 from app.ui import messages_ru as msg
@@ -380,7 +381,7 @@ def test_with_dpapi_the_no_own_notice_is_absent(store: VaultStore) -> None:
 def _break_local_key(store: VaultStore) -> None:
     """Личный файл есть, но без записи «key»: он целый, но не наш — UNREADABLE (§14, решение 9)."""
     data: dict[str, Any] = json.loads(store.local_path.read_text(encoding=TEXT_ENCODING))
-    del data[KEY_WRAPPED]
+    del data[VaultFileKey.WRAPPED_KEY.value]
     store.local_path.write_text(json.dumps(data), encoding=TEXT_ENCODING)
 
 

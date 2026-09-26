@@ -23,7 +23,7 @@ from typing import Final
 
 import openai
 
-from app.config.loader import LivecraftSettings, LlmSettings
+from app.config.settings import LivecraftSettings, LlmSettings
 from app.core.clock import Clock
 from app.core.dates import ISO_TIMESPEC
 from app.core.text_format import SPACE
@@ -130,14 +130,14 @@ class LlmProbe:
     def run(self) -> int:
         self.console.say(msg.LLM_PROBE_TITLE)
         readiness: Readiness = Readiness.check(self.session.paths)
-        if readiness.vault_error is not None:
-            return self.console.refuse(readiness.vault_error.human)
-        vault: Vault = readiness.vault if readiness.vault is not None else Vault.empty()
+        if readiness.vault.error is not None:
+            return self.console.refuse(readiness.vault.error.human)
+        vault: Vault = readiness.vault.vault if readiness.vault.vault is not None else Vault.empty()
         self.session.log.protect(vault.log_filter())        # до первого обращения к OpenAI (§7.4)
         self.console.say_lines(readiness.warnings)
-        settings: LivecraftSettings | None = readiness.settings
+        settings: LivecraftSettings | None = readiness.settings.value
         if settings is None:
-            return self.console.refuse(str(readiness.settings_error))
+            return self.console.refuse(str(readiness.settings.error))
         try:
             backend: LlmBackend = OpenAiClient.from_vault(vault, settings.llm, sdk=self.sdk)
         except LlmRequestError as error:

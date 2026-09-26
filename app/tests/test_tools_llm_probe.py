@@ -5,13 +5,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.config.loader import LivecraftSettings, load_settings
+from app.config.files import SettingsFile
+from app.config.settings import LivecraftSettings
 from app.llm.errors import LlmErrorKind
 from app.llm.selection import ChoiceReason
 from app.llm.usage import RequestUsage, RunUsage
 from app.paths import ROOT_ENV_VAR, LivecraftPaths
 from app.run.exit_code import ExitCode
-from app.secretsafe.value import SecretField
+from app.secretsafe.field import SecretField
 from app.tests.conftest import SUPPLIED_VALUES, FakeLlmSdk, api_error, llm_answer, write_supplied_vault
 from app.tests.fixtures.clock import StoppedClock
 from app.tests.fixtures.probe import ProbeRun
@@ -45,7 +46,7 @@ def test_probe_prints_the_model_the_answer_tokens_and_cost(ready_paths: Livecraf
     sdk: FakeLlmSdk = FakeLlmSdk(llm_answer("", service_tier="default", output_tokens=16), llm_answer(PING_ANSWER))
     code, lines = run_probe(ready_paths, sdk)
     assert code == ExitCode.OK == 0
-    settings: LivecraftSettings = load_settings(ready_paths.config_file)
+    settings: LivecraftSettings = SettingsFile(ready_paths.config_file).load()
     assert lines[0] == msg.LLM_PROBE_TITLE
     assert lines[1] == msg.LLM_PROBE_SETTINGS.format(
         primary=settings.llm.model,

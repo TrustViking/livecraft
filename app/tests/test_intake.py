@@ -19,7 +19,8 @@ from zoneinfo import ZoneInfo
 import pytest
 from PIL import Image
 
-from app.config.loader import LivecraftSettings, load_settings
+from app.config.files import SettingsFile
+from app.config.settings import LivecraftSettings
 from app.core.retry import RetryPolicy
 from app.intake.builder import SlotBuilder
 from app.intake.intake import IntakeRequest, IntakeResult, IntakeStage, PlanIntake
@@ -36,7 +37,7 @@ from app.sources.language import LanguageResolver
 from app.sources.metadata import SourceFailureReason, SourceMetadata
 from app.sources.preview import PreviewDownloader
 from app.sources.video import SourceCatalog
-from app.tests.conftest import FORM_URL, SHIPPED_SETTINGS
+from app.tests.conftest import FORM_URL
 from app.tests.fixtures.logs import LogCapture
 from app.tests.fixtures.settings import set_form_url
 from app.ui import messages_ru as msg
@@ -112,10 +113,10 @@ class _Reader:
 
 
 def _settings(paths: LivecraftPaths, form_url: str | None = FORM_URL) -> LivecraftSettings:
-    SHIPPED_SETTINGS.install(paths.config_file)
+    SettingsFile(paths.config_file).install_shipped()
     if form_url is not None:
         set_form_url(paths, form_url)
-    return load_settings(paths.config_file)
+    return SettingsFile(paths.config_file).load()
 
 
 def _intake(

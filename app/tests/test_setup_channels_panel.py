@@ -4,17 +4,13 @@ import dataclasses
 
 import pytest
 
-from app.config.loader import (
-    ChannelConfig,
-    Platform,
-    Privacy,
-    load_channels,
-    render_channels_file,
-)
+from app.config.channel import ChannelConfig, ConfiguredChannels, Platform, Privacy
+from app.config.files import ChannelsFile
 from app.paths import LivecraftPaths
 from app.setup.fields.channel_draft import ChannelDraft
 from app.setup.panels.channels_panel import ChannelsPanel, ChannelsPanelEdit
 from app.tests.conftest import REPO_CHANNELS_EXAMPLE
+from app.tests.fixtures.config import channels_of
 from app.ui import messages_ru as msg
 
 BROKEN_JSON: bytes = b'{"channels": [ {"platform": "youtube",'
@@ -42,7 +38,7 @@ def _added(panel: ChannelsPanel, draft: ChannelDraft) -> ChannelsPanel:
 
 def test_the_panel_opens_on_the_channels_of_the_file(ready_paths: LivecraftPaths) -> None:
     panel: ChannelsPanel = ChannelsPanel.from_paths(ready_paths)
-    assert panel.channels == load_channels(REPO_CHANNELS_EXAMPLE)
+    assert panel.channels == channels_of(REPO_CHANNELS_EXAMPLE)
     assert panel.loaded == panel.channels
     assert panel.load_problem is None
     assert not panel.is_dirty
@@ -185,7 +181,9 @@ def test_save_writes_the_loader_text_and_keeps_the_previous_file(ready_paths: Li
     changed: ChannelsPanel = _added(ChannelsPanel.from_paths(ready_paths), NEW_DRAFT)
     edit: ChannelsPanelEdit = changed.save(ready_paths)
     assert edit.is_applied
-    assert ready_paths.channels_file.read_text(encoding="utf-8") == render_channels_file(changed.channels)
+    assert ready_paths.channels_file.read_text(encoding="utf-8") == ChannelsFile.of(ready_paths).render(
+        ConfiguredChannels(channels=changed.channels)
+    )
     assert ready_paths.channels_previous_file.read_bytes() == old
     assert edit.panel.channels == changed.channels
     assert edit.panel.loaded == changed.channels
@@ -218,7 +216,7 @@ def test_without_a_channels_file_the_panel_is_empty_and_says_so(livecraft_paths:
 def test_the_first_channel_on_a_clean_install_is_saved(livecraft_paths: LivecraftPaths) -> None:
     edit: ChannelsPanelEdit = _added(ChannelsPanel.from_paths(livecraft_paths), NEW_DRAFT).save(livecraft_paths)
     assert edit.is_applied
-    assert load_channels(livecraft_paths.channels_file) == edit.panel.channels
+    assert channels_of(livecraft_paths.channels_file) == edit.panel.channels
     assert not livecraft_paths.channels_previous_file.exists()
 
 
@@ -235,6 +233,6 @@ def test_a_broken_file_is_named_and_kept_aside_on_save(livecraft_paths: Livecraf
     )
     edit: ChannelsPanelEdit = _added(panel, NEW_DRAFT).save(livecraft_paths)
     assert edit.is_applied
-    assert load_channels(livecraft_paths.channels_file) == edit.panel.channels
+    assert channels_of(livecraft_paths.channels_file) == edit.panel.channels
     assert livecraft_paths.channels_previous_file.read_bytes() == BROKEN_JSON
     assert edit.panel.notices == ()

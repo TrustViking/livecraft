@@ -23,7 +23,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
-from app.config.loader import ConfigError, LivecraftSettings, load_settings
+from app.config.files import SettingsFile
+from app.config.json_node import ConfigError
+from app.config.settings import LivecraftSettings
 from app.core.counts import CountItem
 from app.google.auth import AuthError, GoogleLogin
 from app.observability.log_event import LogArea, LogEvent, get_logger
@@ -31,7 +33,7 @@ from app.run.exit_code import ExitCode
 from app.run.flag import ArgAction
 from app.secretsafe.crypto import VaultFormatError
 from app.secretsafe.store import VaultLoad, VaultStore
-from app.secretsafe.value import SecretField
+from app.secretsafe.field import SecretField
 from app.sheets.client import SheetsReader, SheetsReadError, SheetsReadReason, SheetsTarget
 from app.sheets.plan import SheetColumns, SheetPlan
 from app.sheets.rows import PlannedRows, RowSkipReason
@@ -98,14 +100,11 @@ class SheetsProbe:
         console.say(msg.SHEETS_PROBE_TITLE)
         try:
             loaded: VaultLoad = VaultStore.open(self.session.paths).load()
-            settings: LivecraftSettings = load_settings(self.session.paths.config_file)
-        except VaultFormatError as error:
+            settings: LivecraftSettings = SettingsFile.of(self.session.paths).load()
+        except (VaultFormatError, ConfigError) as error:
             return console.refuse(error.human)
-        except ConfigError as error:
-            return console.refuse(str(error))
         self.session.log.protect(loaded.vault.log_filter())      # до первого обращения к Google (§7.4)
-        if loaded.is_local_unreadable:
-            console.say(msg.VAULT_LOCAL_UNREADABLE)
+        console.say_lines(loaded.warnings)
         try:
             SheetsTarget.from_vault(loaded.vault)
             plan: SheetPlan = self._read(loaded)

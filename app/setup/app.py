@@ -15,7 +15,6 @@ import tkinter as tk
 from tkinter import font, messagebox, ttk
 from typing import Final
 
-from app.core.text_format import NEWLINE
 from app.paths import LivecraftPaths
 from app.setup.readiness import Readiness
 from app.setup.tabs import PAD, TEXT_WRAP_PIXELS, EditShortcuts
@@ -76,10 +75,8 @@ class SetupWindow:
         return any(tab.is_dirty for tab in (self.keys_tab, self.channels_tab, self.settings_tab))
 
     def refresh_readiness(self) -> None:
-        """Строка готовности по свежей проверке: готово — одна строка, нет — проблемы Readiness."""
-        readiness: Readiness = Readiness.check(self.paths)
-        text: str = msg.SETUP_READY if readiness.is_ready else NEWLINE.join(readiness.problems)
-        self.readiness_line.configure(text=text)
+        """Строка готовности по свежей проверке: готово — одна строка, нет — проблемы (`Readiness.window_line`)."""
+        self.readiness_line.configure(text=Readiness.check(self.paths).window_line)
 
     def settings_saved(self) -> None:
         """Настройки записаны: строка готовности и пометки языков формы на вкладке каналов — без перезапуска окна."""

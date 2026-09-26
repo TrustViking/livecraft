@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
-from app.config.loader import ShippedSettings
+from app.config.files import ShippedSettings
 from app.observability.logging_setup import RunLog
 from app.paths import LivecraftPaths
 from app.run.exit_code import ExitCode
@@ -20,7 +20,7 @@ from app.ui import messages_ru as msg
 from app.ui.console import Console
 
 # Настройки ещё не прочитаны: время лога пробника — в поясе поставочного шаблона.
-SHIPPED_SETTINGS: Final[ShippedSettings] = ShippedSettings(template=msg.CONFIG_SETTINGS_TEMPLATE)
+SHIPPED_SETTINGS: Final[ShippedSettings] = ShippedSettings()
 
 
 @dataclass(frozen=True)

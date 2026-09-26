@@ -32,7 +32,8 @@ from httplib2 import ServerNotFoundError
 from app.core.retry import RETRYABLE_HTTP_STATUSES, AttemptFailure, RetryLoop, RetryPolicy, RetryRun, RetryStep
 from app.google.auth import AuthError, AuthErrorReason, GoogleLogin
 from app.observability.log_event import LogArea, LogEvent, get_logger
-from app.secretsafe.value import SecretField, SecretValue
+from app.secretsafe.field import SecretField
+from app.secretsafe.value import SecretValue
 from app.secretsafe.vault import Vault
 from app.sheets.plan import SheetPlan
 from app.ui import messages_ru as msg
@@ -146,13 +147,10 @@ class SheetsTarget:
         sheet_id: SecretValue | None = vault.get(SecretField.SHEETS_ID)
         sheet_range: SecretValue | None = vault.get(SecretField.SHEETS_RANGE)
         if sheet_id is None or sheet_range is None:
-            absent: list[str] = [
-                name.human_label
-                for name, value in ((SecretField.SHEETS_ID, sheet_id), (SecretField.SHEETS_RANGE, sheet_range))
-                if value is None
-            ]
+            absent: tuple[SecretField, ...] = vault.missing_of((SecretField.SHEETS_ID, SecretField.SHEETS_RANGE))
             label: str = sheet_id.log_label if sheet_id is not None else SecretField.SHEETS_ID.log_label
-            raise SheetsReadError(SheetsReadReason.NOT_CONFIGURED, label, detail=msg.LIST_JOINER.join(absent))
+            detail: str = msg.LIST_JOINER.join(field.human_label for field in absent)
+            raise SheetsReadError(SheetsReadReason.NOT_CONFIGURED, label, detail=detail)
         return cls(sheet_id=sheet_id, sheet_range=sheet_range)
 
     def event(self, name: SheetsEvent) -> LogEvent:

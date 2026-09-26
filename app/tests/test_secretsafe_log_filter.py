@@ -9,9 +9,10 @@ import pytest
 from app.core.clock import Clock
 from app.observability.log_event import LogArea, get_logger
 from app.observability.logging_setup import RunLog
+from app.secretsafe.field import SecretField, VaultOrigin
 from app.secretsafe.log_filter import SecretScrubber
-from app.secretsafe.value import SecretField, SecretValue
-from app.secretsafe.vault import Vault, VaultOrigin
+from app.secretsafe.value import SecretValue
+from app.secretsafe.vault import Vault
 
 THIRD_PARTY_LOGGER: str = "googleapiclient.discovery_cache"
 CLOCK: Clock = Clock(timezone.utc)

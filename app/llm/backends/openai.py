@@ -34,7 +34,7 @@ from typing import Any, Final
 
 import openai
 
-from app.config.loader import LlmSettings, ReasoningEffort, ServiceTier
+from app.config.settings import LlmSettings, ReasoningEffort, ServiceTier
 from app.core.clock import Clock
 from app.core.retry import AttemptFailure, RetryLoop, RetryPolicy, RetryRun, RetryStep
 from app.core.text_format import SPACE
@@ -46,7 +46,8 @@ from app.llm.backends.openai_response import OpenAiReply
 from app.llm.errors import LlmErrorKind, LlmRequestError
 from app.llm.usage import COST_FORMAT, RequestUsage, RunUsage
 from app.observability.log_event import LogArea, LogEvent, LogField, LogValue, get_logger
-from app.secretsafe.value import SecretField, SecretValue
+from app.secretsafe.field import SecretField
+from app.secretsafe.value import SecretValue
 from app.secretsafe.vault import Vault
 
 LOGGER = get_logger(LogArea.LLM)

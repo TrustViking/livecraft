@@ -9,25 +9,27 @@ import pytest
 from app.secretsafe.crypto import (
     FORMAT_VERSION,
     HKDF_INFO,
-    KEY_CIPHERTEXT,
-    KEY_FIELDS,
-    KEY_NONCE,
-    KEY_SALT,
-    KEY_VERSION,
-    KEY_WRAPPED,
     NONCE_BYTES,
     SALT_BYTES,
     VAULT_KEY_BYTES,
+    DecryptReason,
     EncryptedField,
     VaultCrypto,
     VaultDecryptError,
     VaultFile,
+    VaultFileKey,
     VaultFormatError,
     VaultFormatReason,
-    VaultSource,
 )
-from app.secretsafe.value import SecretField
+from app.secretsafe.field import SecretField, VaultOrigin
 from app.ui import messages_ru as msg
+
+KEY_VERSION: str = VaultFileKey.VERSION.value
+KEY_SALT: str = VaultFileKey.SALT.value
+KEY_FIELDS: str = VaultFileKey.FIELDS.value
+KEY_NONCE: str = VaultFileKey.NONCE.value
+KEY_CIPHERTEXT: str = VaultFileKey.CIPHERTEXT.value
+KEY_WRAPPED: str = VaultFileKey.WRAPPED_KEY.value
 
 VAULT_KEY: bytes = bytes(range(VAULT_KEY_BYTES))
 OTHER_KEY: bytes = bytes(range(100, 100 + VAULT_KEY_BYTES))
@@ -139,11 +141,20 @@ def test_the_decrypt_error_text_carries_neither_value_nor_key(crypto: VaultCrypt
     blob: EncryptedField = crypto.encrypt(SecretField.OPENAI_API_KEY, value)
     with pytest.raises(VaultDecryptError) as raised:
         crypto.decrypt(SecretField.KEY_FORM_URL, blob)
-    text: str = str(raised.value)
-    assert value not in text and value[:8] not in text
-    assert VAULT_KEY.hex() not in text and base64.b64encode(VAULT_KEY).decode("ascii") not in text
-    assert SALT.hex() not in text
-    assert SecretField.KEY_FORM_URL.value in text and str(FORMAT_VERSION) in text
+    error: VaultDecryptError = raised.value
+    for text in (str(error), error.log_line):
+        assert value not in text and value[:8] not in text
+        assert VAULT_KEY.hex() not in text and base64.b64encode(VAULT_KEY).decode("ascii") not in text
+        assert SALT.hex() not in text
+    assert str(error) == error.human == msg.VAULT_DECRYPT_FAILED.format(
+        field=SecretField.KEY_FORM_URL.human_label, reason=DecryptReason.TAG_MISMATCH.human
+    )
+    assert error.reason is DecryptReason.TAG_MISMATCH
+    assert f"field={SecretField.KEY_FORM_URL.log_label}" in error.log_line and f"version={FORMAT_VERSION}" in error.log_line
+
+
+def test_every_decrypt_reason_has_a_russian_text() -> None:
+    assert set(msg.VAULT_DECRYPT_REASON_TEXT) == {reason.value for reason in DecryptReason}
 
 
 # --- объект с негодными полями дальше не идёт
@@ -175,12 +186,16 @@ def test_the_refusal_text_carries_no_key_bytes() -> None:
 # --- файл сейфа: render и parse
 
 
-def test_an_empty_file_gets_its_own_random_salt() -> None:
-    first: VaultFile = VaultFile.empty()
-    second: VaultFile = VaultFile.empty()
-    assert len(first.salt) == SALT_BYTES and first.fields == {}
-    assert first.version == FORMAT_VERSION
-    assert first.salt != second.salt
+def test_a_new_cipher_gets_its_own_random_key_and_salt() -> None:
+    first: VaultCrypto = VaultCrypto.new()
+    second: VaultCrypto = VaultCrypto.new()
+    assert (len(first.key), len(first.salt)) == (VAULT_KEY_BYTES, SALT_BYTES)
+    assert first.key != second.key and first.salt != second.salt
+
+
+def test_a_new_file_is_of_the_current_format_version() -> None:
+    file: VaultFile = VaultFile.new(salt=SALT, fields={})
+    assert (file.version, file.salt, file.fields, file.wrapped_key) == (FORMAT_VERSION, SALT, {}, None)
 
 
 def test_render_has_the_shape_section_seven_names(crypto: VaultCrypto) -> None:
@@ -226,7 +241,7 @@ def test_values_still_decrypt_after_a_round_trip_through_the_file(crypto: VaultC
 
 
 def test_an_empty_file_round_trips() -> None:
-    empty: VaultFile = VaultFile.empty()
+    empty: VaultFile = VaultFile.new(salt=SALT, fields={})
     assert VaultFile.parse(empty.render()) == empty
 
 
@@ -354,7 +369,7 @@ def test_a_file_without_a_key_record_parses_with_none() -> None:
 
 
 def test_an_empty_file_carries_no_key() -> None:
-    assert VaultFile.empty().wrapped_key is None
+    assert VaultFile.new(salt=SALT, fields={}).wrapped_key is None
 
 
 def test_fields_and_a_key_record_live_together(crypto: VaultCrypto) -> None:
@@ -438,12 +453,12 @@ def test_an_unlocated_error_names_only_the_reason_and_the_supplied_advice() -> N
 @pytest.mark.parametrize(
     ("source", "advice", "is_replaceable"),
     [
-        (VaultSource.LOCAL, msg.VAULT_FILE_ADVICE_LOCAL, True),
-        (VaultSource.SUPPLIED, msg.VAULT_FILE_ADVICE_SUPPLIED, False),
+        (VaultOrigin.OWN, msg.VAULT_FILE_ADVICE_LOCAL, True),
+        (VaultOrigin.SUPPLIED, msg.VAULT_FILE_ADVICE_SUPPLIED, False),
     ],
 )
 def test_located_keeps_the_reason_and_detail_and_names_the_file(
-    source: VaultSource, advice: str, is_replaceable: bool
+    source: VaultOrigin, advice: str, is_replaceable: bool
 ) -> None:
     original: VaultFormatError = _parse_error(json.dumps({KEY_VERSION: 7, KEY_SALT: "", KEY_FIELDS: {}}))
     located: VaultFormatError = original.located("vault.local.dat", source)
@@ -458,7 +473,7 @@ def test_located_keeps_the_reason_and_detail_and_names_the_file(
 
 
 def test_the_log_line_carries_file_source_reason_and_detail() -> None:
-    error: VaultFormatError = _parse_error("{").located("vault.dat", VaultSource.SUPPLIED)
+    error: VaultFormatError = _parse_error("{").located("vault.dat", VaultOrigin.SUPPLIED)
     line: str = error.log_line
     assert "file=vault.dat" in line and "source=supplied" in line
     assert f"reason={VaultFormatReason.DAMAGED.value}" in line
@@ -467,4 +482,4 @@ def test_the_log_line_carries_file_source_reason_and_detail() -> None:
 
 def test_the_log_line_of_an_unlocated_error_marks_file_and_source_absent() -> None:
     error: VaultFormatError = _parse_error("{")
-    assert error.log_line.startswith("file=- source=- reason=damaged detail=")
+    assert error.log_line.startswith("vault_format_error file=- source=- reason=damaged detail=")

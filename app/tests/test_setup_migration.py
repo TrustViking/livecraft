@@ -1,22 +1,25 @@
 from __future__ import annotations
 
-import dataclasses
 import logging
 import os
 from collections.abc import Iterator
 
 import pytest
 
-from app.config.loader import FormSettings, LivecraftSettings, load_settings, save_settings_file
+from app.config.files import SettingsFile
+from app.config.settings import LivecraftSettings
 from app.observability.log_event import LogArea
 from app.paths import LivecraftPaths
+from app.secretsafe.dpapi import Dpapi
+from app.secretsafe.field import SecretField, VaultOrigin
 from app.secretsafe.store import VaultLoad, VaultStore
-from app.secretsafe.value import SecretField, SecretValue
-from app.secretsafe.vault import Vault, VaultOrigin
+from app.secretsafe.value import SecretValue
+from app.secretsafe.vault import Vault
 from app.setup.migration import FormUrlMigration, FormUrlMigrationResult, MigrationOutcome
 from app.setup.readiness import Readiness
 from app.tests.conftest import LEGACY_FORM_URL, REPO_SETTINGS_FILE, SUPPLIED_VALUES, write_supplied_vault
 from app.tests.fixtures.logs import LogCapture
+from app.tests.fixtures.settings import set_form_url, with_form, with_form_url
 from app.ui import messages_ru as msg
 
 OWN_FORM_URL: str = "https://forms.gle/OwnFormCode12345"
@@ -64,9 +67,7 @@ def test_nothing_to_move_without_the_legacy_field(ready_paths: LivecraftPaths) -
 
 def test_nothing_to_move_when_the_form_url_is_already_set(ready_paths: LivecraftPaths) -> None:
     _save_own(ready_paths, {SecretField.KEY_FORM_URL: OWN_FORM_URL})
-    settings: LivecraftSettings = load_settings(ready_paths.config_file)
-    form_set: FormSettings = dataclasses.replace(settings.form, url=SET_FORM_URL)
-    save_settings_file(ready_paths.config_file, dataclasses.replace(settings, form=form_set))
+    set_form_url(ready_paths, SET_FORM_URL)
     assert FormUrlMigration.plan(ready_paths, Readiness.check(ready_paths)) is None
 
 
@@ -76,7 +77,7 @@ def test_the_move_works_without_channels(ready_paths: LivecraftPaths) -> None:
     ready_paths.channels_file.unlink()
     result: FormUrlMigrationResult = _planned(ready_paths).run()
     assert result.moved
-    assert load_settings(ready_paths.config_file).form.url == OWN_FORM_URL
+    assert SettingsFile.of(ready_paths).load().form.url == OWN_FORM_URL
     assert _own_layer(ready_paths).get(SecretField.KEY_FORM_URL) is None
 
 
@@ -100,14 +101,14 @@ def test_the_own_link_moves_to_the_settings_and_leaves_the_own_vault(
     ready_paths: LivecraftPaths, setup_log: LogCapture
 ) -> None:
     _save_own(ready_paths, {SecretField.KEY_FORM_URL: OWN_FORM_URL, SecretField.SHEETS_ID: OWN_SHEETS_ID})
-    before: LivecraftSettings = load_settings(ready_paths.config_file)
+    before: LivecraftSettings = SettingsFile.of(ready_paths).load()
     result: FormUrlMigrationResult = _planned(ready_paths).run()
     assert result.moved and result.outcome is MigrationOutcome.MOVED
     assert result.source is VaultOrigin.OWN and result.local_cleared
-    after: LivecraftSettings = load_settings(ready_paths.config_file)
+    after: LivecraftSettings = SettingsFile.of(ready_paths).load()
     assert after.form.url == OWN_FORM_URL
-    assert dataclasses.replace(after, form=before.form) == before                   # остальное как было
-    assert dataclasses.replace(after.form, url="") == before.form
+    assert with_form(after, before.form) == before                                   # остальное как было
+    assert with_form_url(after, "").form == before.form
     own: Vault = _own_layer(ready_paths)
     assert own.get(SecretField.KEY_FORM_URL) is None
     kept: SecretValue | None = own.get(SecretField.SHEETS_ID)
@@ -128,7 +129,7 @@ def test_the_own_link_overrides_the_supplied_one(ready_paths: LivecraftPaths) ->
     write_supplied_vault(ready_paths, {**SUPPLIED_VALUES, SecretField.KEY_FORM_URL: LEGACY_FORM_URL})
     _save_own(ready_paths, {SecretField.KEY_FORM_URL: OWN_FORM_URL})
     _planned(ready_paths).run()
-    assert load_settings(ready_paths.config_file).form.url == OWN_FORM_URL
+    assert SettingsFile.of(ready_paths).load().form.url == OWN_FORM_URL
 
 
 # --- перенос из поставочного слоя
@@ -140,7 +141,7 @@ def test_the_supplied_link_moves_and_the_supplied_vault_stays_untouched(ready_pa
     stat_before: os.stat_result = ready_paths.vault_file.stat()
     result: FormUrlMigrationResult = _planned(ready_paths).run()
     assert result.moved and result.source is VaultOrigin.SUPPLIED and not result.local_cleared
-    assert load_settings(ready_paths.config_file).form.url == LEGACY_FORM_URL
+    assert SettingsFile.of(ready_paths).load().form.url == LEGACY_FORM_URL
     assert ready_paths.vault_file.read_bytes() == before
     assert ready_paths.vault_file.stat().st_mtime_ns == stat_before.st_mtime_ns
     assert not ready_paths.vault_local_file.exists()                               # личного сейфа не появилось
@@ -171,7 +172,7 @@ def test_a_settings_write_failure_keeps_the_vault(ready_paths: LivecraftPaths, m
     def _refuse(*_: object) -> None:
         raise PermissionError(13, "Отказано в доступе")
 
-    monkeypatch.setattr("app.setup.migration.save_settings_file", _refuse)
+    monkeypatch.setattr(SettingsFile, "save", _refuse)
     result: FormUrlMigrationResult = _planned(ready_paths).run()
     assert result.outcome is MigrationOutcome.WRITE_FAILED and not result.moved
     assert result.reason == "Отказано в доступе"
@@ -194,7 +195,27 @@ def test_no_line_carries_the_link(ready_paths: LivecraftPaths, setup_log: LogCap
 def test_the_log_line_names_outcome_source_and_cleanup(ready_paths: LivecraftPaths) -> None:
     _save_own(ready_paths, {SecretField.KEY_FORM_URL: OWN_FORM_URL})
     line: str = _planned(ready_paths).run().log_line
-    assert "outcome=moved" in line and "source=own" in line and "local_cleared=True" in line
+    assert line.startswith("form_url_migrated outcome=moved source=own value=key-form(")
+    assert line.endswith(" local_cleared=yes")
+
+
+def test_a_link_that_did_not_move_is_a_warning_line(ready_paths: LivecraftPaths) -> None:
+    _save_own(ready_paths, {SecretField.KEY_FORM_URL: BAD_FORM_URL})
+    result: FormUrlMigrationResult = _planned(ready_paths).run()
+    assert result.log_line.startswith("form_url_not_migrated outcome=invalid source=own")
+    assert result.log_level == logging.WARNING and result.event.text == result.log_line
+
+
+def test_without_dpapi_the_moved_link_stays_in_the_own_vault_and_says_why(
+    ready_paths: LivecraftPaths, setup_log: LogCapture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ссылка уже в настройках: запуск идёт дальше, а строка лога называет, почему поле осталось в сейфе."""
+    _save_own(ready_paths, {SecretField.KEY_FORM_URL: OWN_FORM_URL})
+    migration: FormUrlMigration = _planned(ready_paths)
+    monkeypatch.setattr(Dpapi, "load", classmethod(lambda cls: cls()))
+    result: FormUrlMigrationResult = migration.run()
+    assert result.moved and not result.local_cleared
+    assert setup_log.messages(logging.WARNING) == ["form_url_migration_local_kept reason=dpapi_unavailable"]
 
 
 def test_the_vault_load_after_moving_holds_no_link(ready_paths: LivecraftPaths) -> None:

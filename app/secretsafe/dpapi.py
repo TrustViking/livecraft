@@ -22,12 +22,15 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import sys
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Final
 
 from app.core.system import WINDOWS_PLATFORM
-from app.observability.log_event import LogArea, get_logger
+from app.observability.log_event import LogArea, LogEvent, get_logger
+from app.ui import messages_ru as msg
 
 LOGGER = get_logger(LogArea.VAULT)
 
@@ -37,6 +40,9 @@ KERNEL32_LIBRARY: Final[str] = "kernel32.dll"
 NO_FLAGS: Final[int] = 0      # CRYPTPROTECT_LOCAL_MACHINE не ставится: привязка к пользователю (§7.2)
 PROTECT_ENTRY_POINT: Final[str] = "CryptProtectData"
 UNPROTECT_ENTRY_POINT: Final[str] = "CryptUnprotectData"
+# Подробности отказа — для разработчика, только в лог (контракт ошибок, §11).
+DETAIL_NOT_LOADED: Final[str] = "{library} did not load (platform={platform})"
+DETAIL_CALL_FAILED: Final[str] = "{entry_point} failed with Windows error {code}"
 
 _DWORD = ctypes.c_uint32          # DWORD
 _BOOL = ctypes.c_int              # BOOL
@@ -44,8 +50,47 @@ _WIDE_STRING = ctypes.c_wchar_p   # LPCWSTR / LPWSTR
 _HANDLE = ctypes.c_void_p         # HLOCAL
 
 
+class DpapiEvent(str, Enum):
+    """События DPAPI в логе."""
+
+    PLATFORM_UNSUPPORTED = "dpapi_unavailable"
+    LIBRARY_FAILED = "dpapi_library_failed"
+    REFUSED = "dpapi_refused"
+
+
+class DpapiReason(str, Enum):
+    """Почему DPAPI не сработал: его нет на этой машине или вызов Windows отказал."""
+
+    NOT_LOADED = "not_loaded"      # не Windows или crypt32.dll не загрузилась
+    CALL_FAILED = "call_failed"    # CryptProtectData / CryptUnprotectData вернули отказ
+
+    @property
+    def human(self) -> str:
+        return msg.DPAPI_REASON_TEXT[self.value]
+
+
 class DpapiUnavailable(Exception):
-    """DPAPI недоступен: не Windows, crypt32.dll не загрузилась или вызов отказал."""
+    """DPAPI недоступен: не Windows, crypt32.dll не загрузилась или вызов отказал.
+
+    Текст ошибки — русская строка для человека; английская подробность (библиотека, платформа, код ошибки
+    Windows) — только в `log_line` (контракт ошибок, §11).
+    """
+
+    def __init__(self, reason: DpapiReason, detail: str) -> None:
+        self.reason: DpapiReason = reason
+        self.detail: str = detail
+        super().__init__(self.human)
+
+    @property
+    def human(self) -> str:
+        return msg.DPAPI_UNAVAILABLE.format(reason=self.reason.human)
+
+    @property
+    def log_line(self) -> str:
+        return LogEvent.of(DpapiEvent.REFUSED, reason=self.reason, detail=self.detail).text
+
+    def __str__(self) -> str:
+        return self.human
 
 
 class _DataBlob(ctypes.Structure):
@@ -70,14 +115,15 @@ class Dpapi:
     def load(cls) -> Dpapi:
         """Обычный способ получить объект: грузит библиотеки, на не-Windows отдаёт недоступный."""
         if sys.platform != WINDOWS_PLATFORM:
-            LOGGER.info("dpapi_unavailable platform=%s", sys.platform)
+            LogEvent.of(DpapiEvent.PLATFORM_UNSUPPORTED, platform=sys.platform).emit(LOGGER)
             return cls()
         try:
             # use_last_error: без него ctypes.get_last_error() не вернёт код отказа вызова
             crypt32: Any = ctypes.WinDLL(CRYPT32_LIBRARY, use_last_error=True)
             kernel32: Any = ctypes.WinDLL(KERNEL32_LIBRARY, use_last_error=True)
         except OSError as error:
-            LOGGER.warning("dpapi_library_failed library=%s error=%s", CRYPT32_LIBRARY, error)
+            failed: LogEvent = LogEvent.of(DpapiEvent.LIBRARY_FAILED, library=CRYPT32_LIBRARY, error=error)
+            failed.emit(LOGGER, logging.WARNING)
             return cls()
         loaded: Dpapi = cls(crypt32=crypt32, kernel32=kernel32)
         loaded._declare_signatures()
@@ -99,9 +145,8 @@ class Dpapi:
     def _call(self, entry_point_name: str, data: bytes) -> bytes:
         """Один путь на защиту и снятие защиты: разница только в точке входа и в аргументе описания."""
         if not self.is_available:
-            raise DpapiUnavailable(
-                f"DPAPI is not available here: {CRYPT32_LIBRARY} did not load (platform={sys.platform})"
-            )
+            detail: str = DETAIL_NOT_LOADED.format(library=CRYPT32_LIBRARY, platform=sys.platform)
+            raise DpapiUnavailable(DpapiReason.NOT_LOADED, detail)
         entry_point: Any = getattr(self.crypt32, entry_point_name)
         # Буфер держится этой переменной всё время вызова: без ссылки его собрал бы сборщик мусора,
         # и DPAPI прочитал бы освобождённую память.
@@ -117,9 +162,8 @@ class Dpapi:
             ctypes.byref(source), described, None, None, None, NO_FLAGS, ctypes.byref(result)
         )
         if not succeeded:
-            raise DpapiUnavailable(
-                f"{entry_point_name} failed with Windows error {ctypes.get_last_error()}"
-            )
+            failure: str = DETAIL_CALL_FAILED.format(entry_point=entry_point_name, code=ctypes.get_last_error())
+            raise DpapiUnavailable(DpapiReason.CALL_FAILED, failure)
         try:
             return ctypes.string_at(result.pbData, result.cbData)
         finally:

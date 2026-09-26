@@ -15,10 +15,12 @@ from typing import Any
 
 import pytest
 
-from app.config.loader import FormSettings, LivecraftSettings, load_channels, load_settings
+from app.config.files import SettingsFile
+from app.config.settings import FormSettings, LivecraftSettings
 from app.paths import LivecraftPaths
 from app.secretsafe.store import LocalVaultState, VaultStore
-from app.secretsafe.value import SecretField, SecretValue
+from app.secretsafe.field import SecretField
+from app.secretsafe.value import SecretValue
 from app.setup.app import SELECTED, TAB_STYLE, THEME, SetupWindow
 from app.setup.fields.language_choice import LanguageCatalog
 from app.setup.panels.keys_panel import KeysPanel
@@ -40,6 +42,7 @@ from app.setup.tabs.channels_tab import ChannelsTab
 from app.setup.tabs.keys_tab import SECRET_ECHO, KeyRowView, KeysTab
 from app.setup.tabs.settings_tab import SettingsTab
 from app.tests.conftest import REPO_CHANNELS_EXAMPLE, SHIPPED_SETTINGS_FILE, SUPPLIED_VALUES
+from app.tests.fixtures.config import channels_of
 from app.ui import messages_ru as msg
 
 OWN_OPENAI_KEY: str = "sk-proj-own-Zy9xWvUtSrQpOnMlKjIhGfEdCbA9876543210"
@@ -326,7 +329,7 @@ def test_saving_the_channels_writes_channels_json(window: SetupWindow, ready_pat
     _fill_channel(tab, account_name="Канал HU", handle="@kanal_hu", google_account="owner@gmail.com", languages="hu")
     tab.buttons["add"].invoke()
     tab.buttons["save"].invoke()
-    assert load_channels(ready_paths.channels_file) == tab.panel.channels
+    assert channels_of(ready_paths.channels_file) == tab.panel.channels
     assert len(tab.panel.channels) == 3
     assert ready_paths.channels_previous_file.read_bytes() == REPO_CHANNELS_EXAMPLE.read_bytes()
     assert not tab.is_dirty
@@ -353,7 +356,7 @@ def test_a_changed_keep_days_is_saved(window: SetupWindow, ready_paths: Livecraf
     _type(entry, "14")
     assert tab.is_dirty
     tab.save_button.invoke()
-    assert load_settings(ready_paths.config_file).keep_days == 14
+    assert SettingsFile(ready_paths.config_file).load().keep_days == 14
     assert tab.problem.text == ""
     assert not tab.is_dirty
 
@@ -383,7 +386,7 @@ def test_the_form_url_is_an_open_field_that_saves(window: SetupWindow, ready_pat
     _type(entry, "https://forms.gle/AbCdEf123456")
     tab.save_button.invoke()
     assert tab.problem.text == ""
-    assert load_settings(ready_paths.config_file).form.url == "https://forms.gle/AbCdEf123456"
+    assert SettingsFile(ready_paths.config_file).load().form.url == "https://forms.gle/AbCdEf123456"
 
 
 def test_a_bad_form_url_shows_the_problem_and_keeps_the_file(window: SetupWindow, ready_paths: LivecraftPaths) -> None:
@@ -416,9 +419,9 @@ def test_the_readiness_line_on_a_ready_root_says_ready(window: SetupWindow) -> N
 def test_the_readiness_line_on_a_clean_root_lists_the_problems(
     bare_window: SetupWindow, livecraft_paths: LivecraftPaths
 ) -> None:
-    problems: tuple[str, ...] = Readiness.check(livecraft_paths).problems
-    assert problems
-    assert bare_window.readiness_line.cget("text") == "\n".join(problems)
+    readiness: Readiness = Readiness.check(livecraft_paths)
+    assert readiness.problems
+    assert bare_window.readiness_line.cget("text") == readiness.window_line
 
 
 def test_saving_refreshes_the_readiness_line(ready_paths: LivecraftPaths, pytestconfig: pytest.Config) -> None:
@@ -1007,7 +1010,7 @@ def test_a_channel_with_two_languages_keeps_the_first_on_save(
     tab.buttons["update"].invoke()
     tab.buttons["save"].invoke()
     assert tab.edit_problem.text == ""
-    assert load_channels(ready_paths.channels_file)[1].languages == ("ru",)
+    assert channels_of(ready_paths.channels_file)[1].languages == ("ru",)
 
 
 def test_picking_another_language_clears_the_several_languages_line(two_languages_window: SetupWindow) -> None:
@@ -1021,7 +1024,7 @@ def test_picking_another_language_clears_the_several_languages_line(two_language
 
 def test_the_form_languages_come_first_and_marked(window: SetupWindow) -> None:
     tab: ChannelsTab = window.channels_tab
-    form_codes: tuple[str, ...] = tuple(load_settings(window.paths.config_file).form.values["language"])
+    form_codes: tuple[str, ...] = tuple(SettingsFile(window.paths.config_file).load().form.values["language"])
     values: tuple[str, ...] = _box_values(tab)
     assert [tab.catalog.code_of(label) for label in values[: len(form_codes)]] == list(form_codes)
     assert all(label.endswith("— есть в форме") for label in values[: len(form_codes)])
@@ -1043,7 +1046,7 @@ def test_a_language_not_in_the_form_does_not_stop_saving(window: SetupWindow, re
     tab.buttons["add"].invoke()
     tab.buttons["save"].invoke()
     assert tab.edit_problem.text == ""
-    assert load_channels(ready_paths.channels_file)[-1].languages == ("de",)
+    assert channels_of(ready_paths.channels_file)[-1].languages == ("de",)
 
 
 def test_the_table_shows_language_names(window: SetupWindow) -> None:
@@ -1069,7 +1072,7 @@ def _save_form_languages(window: SetupWindow, languages: dict[str, str]) -> None
     tab.panel = dataclasses.replace(tab.panel, settings=dataclasses.replace(settings, form=form))
     tab.save_button.invoke()
     assert tab.problem.text == ""
-    assert load_settings(window.paths.config_file).form.values["language"] == languages
+    assert SettingsFile(window.paths.config_file).load().form.values["language"] == languages
 
 
 def test_saving_new_form_languages_updates_the_marks_without_reopening(window: SetupWindow) -> None:

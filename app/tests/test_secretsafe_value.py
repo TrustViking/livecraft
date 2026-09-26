@@ -18,11 +18,10 @@ from app.secretsafe.crypto import (
     VaultCrypto,
     VaultDecryptError,
 )
+from app.secretsafe.field import MaskStyle, SecretField
 from app.secretsafe.value import (
     FINGERPRINT_CHARS,
     MASK_HIDDEN,
-    MaskStyle,
-    SecretField,
     SecretValue,
 )
 from app.ui import messages_ru as msg

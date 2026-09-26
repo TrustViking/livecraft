@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.config.loader import load_settings
+from app.config.files import SettingsFile, ShippedSettings
 from app.core.clock import Clock
 from app.core.text_format import TEXT_ENCODING
 from app.intake.intake import IntakeRequest, IntakeResult, IntakeStage, PlanIntake
@@ -23,10 +23,11 @@ from app.paths import ROOT_ENV_VAR, LivecraftPaths
 from app.run.exit_code import ExitCode
 from app.run.mode import RunPart
 from app.runtime.single_instance import InstanceLock, LockEvent, LockOwner
-from app.secretsafe.crypto import KEY_WRAPPED
+from app.secretsafe.crypto import VaultFileKey
 from app.secretsafe.store import VaultStore
-from app.secretsafe.value import SecretField, SecretValue
-from app.secretsafe.vault import Vault, VaultOrigin
+from app.secretsafe.field import SecretField, VaultOrigin
+from app.secretsafe.value import SecretValue
+from app.secretsafe.vault import Vault
 from app.packages.package import PackageResult
 from app.sheets.plan import SheetPlan
 from app.sheets.rows import AdmittedRow, PlannedRows
@@ -34,6 +35,7 @@ from app.sources.video import PreparedSources, SourceVideo
 from app.tests.conftest import FORM_URL, REPO_ROOT, SUPPLIED_VALUES, write_supplied_vault
 from app.tests.fixtures.settings import set_form_url
 from app.tests.fixtures.slots import build_slots
+from app.tests.fixtures.vault import LOCAL_UNREADABLE_WARNING
 from app.tests.fixtures.sources import admitted_row, ready_source
 from app.ui import messages_ru as msg
 from app.ui.console import Console
@@ -148,7 +150,7 @@ def test_without_setup_a_service_run_asks_for_setup(
     assert run_cli(argv) == int(ExitCode.CONFIG)
     out: str = capsys.readouterr().out
     assert msg.READINESS_CHANNELS_MISSING in out
-    assert msg.CONFIG_CHANNELS_TEMPLATE not in out and msg.CONFIG_SETTINGS_TEMPLATE not in out
+    assert msg.CONFIG_CHANNELS_TEMPLATE not in out and ShippedSettings().template not in out
     assert out.rstrip().endswith(msg.SETUP_REQUIRED)  # что делать — последней строкой
     assert window_calls == []
 
@@ -174,7 +176,7 @@ def test_without_setup_a_mode_opens_the_setup_window(
     assert run_cli(argv) == int(ExitCode.CONFIG)
     out: str = capsys.readouterr().out
     assert msg.SETUP_OPENING in out
-    assert msg.CONFIG_CHANNELS_TEMPLATE not in out and msg.CONFIG_SETTINGS_TEMPLATE not in out
+    assert msg.CONFIG_CHANNELS_TEMPLATE not in out and ShippedSettings().template not in out
     assert msg.SETUP_REQUIRED not in out
     assert window_calls == [LivecraftPaths(livecraft_root)]
 
@@ -351,8 +353,8 @@ def test_a_missing_settings_file_is_created_from_the_template(
     run_cli([])
     out: str = capsys.readouterr().out
     assert msg.SETTINGS_FILE_CREATED.format(path=config_file) in out
-    assert config_file.read_text(encoding="utf-8") == msg.CONFIG_SETTINGS_TEMPLATE + "\n"
-    assert msg.CONFIG_SETTINGS_TEMPLATE not in out                  # шаблон не печатается: файл уже есть
+    assert config_file.read_text(encoding="utf-8") == ShippedSettings().template
+    assert ShippedSettings().template not in out                  # шаблон не печатается: файл уже есть
     [log_file] = list((livecraft_root / "logs").glob(LOG_GLOB))
     assert "settings_file_created path=" in log_file.read_text(encoding="utf-8")
 
@@ -384,7 +386,7 @@ def test_a_settings_file_missing_a_field_names_it_and_logs_its_template(
     ready_root.config_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     assert run_cli([]) == int(ExitCode.CONFIG)          # без настроек таблицу не прочитать — не готово ничего
     out: str = capsys.readouterr().out
-    assert msg.CONFIG_SETTINGS_TEMPLATE not in out
+    assert ShippedSettings().template not in out
     assert "keep_days" in out and msg.SETUP_TAB_SETTINGS in out
     assert window_calls == [ready_root]
     [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
@@ -433,12 +435,12 @@ def test_an_unreadable_own_vault_is_announced_and_the_run_goes_on(
     )
     VaultStore.open(ready_root).save_local(own)
     data: dict[str, object] = json.loads(ready_root.vault_local_file.read_text(encoding=TEXT_ENCODING))
-    wrapped: bytes = base64.b64decode(str(data[KEY_WRAPPED]), validate=True)
-    data[KEY_WRAPPED] = base64.b64encode(wrapped[:-1] + bytes([wrapped[-1] ^ 0xFF])).decode("ascii")
+    wrapped: bytes = base64.b64decode(str(data[VaultFileKey.WRAPPED_KEY.value]), validate=True)
+    data[VaultFileKey.WRAPPED_KEY.value] = base64.b64encode(wrapped[:-1] + bytes([wrapped[-1] ^ 0xFF])).decode("ascii")
     ready_root.vault_local_file.write_text(json.dumps(data), encoding=TEXT_ENCODING)
     assert run_cli([]) == int(ExitCode.OK)
     out: str = capsys.readouterr().out
-    assert msg.VAULT_LOCAL_UNREADABLE in out
+    assert LOCAL_UNREADABLE_WARNING in out
     assert msg.READINESS_FIELD_LINE.format(
         label=SecretField.SHEETS_ID.human_label, origin=msg.VAULT_ORIGIN_SUPPLIED
     ) in out
@@ -457,7 +459,7 @@ def test_a_broken_own_vault_file_opens_the_setup_window_with_code_2(
     assert ready_root.vault_local_file.name in out
     assert msg.SETUP_OPENING in out
     assert window_calls == [ready_root]
-    assert msg.VAULT_LOCAL_UNREADABLE not in out
+    assert LOCAL_UNREADABLE_WARNING not in out
     assert "ВНИМАНИЕ" not in out
 
 
@@ -552,7 +554,7 @@ def test_the_form_url_moves_from_the_own_vault_to_the_settings(
     assert msg.FORM_URL_MIGRATED in out
     assert out.index(msg.FORM_URL_MIGRATED) < out.index(msg.READINESS_SUMMARY_TITLE)
     assert OWN_FORM_URL not in out
-    assert load_settings(unformed_root.config_file).form.url == OWN_FORM_URL
+    assert SettingsFile(unformed_root.config_file).load().form.url == OWN_FORM_URL
     assert VaultStore.open(unformed_root).load().vault.get(SecretField.KEY_FORM_URL) is None
     [log_file] = list(unformed_root.logs_dir.glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
@@ -571,7 +573,7 @@ def test_a_bad_form_url_in_the_vault_is_announced_and_the_run_goes_on(
     out: str = capsys.readouterr().out
     assert msg.FORM_URL_MIGRATION_FAILED.format(reason=msg.CONFIG_PROBLEM_FORM_URL) in out
     assert "http://example.com/secret-form" not in out
-    assert load_settings(unformed_root.config_file).form.url == ""
+    assert SettingsFile(unformed_root.config_file).load().form.url == ""
 
 
 # --- готовность по частям режима (задача 3.8, §10, §14 решения 17, 18)
@@ -712,7 +714,7 @@ def test_the_run_request_carries_an_aware_now_in_the_program_zone_and_a_new_pack
     assert run_cli([]) == int(ExitCode.OK)
     first, second = intake.requests
     assert first.now.utcoffset() is not None
-    assert str(first.now.tzinfo) == load_settings(ready_root.config_file).timezone
+    assert str(first.now.tzinfo) == SettingsFile(ready_root.config_file).load().timezone
     assert first.package_id != second.package_id
     assert first.paths.root == ready_root.root
 

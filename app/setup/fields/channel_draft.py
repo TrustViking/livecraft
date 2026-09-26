@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Final
 
-from app.config.loader import HANDLE_PREFIX, ChannelConfig, Platform
+from app.config.channel import ChannelConfig, ChannelHandle, Platform
 from app.ui import messages_ru as msg
 
 # Коды языков в строке ввода разделяются запятыми и пробельными символами: «uk, ru  en».
@@ -56,9 +56,9 @@ class ChannelDraft:
     def handle_text(self) -> str:
         """Ник с «@» в начале; пустой ввод остаётся пустым, чтобы загрузчик назвал его пустым, а не коротким."""
         text: str = self.handle.strip()
-        if not text or text.startswith(HANDLE_PREFIX):
+        if not text or text.startswith(ChannelHandle.PREFIX):
             return text
-        return HANDLE_PREFIX + text
+        return ChannelHandle.PREFIX + text
 
     @property
     def language_codes(self) -> list[str]:

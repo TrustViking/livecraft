@@ -8,7 +8,8 @@ import sys
 
 import pytest
 
-from app.secretsafe.dpapi import DATA_DESCRIPTION, Dpapi, DpapiUnavailable
+from app.secretsafe.dpapi import DATA_DESCRIPTION, Dpapi, DpapiReason, DpapiUnavailable
+from app.ui import messages_ru as msg
 
 SECRET: bytes = "ключ OpenAI sk-proj-Ab3dEfGh0123456789dc7f".encode("utf-8")
 BINARY: bytes = bytes(range(256))
@@ -97,12 +98,21 @@ def test_unprotect_without_dpapi_refuses(unavailable: Dpapi) -> None:
         unavailable.unprotect(SECRET)
 
 
-def test_the_refusal_text_says_what_is_missing_and_carries_no_secret(unavailable: Dpapi) -> None:
+def test_the_refusal_follows_the_error_contract_and_carries_no_secret(unavailable: Dpapi) -> None:
+    """Человеку — русская причина; что не загрузилось и на какой платформе — только в строку лога (§11)."""
     with pytest.raises(DpapiUnavailable) as raised:
         unavailable.protect(SECRET)
-    text: str = str(raised.value)
-    assert "crypt32.dll" in text and sys.platform in text
-    assert SECRET.decode("utf-8") not in text
+    error: DpapiUnavailable = raised.value
+    assert error.reason is DpapiReason.NOT_LOADED
+    assert str(error) == error.human == msg.DPAPI_UNAVAILABLE.format(reason=DpapiReason.NOT_LOADED.human)
+    assert "crypt32.dll" in error.log_line and sys.platform in error.log_line
+    assert error.log_line.startswith("dpapi_refused reason=not_loaded detail=")
+    for text in (str(error), error.log_line):
+        assert SECRET.decode("utf-8") not in text
+
+
+def test_every_dpapi_reason_has_a_russian_text() -> None:
+    assert set(msg.DPAPI_REASON_TEXT) == {reason.value for reason in DpapiReason}
 
 
 def test_a_non_windows_platform_gives_an_unavailable_object(monkeypatch: pytest.MonkeyPatch) -> None:

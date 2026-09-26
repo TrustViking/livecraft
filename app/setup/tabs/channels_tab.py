@@ -23,7 +23,8 @@ from collections.abc import Callable
 from tkinter import messagebox, ttk
 from typing import Final
 
-from app.config.loader import ConfigError, SettingProblem, load_settings
+from app.config.files import SettingsFile
+from app.config.json_node import ConfigError, SettingProblem
 from app.core.text_format import PARAGRAPH_BREAK
 from app.paths import LivecraftPaths
 from app.setup.fields.channel_draft import ChannelDraft
@@ -242,7 +243,7 @@ class ChannelsTab:
     def _form_language_codes(paths: LivecraftPaths) -> tuple[str, ...]:
         """Коды вариантов вопроса о языке из livecraft.json; настройки не прочитались — языков формы нет."""
         try:
-            values: dict[str, dict[str, str]] = load_settings(paths.config_file).form.values
+            values: dict[str, dict[str, str]] = SettingsFile.of(paths).load().form.values
         except ConfigError:
             return ()
         return tuple(values.get(FORM_LANGUAGE_VALUES_KEY, {}))

@@ -18,13 +18,12 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from enum import Enum
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
+from app.core.text_format import TEXT_ENCODING
+from app.secretsafe.crypto import EncryptedField, VaultCrypto
+from app.secretsafe.field import MaskStyle, SecretField
 from app.ui import messages_ru as msg
-
-if TYPE_CHECKING:      # только для аннотаций: crypto.py сам импортирует SecretField, кольца в рантайме нет
-    from app.secretsafe.crypto import EncryptedField, VaultCrypto
 
 FINGERPRINT_CHARS: Final[int] = 4      # первые 4 hex sha256: различить два значения — да, восстановить — нет
 TAIL_HEAD_CHARS: Final[int] = 3        # у ключа API показываем начало…
@@ -33,65 +32,6 @@ TAIL_MIN_LENGTH: Final[int] = 8        # короче — показывать �
 MASK_ELLIPSIS: Final[str] = "…"
 MASK_HIDDEN: Final[str] = "…"          # значение целиком скрыто
 LOG_LABEL_TEMPLATE: Final[str] = "{label}({fingerprint})"
-
-
-class MaskStyle(str, Enum):
-    """Как показать значение человеку, чтобы он узнал своё и не прочитал чужое."""
-
-    TAIL = "tail"                # «sk-…dc7f»: так принято показывать ключ API
-    FINGERPRINT = "fingerprint"  # «форма ключей (…9c2b)»: у ссылок и id даже хвост подсказывает лишнее
-
-
-class SecretField(str, Enum):
-    """Поля сейфа (CLAUDE.md §7.3, §7.5). Имя значения — имя поля в файле сейфа и в AAD шифра."""
-
-    OPENAI_API_KEY = "openai_api_key"
-    SHEETS_ID = "sheets_id"
-    SHEETS_RANGE = "sheets_range"
-    # Устаревшее поле (§14 решение 15): ссылка на форму теперь открытая настройка livecraft.json (form.url).
-    # Поле остаётся, чтобы старый файл сейфа читался и ссылку из него можно было один раз перенести
-    # (app\setup\migration.py); удаляется на этапе «Токен доступа» вместе с переносом.
-    KEY_FORM_URL = "key_form_url"
-
-    @classmethod
-    def current(cls) -> tuple[SecretField, ...]:
-        """Поля, которые программа требует для запуска и показывает человеку: все, кроме устаревших."""
-        return tuple(field for field in cls if not field.is_legacy)
-
-    @property
-    def is_legacy(self) -> bool:
-        """Устаревшее поле: читается из старого сейфа и вычёркивается из логов, но не требуется и не показывается."""
-        return self in _LEGACY_FIELDS
-
-    @property
-    def log_label(self) -> str:
-        """Ярлык для машинного следа: в лог уходит он и отпечаток, но никогда значение (§7.4)."""
-        return _LOG_LABELS[self]
-
-    @property
-    def human_label(self) -> str:
-        """Русское название поля; сам текст — в messages_ru (§11), здесь только отображение поля на него."""
-        return _HUMAN_LABELS[self]
-
-    @property
-    def mask_style(self) -> MaskStyle:
-        """Ключ API узнаётся по хвосту; ссылки, id и диапазон — только по отпечатку."""
-        return MaskStyle.TAIL if self is SecretField.OPENAI_API_KEY else MaskStyle.FINGERPRINT
-
-
-_LEGACY_FIELDS: Final[frozenset[SecretField]] = frozenset({SecretField.KEY_FORM_URL})
-_LOG_LABELS: Final[dict[SecretField, str]] = {
-    SecretField.OPENAI_API_KEY: "openai-key",
-    SecretField.SHEETS_ID: "sheets-plan",
-    SecretField.SHEETS_RANGE: "sheets-range",
-    SecretField.KEY_FORM_URL: "key-form",
-}
-_HUMAN_LABELS: Final[dict[SecretField, str]] = {
-    SecretField.OPENAI_API_KEY: msg.VAULT_FIELD_OPENAI_API_KEY,
-    SecretField.SHEETS_ID: msg.VAULT_FIELD_SHEETS_ID,
-    SecretField.SHEETS_RANGE: msg.VAULT_FIELD_SHEETS_RANGE,
-    SecretField.KEY_FORM_URL: msg.VAULT_FIELD_KEY_FORM_URL,
-}
 
 
 @dataclass(frozen=True)
@@ -119,7 +59,7 @@ class SecretValue:
     @property
     def fingerprint(self) -> str:
         """Первые 4 hex sha256 от значения (§7.4): различить две формы в одном запуске — да, восстановить — нет."""
-        return hashlib.sha256(self.value.encode("utf-8")).hexdigest()[:FINGERPRINT_CHARS]
+        return hashlib.sha256(self.value.encode(TEXT_ENCODING)).hexdigest()[:FINGERPRINT_CHARS]
 
     @property
     def log_label(self) -> str:

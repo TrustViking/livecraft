@@ -2,8 +2,8 @@
 
 Вкладка держит список каналов, каким он будет записан, и то, каким он прочитан с диска. Своих правил
 проверки у неё нет: каждая правка переводит весь будущий список в данные channels.json и разбирает его
-тем же загрузчиком, что читает файл (`parse_channels`); ошибка разбора и есть проблема поля. Пишет только
-загрузчик (`save_channels_file`): прежний файл уходит в channels.previous.json, свой JSON вкладка не собирает.
+тем же разбором, что читает файл (`ChannelsFile.parse`); ошибка разбора и есть проблема поля. Пишет только
+файл каналов (`ChannelsFile.save`): прежний файл уходит в channels.previous.json, свой JSON вкладка не собирает.
 
 Вкладка неизменяемая: `add`, `update`, `remove` и `save` отдают новую, прежняя остаётся тем, чем была.
 Окно Tk (задача 2.3) только рисует её ответы; библиотека окна сюда не импортируется, ничего не печатается.
@@ -13,28 +13,14 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Final
+from typing import Any
 
-from app.config.loader import (
-    CHANNELS_KEY,
-    KEY_SEPARATOR,
-    ChannelConfig,
-    ConfigError,
-    ConfigProblem,
-    Privacy,
-    SettingProblem,
-    load_channels,
-    parse_channels,
-    save_channels_file,
-)
+from app.config.channel import ChannelConfig, ChannelsFileKey, ConfiguredChannels, Privacy
+from app.config.files import ChannelsFile
+from app.config.json_node import ConfigError, SettingProblem
 from app.paths import LivecraftPaths
 from app.setup.fields.channel_draft import ChannelDraft
 from app.ui import messages_ru as msg
-
-# Путь ошибки загрузчика у поля канала: channels[<номер>].<поле>. Строке вкладки нужно только <поле>.
-CHANNEL_KEY_OPEN: Final[str] = f"{CHANNELS_KEY}["
-CHANNEL_KEY_CLOSE: Final[str] = "]" + KEY_SEPARATOR
 
 
 @dataclass(frozen=True)
@@ -54,37 +40,32 @@ class ChannelsPanelEdit:
 class ChannelsPanel:
     """Вкладка «Каналы YouTube».
 
-    `channels` — список, каким он будет записан; каждый канал уже прошёл загрузчик. `loaded` — как прочитано
+    `channels` — список, каким он будет записан; каждый канал уже прошёл разбор. `loaded` — как прочитано
     с диска (None — не прочитано). `load_problem` — почему не прочитано; `is_file_missing` — потому что файла
-    нет. `channels_file` — путь для ошибок разбора: те же ConfigError, что у загрузки файла.
+    нет. `file` — файл каналов: его разбор проверяет правки, и ошибки те же, что у загрузки файла.
     """
 
     channels: tuple[ChannelConfig, ...]
     loaded: tuple[ChannelConfig, ...] | None
     load_problem: SettingProblem | None
     is_file_missing: bool
-    channels_file: Path
+    file: ChannelsFile
 
     @classmethod
     def from_paths(cls, paths: LivecraftPaths) -> ChannelsPanel:
-        """Прочитать channels.json. Не прочитался — вкладка без каналов и с причиной от загрузчика."""
+        """Прочитать channels.json. Не прочитался — вкладка без каналов и с причиной от разбора."""
+        file: ChannelsFile = ChannelsFile.of(paths)
         try:
-            channels: tuple[ChannelConfig, ...] = load_channels(paths.channels_file)
+            channels: tuple[ChannelConfig, ...] = file.load().channels
         except ConfigError as error:
             return cls(
                 channels=(),
                 loaded=None,
                 load_problem=SettingProblem(key=error.key_path, text=error.problem),
-                is_file_missing=error.kind is ConfigProblem.FILE_MISSING,
-                channels_file=paths.channels_file,
+                is_file_missing=error.is_file_missing,
+                file=file,
             )
-        return cls(
-            channels=channels,
-            loaded=channels,
-            load_problem=None,
-            is_file_missing=False,
-            channels_file=paths.channels_file,
-        )
+        return cls(channels=channels, loaded=channels, load_problem=None, is_file_missing=False, file=file)
 
     @property
     def drafts(self) -> tuple[ChannelDraft, ...]:
@@ -141,7 +122,7 @@ class ChannelsPanel:
         problem: SettingProblem | None = self.problem
         if problem is not None:
             return ChannelsPanelEdit(panel=self, problem=problem)
-        save_channels_file(paths.channels_file, paths.channels_previous_file, self.channels)
+        ChannelsFile.of(paths).save(ConfiguredChannels(channels=self.channels))
         return ChannelsPanelEdit(panel=ChannelsPanel.from_paths(paths), problem=None)
 
     @property
@@ -150,20 +131,14 @@ class ChannelsPanel:
         return [channel.to_data() for channel in self.channels]
 
     def _edit(self, data: list[dict[str, Any]]) -> ChannelsPanelEdit:
-        """Разобрать будущий список загрузчиком: годен — новая вкладка с его каналами (NFC), иначе — та же."""
-        try:
-            channels: tuple[ChannelConfig, ...] = parse_channels({CHANNELS_KEY: data}, self.channels_file)
-        except ConfigError as error:
-            return ChannelsPanelEdit(panel=self, problem=self._field_problem(error))
-        return ChannelsPanelEdit(panel=dataclasses.replace(self, channels=channels), problem=None)
+        """Разобрать будущий список разбором файла: годен — новая вкладка с его каналами (NFC), иначе — та же.
 
-    @staticmethod
-    def _field_problem(error: ConfigError) -> SettingProblem:
-        """Ошибка загрузчика → проблема строки: путь channels[i].поле сводится к имени поля.
-
-        Путь без номера канала (весь список, например пустой) остаётся как есть.
+        Проблема строки — путь внутри канала (`channels[i].поле` → `поле`); путь без номера канала (весь список,
+        например пустой) остаётся как есть.
         """
-        key: str = error.key_path
-        if key.startswith(CHANNEL_KEY_OPEN) and CHANNEL_KEY_CLOSE in key:
-            key = key.partition(CHANNEL_KEY_CLOSE)[2]
-        return SettingProblem(key=key, text=error.problem)
+        try:
+            channels: tuple[ChannelConfig, ...] = self.file.parse({ChannelsFileKey.CHANNELS.value: data}).channels
+        except ConfigError as error:
+            problem: SettingProblem = SettingProblem(key=error.key.within_item.text, text=error.problem)
+            return ChannelsPanelEdit(panel=self, problem=problem)
+        return ChannelsPanelEdit(panel=dataclasses.replace(self, channels=channels), problem=None)

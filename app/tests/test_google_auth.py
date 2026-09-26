@@ -222,9 +222,9 @@ def test_unreadable_token_is_reported_without_the_full_path(
     with pytest.raises(AuthError) as raised:
         operator.credentials()
     assert raised.value.reason is AuthErrorReason.TOKEN_UNREADABLE
-    assert "sheets.token.json" in str(raised.value)
-    assert str(operator.token_file.parent) not in str(raised.value)
-    assert str(operator.token_file.parent) not in raised.value.detail
+    assert "sheets.token.json" in raised.value.detail and "sheets.token.json" in raised.value.log_line
+    for text in (str(raised.value), raised.value.detail, raised.value.log_line):
+        assert str(operator.token_file.parent) not in text
 
 
 def test_login_not_allowed_does_not_open_the_browser(operator: GoogleLogin, flow: type[_FakeFlow]) -> None:
@@ -283,8 +283,9 @@ def test_browser_failure_is_flow_failed_without_the_full_path(
     with pytest.raises(AuthError) as raised:
         operator.credentials()
     assert raised.value.reason is AuthErrorReason.FLOW_FAILED
-    assert "client_secret.json" in str(raised.value)
-    assert str(operator.client_secret_file.parent) not in str(raised.value)
+    assert "client_secret.json" in raised.value.log_line
+    for text in (str(raised.value), raised.value.log_line):
+        assert str(operator.client_secret_file.parent) not in text
 
 
 # --- запись и удаление токена
@@ -348,6 +349,14 @@ def test_every_reason_has_a_russian_text() -> None:
         assert reason.human
     assert set(msg.AUTH_REASON_TEXT) == {reason.value for reason in AuthErrorReason}
     assert AuthError(AuthErrorReason.LOGIN_REQUIRED).human == AuthErrorReason.LOGIN_REQUIRED.human
+
+
+def test_the_auth_error_follows_the_error_contract() -> None:
+    """Человеку — русская причина; имя файла и подробность — только в строку лога (§11)."""
+    error: AuthError = AuthError(AuthErrorReason.CLIENT_SECRET_MISSING, "client_secret.json")
+    assert str(error) == error.human == AuthErrorReason.CLIENT_SECRET_MISSING.human
+    assert error.log_line == "auth_failed reason=client_secret_missing detail=client_secret.json"
+    assert AuthError(AuthErrorReason.LOGIN_REQUIRED).log_line == "auth_failed reason=login_required detail=-"
 
 
 def test_scopes_live_only_in_the_auth_module(repo_root: Path) -> None:

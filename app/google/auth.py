@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -30,7 +31,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow, WSGITimeoutError
 from app.core.dates import SECONDS_PER_MINUTE
 from app.core.errors import os_error_reason
 from app.core.text_format import TEXT_ENCODING
-from app.observability.log_event import LogArea, get_logger
+from app.observability.log_event import LogArea, LogEvent, get_logger
 from app.paths import LivecraftPaths, write_text_atomically
 from app.ui import messages_ru as msg
 
@@ -48,6 +49,32 @@ PROMPT: Final[str] = "select_account consent"
 LOGIN_TIMEOUT_SEC: Final[int] = 600
 LOGIN_TIMEOUT_MINUTES: Final[int] = LOGIN_TIMEOUT_SEC // SECONDS_PER_MINUTE
 DETAIL_TEMPLATE: Final[str] = "{file}: {problem}"
+ERROR_DETAIL_TEMPLATE: Final[str] = "{name}: {error}"
+DETAIL_LOGIN_TIMEOUT: Final[str] = "no answer in {seconds} s"
+DETAIL_NO_CREDENTIALS: Final[str] = "flow returned no credentials"
+
+
+class AuthEvent(str, Enum):
+    """События входа в Google в логе."""
+
+    FAILED = "auth_failed"
+    TOKEN_DROPPED = "token_dropped"
+    LOGIN_NOT_ALLOWED = "login_not_allowed"
+    LOGIN_COMPLETED = "login_completed"
+    TOKEN_REFRESH_REJECTED = "token_refresh_rejected"
+    TOKEN_REFRESHED = "token_refreshed"
+
+
+class FlowArgument(str, Enum):
+    """Параметры браузерного входа `InstalledAppFlow.run_local_server`."""
+
+    PORT = "port"
+    ACCESS_TYPE = "access_type"
+    PROMPT = "prompt"
+    TIMEOUT_SECONDS = "timeout_seconds"
+    PROMPT_MESSAGE = "authorization_prompt_message"
+    SUCCESS_MESSAGE = "success_message"
+    LOGIN_HINT = "login_hint"
 
 
 class AuthErrorReason(str, Enum):
@@ -66,19 +93,26 @@ class AuthErrorReason(str, Enum):
 
 
 class AuthError(Exception):
-    """Единственное исключение, которое выпускает этот модуль наружу.
-
-    `detail` — машинная подробность для лога: имя файла и короткая причина, без полного пути.
+    """Единственное исключение, которое выпускает этот модуль наружу. Текст — причина для человека
+    (контракт ошибок, §11); `detail` — машинная подробность только для лога: имя файла и короткая причина,
+    без полного пути.
     """
 
     def __init__(self, reason: AuthErrorReason, detail: str = "") -> None:
-        super().__init__(f"{reason.value}: {detail}" if detail else reason.value)
         self.reason: AuthErrorReason = reason
         self.detail: str = detail
+        super().__init__(self.human)
 
     @property
     def human(self) -> str:
         return self.reason.human
+
+    @property
+    def log_line(self) -> str:
+        return LogEvent.of(AuthEvent.FAILED, reason=self.reason, detail=self.detail).text
+
+    def __str__(self) -> str:
+        return self.human
 
 
 @dataclass(frozen=True)
@@ -147,17 +181,17 @@ class GoogleLogin:
             self.token_file.unlink(missing_ok=True)
         except OSError as error:
             raise AuthError(AuthErrorReason.TOKEN_UNWRITABLE, self._detail(error)) from error
-        LOGGER.info("token_dropped file=%s", self.token_file.name)
+        LogEvent.of(AuthEvent.TOKEN_DROPPED, file=self.token_file.name).emit(LOGGER)
 
     def _log_in(self, allow_login: bool, on_login: Callable[[], None] | None) -> Credentials:
         """Вход через браузер — единственный путь к нему; запрет входа проверяется здесь же."""
         if not allow_login:
-            LOGGER.info("login_not_allowed file=%s", self.token_file.name)
+            LogEvent.of(AuthEvent.LOGIN_NOT_ALLOWED, file=self.token_file.name).emit(LOGGER)
             raise AuthError(AuthErrorReason.LOGIN_REQUIRED, self.token_file.name)
         if on_login is not None:
             on_login()
         credentials: Credentials = self._run_flow()
-        LOGGER.info("login_completed file=%s saved=%s", self.token_file.name, self.saves_new_login)
+        LogEvent.of(AuthEvent.LOGIN_COMPLETED, file=self.token_file.name, saved=self.saves_new_login).emit(LOGGER)
         if self.saves_new_login:
             self.save(credentials)
         return credentials
@@ -178,12 +212,13 @@ class GoogleLogin:
         try:
             credentials.refresh(Request())
         except RefreshError as error:
-            LOGGER.warning("token_refresh_rejected file=%s reason=%s", self.token_file.name, error)
+            rejected: LogEvent = LogEvent.of(AuthEvent.TOKEN_REFRESH_REJECTED, file=self.token_file.name, reason=error)
+            rejected.emit(LOGGER, logging.WARNING)
             return None
         except TransportError as error:
             raise AuthError(AuthErrorReason.REFRESH_FAILED, self._detail(error)) from error
         self.save(credentials)
-        LOGGER.info("token_refreshed file=%s", self.token_file.name)
+        LogEvent.of(AuthEvent.TOKEN_REFRESHED, file=self.token_file.name).emit(LOGGER)
         return credentials
 
     def _run_flow(self) -> Credentials:
@@ -198,31 +233,32 @@ class GoogleLogin:
             )
             credentials: Credentials = flow.run_local_server(**self._flow_arguments())
         except WSGITimeoutError as error:
-            raise AuthError(AuthErrorReason.LOGIN_TIMEOUT, f"no answer in {LOGIN_TIMEOUT_SEC} s") from error
+            detail: str = DETAIL_LOGIN_TIMEOUT.format(seconds=LOGIN_TIMEOUT_SEC)
+            raise AuthError(AuthErrorReason.LOGIN_TIMEOUT, detail) from error
         except (OSError, ValueError, RefreshError, TransportError) as error:
             raise AuthError(AuthErrorReason.FLOW_FAILED, self._detail(error, self.client_secret_file)) from error
         if credentials is None:
-            raise AuthError(AuthErrorReason.FLOW_FAILED, "flow returned no credentials")
+            raise AuthError(AuthErrorReason.FLOW_FAILED, DETAIL_NO_CREDENTIALS)
         return credentials
 
     def _flow_arguments(self) -> dict[str, Any]:
         """Параметры браузерного входа; подсказка аккаунта — только если она есть."""
-        arguments: dict[str, Any] = {
-            "port": LOCAL_SERVER_PORT,
-            "access_type": ACCESS_TYPE,
-            "prompt": PROMPT,
-            "timeout_seconds": LOGIN_TIMEOUT_SEC,
-            "authorization_prompt_message": msg.AUTH_OPEN_LINK,
-            "success_message": msg.AUTH_BROWSER_DONE,
+        arguments: dict[FlowArgument, Any] = {
+            FlowArgument.PORT: LOCAL_SERVER_PORT,
+            FlowArgument.ACCESS_TYPE: ACCESS_TYPE,
+            FlowArgument.PROMPT: PROMPT,
+            FlowArgument.TIMEOUT_SECONDS: LOGIN_TIMEOUT_SEC,
+            FlowArgument.PROMPT_MESSAGE: msg.AUTH_OPEN_LINK,
+            FlowArgument.SUCCESS_MESSAGE: msg.AUTH_BROWSER_DONE,
         }
         if self.login_hint is not None:
-            arguments["login_hint"] = self.login_hint
-        return arguments
+            arguments[FlowArgument.LOGIN_HINT] = self.login_hint
+        return {argument.value: value for argument, value in arguments.items()}
 
     def _detail(self, error: Exception, file: Path | None = None) -> str:
         """Имя файла и причина без полного пути: у OSError путь лежит в filename, берётся только strerror."""
         if isinstance(error, OSError):
             problem: str = os_error_reason(error)
         else:
-            problem = f"{type(error).__name__}: {error}"
+            problem = ERROR_DETAIL_TEMPLATE.format(name=type(error).__name__, error=error)
         return DETAIL_TEMPLATE.format(file=(file or self.token_file).name, problem=problem)

@@ -12,31 +12,34 @@ from app.core.text_format import TEXT_ENCODING
 from app.paths import LivecraftPaths
 from app.secretsafe.crypto import (
     FORMAT_VERSION,
-    KEY_CIPHERTEXT,
-    KEY_FIELDS,
-    KEY_SALT,
-    KEY_VERSION,
-    KEY_WRAPPED,
     SALT_BYTES,
     VAULT_KEY_BYTES,
     EncryptedField,
     VaultCrypto,
     VaultFile,
     VaultFormatError,
+    VaultFileKey,
     VaultFormatReason,
 )
 from app.secretsafe.dpapi import Dpapi, DpapiUnavailable
+from app.secretsafe.field import SecretField, VaultOrigin
 from app.secretsafe.store import (
     TEXT_ENCODING,
     LocalVaultState,
     ProgramKey,
     VaultLoad,
-    VaultSource,
+    VaultRead,
     VaultStore,
 )
-from app.secretsafe.value import SecretField, SecretValue
-from app.secretsafe.vault import Vault, VaultOrigin
+from app.secretsafe.value import SecretValue
+from app.secretsafe.vault import Vault
 from app.ui import messages_ru as msg
+
+KEY_VERSION: str = VaultFileKey.VERSION.value
+KEY_SALT: str = VaultFileKey.SALT.value
+KEY_FIELDS: str = VaultFileKey.FIELDS.value
+KEY_CIPHERTEXT: str = VaultFileKey.CIPHERTEXT.value
+KEY_WRAPPED: str = VaultFileKey.WRAPPED_KEY.value
 
 SUPPLIED_VALUES: dict[SecretField, str] = {
     SecretField.OPENAI_API_KEY: "sk-proj-supplied-Ab3dEfGhIjKlMnOpQrStUvWxYz0123456789",
@@ -79,7 +82,7 @@ def _write_supplied(store: VaultStore, values: dict[SecretField, str]) -> bytes:
 
     Программа этот файл писать не умеет и не должна — поэтому в тесте он собирается напрямую из VaultFile.
     """
-    salt: bytes = VaultFile.empty().salt
+    salt: bytes = VaultCrypto.new().salt
     crypto: VaultCrypto = VaultCrypto(key=PROGRAM_KEY, salt=salt)
     fields: dict[str, EncryptedField] = {
         field.value: crypto.encrypt(field, value) for field, value in values.items()
@@ -417,7 +420,7 @@ def test_a_failed_save_leaves_the_previous_local_file_untouched(store: VaultStor
 
 def test_the_source_names_are_english_identifiers() -> None:
     """Значение уходит в лог вместо пути к секретам (§7.4)."""
-    assert [source.value for source in VaultSource] == ["supplied", "local"]
+    assert [origin.value for origin in VaultOrigin] == ["supplied", "own"]
 
 
 def test_a_local_file_written_the_old_way_still_reads(store: VaultStore) -> None:
@@ -427,7 +430,7 @@ def test_a_local_file_written_the_old_way_still_reads(store: VaultStore) -> None
     и так его пишет сборка Артура для поставочного файла.
     """
     key: bytes = bytes(range(VAULT_KEY_BYTES))
-    salt: bytes = VaultFile.empty().salt
+    salt: bytes = VaultCrypto.new().salt
     crypto: VaultCrypto = VaultCrypto(key=key, salt=salt)
     fields: dict[str, EncryptedField] = {
         field.value: crypto.encrypt(field, value) for field, value in OWN_VALUES.items()
@@ -449,7 +452,7 @@ def test_a_file_written_now_and_one_written_the_old_way_have_the_same_shape(stor
     """Набор записей в файле тот же: поменялось, кто зовёт шифратор, а не что ложится на диск."""
     store.save_local(_own_vault(OWN_VALUES))
     now: dict[str, Any] = _local_json(store)
-    salt: bytes = VaultFile.empty().salt
+    salt: bytes = VaultCrypto.new().salt
     crypto: VaultCrypto = VaultCrypto(key=PROGRAM_KEY, salt=salt)
     old: dict[str, Any] = json.loads(
         VaultFile(
@@ -541,7 +544,7 @@ def test_a_format_error_of_the_local_file_names_the_file(store: VaultStore) -> N
         store.load()
     assert store.local_path.name in str(raised.value)
     assert isinstance(raised.value.__cause__, VaultFormatError)     # причина сохранена через from
-    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.UNSUPPORTED_VERSION, VaultSource.LOCAL)
+    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.UNSUPPORTED_VERSION, VaultOrigin.OWN)
     assert raised.value.detail == raised.value.__cause__.detail
     assert raised.value.advice == msg.VAULT_FILE_ADVICE_LOCAL
 
@@ -551,7 +554,7 @@ def test_a_format_error_of_the_supplied_file_names_the_file(store: VaultStore) -
     with pytest.raises(VaultFormatError) as raised:
         store.load()
     assert store.supplied_path.name in str(raised.value)
-    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.DAMAGED, VaultSource.SUPPLIED)
+    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.DAMAGED, VaultOrigin.SUPPLIED)
     assert raised.value.advice == msg.VAULT_FILE_ADVICE_SUPPLIED
 
 
@@ -577,7 +580,7 @@ def test_a_local_file_that_is_not_utf8_is_a_format_error(store: VaultStore) -> N
     assert store.local_path.name in str(raised.value)
     assert str(store.local_path.parent) not in str(raised.value)
     assert isinstance(raised.value.__cause__, UnicodeDecodeError)
-    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.NOT_TEXT, VaultSource.LOCAL)
+    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.NOT_TEXT, VaultOrigin.OWN)
 
 
 def test_a_supplied_file_that_is_not_utf8_is_a_format_error(store: VaultStore) -> None:
@@ -597,7 +600,7 @@ def test_a_local_file_that_does_not_open_is_a_format_error_not_absent(store: Vau
     assert store.local_path.name in str(raised.value)
     assert str(store.local_path.parent) not in str(raised.value)
     assert isinstance(raised.value.__cause__, OSError)
-    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.FILE_UNREADABLE, VaultSource.LOCAL)
+    assert (raised.value.reason, raised.value.source) == (VaultFormatReason.FILE_UNREADABLE, VaultOrigin.OWN)
     assert raised.value.detail not in str(raised.value)
 
 
@@ -627,7 +630,7 @@ def test_load_still_refuses_a_broken_local_file(store: VaultStore, broken: str) 
     _break_local(store, broken)
     with pytest.raises(VaultFormatError) as raised:
         store.load()
-    assert raised.value.source is VaultSource.LOCAL and raised.value.is_replaceable
+    assert raised.value.source is VaultOrigin.OWN and raised.value.is_replaceable
 
 
 @pytest.mark.parametrize("broken", ["not_utf8", "not_json", "folder"])
@@ -656,7 +659,7 @@ def test_load_for_setup_logs_the_broken_local_file_without_values(
     lines: list[str] = [record.getMessage() for record in caplog.records]
     broken: list[str] = [line for line in lines if line.startswith("vault_local_broken")]
     assert len(broken) == 1
-    assert "source=local" in broken[0] and f"reason={VaultFormatReason.DAMAGED.value}" in broken[0]
+    assert "source=own" in broken[0] and f"reason={VaultFormatReason.DAMAGED.value}" in broken[0]
     assert any(line.startswith("vault_loaded") and "local=broken" in line for line in lines)
     assert all(value not in line for line in lines for value in SUPPLIED_VALUES.values())
 
@@ -671,7 +674,7 @@ def test_load_for_setup_refuses_a_broken_supplied_file(store: VaultStore) -> Non
     store.supplied_path.write_text("не json", encoding=TEXT_ENCODING)
     with pytest.raises(VaultFormatError) as raised:
         store.load_for_setup()
-    assert raised.value.source is VaultSource.SUPPLIED and not raised.value.is_replaceable
+    assert raised.value.source is VaultOrigin.SUPPLIED and not raised.value.is_replaceable
     assert raised.value.advice == msg.VAULT_FILE_ADVICE_SUPPLIED
 
 
@@ -751,7 +754,7 @@ def test_own_over_supplied_keeps_the_supplied_layer_whole(store: VaultStore) -> 
 def test_the_supplied_layer_is_empty_without_a_program_key(livecraft_paths: LivecraftPaths) -> None:
     opened: VaultStore = VaultStore.open(livecraft_paths)
     livecraft_paths.vault_file.write_text(
-        VaultFile.empty().render(), encoding=TEXT_ENCODING
+        VaultFile.new(salt=VaultCrypto.new().salt, fields={}).render(), encoding=TEXT_ENCODING
     )
     assert opened.load().supplied == Vault.empty()
 
@@ -794,3 +797,55 @@ def test_cannot_save_local_without_dpapi(livecraft_paths: LivecraftPaths) -> Non
         dpapi=Dpapi(),
     )
     assert not no_dpapi.can_save_local
+
+
+# --- сейф для запуска одним значением: прочитан или ошибка файла
+
+
+def test_a_vault_read_is_the_vault_or_the_file_error(store: VaultStore) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    read: VaultRead = VaultRead.of(store)
+    assert read.error is None and read.vault is not None and read.vault.is_ready and read.is_fixable_in_setup
+    store.supplied_path.write_text("не json", encoding=TEXT_ENCODING)
+    broken: VaultRead = VaultRead.of(store)
+    assert broken.vault is None and broken.error is not None and not broken.is_fixable_in_setup
+
+
+def test_a_broken_own_file_is_fixable_in_the_setup_window(store: VaultStore) -> None:
+    """Личный файл окно заменит первым сохранением; файл программы — только установка."""
+    _break_local(store, "not_json")
+    read: VaultRead = VaultRead.of(store)
+    assert read.error is not None and read.error.source is VaultOrigin.OWN and read.is_fixable_in_setup
+
+
+def test_an_unreadable_own_file_is_said_loudly_with_the_current_field_names(store: VaultStore) -> None:
+    """Молча работать на поставке нельзя (§16); поля называются нынешними названиями — без формы ключей."""
+    _write_supplied(store, SUPPLIED_VALUES)
+    store.save_local(_own_vault(OWN_VALUES))
+    data: dict[str, Any] = _local_json(store)
+    data.pop(KEY_WRAPPED)
+    _rewrite_local(store, data)
+    read: VaultRead = VaultRead.of(store)
+    fields: str = msg.LIST_JOINER.join(field.human_label for field in SecretField.current())
+    assert read.is_local_unreadable
+    assert read.load is not None and read.load.warnings == (msg.VAULT_LOCAL_UNREADABLE.format(fields=fields),)
+    assert SecretField.KEY_FORM_URL.human_label not in read.load.warnings[0]
+    assert store.load().warnings == read.load.warnings and VaultRead.of(store).load is not None
+
+
+def test_a_readable_vault_says_nothing_loudly(store: VaultStore) -> None:
+    _write_supplied(store, SUPPLIED_VALUES)
+    assert store.load().warnings == ()
+
+
+def test_the_unreadable_line_names_the_reason_without_values(store: VaultStore, caplog: pytest.LogCaptureFixture) -> None:
+    store.save_local(_own_vault(OWN_VALUES))
+    data: dict[str, Any] = _local_json(store)
+    record: dict[str, Any] = data[KEY_FIELDS][SecretField.SHEETS_ID.value]
+    blob: bytes = base64.b64decode(record[KEY_CIPHERTEXT], validate=True)
+    record[KEY_CIPHERTEXT] = base64.b64encode(bytes([blob[0] ^ 0x01]) + blob[1:]).decode("ascii")
+    _rewrite_local(store, data)
+    with caplog.at_level("INFO", logger="livecraft"):
+        store.load()
+    lines: list[str] = [record.getMessage() for record in caplog.records if record.getMessage().startswith("vault_unreadable")]
+    assert lines == [f"vault_unreadable source=own reason=decrypt field={SecretField.SHEETS_ID.log_label} cause=tag_mismatch"]

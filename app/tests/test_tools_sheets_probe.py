@@ -8,7 +8,7 @@ import pytest
 from app.google.auth import AuthError, AuthErrorReason, GoogleLogin
 from app.paths import ROOT_ENV_VAR, LivecraftPaths
 from app.run.exit_code import ExitCode
-from app.secretsafe.value import SecretField
+from app.secretsafe.field import SecretField
 from app.secretsafe.vault import Vault
 from app.sheets.client import SheetsReader, SheetsReadError, SheetsReadReason
 from app.sheets.plan import SheetPlan

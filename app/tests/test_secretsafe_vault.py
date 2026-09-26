@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.secretsafe.value import SecretField, SecretValue
-from app.secretsafe.vault import Vault, VaultEntry, VaultOrigin
+from app.secretsafe.field import SecretField, VaultOrigin
+from app.secretsafe.value import SecretValue
+from app.secretsafe.vault import Vault, VaultEntry
 from app.ui import messages_ru as msg
 
 VALUES: dict[SecretField, str] = {
@@ -249,3 +250,38 @@ def test_the_log_line_carries_no_value_and_no_russian(full_vault: Vault) -> None
 
 def test_the_log_line_of_an_empty_vault_is_a_dash() -> None:
     assert Vault.empty().log_line == "-"
+
+
+# --- один поиск поля, наложение слоёв и слой одного происхождения
+
+
+def test_an_entry_is_the_secret_with_its_origin() -> None:
+    vault: Vault = _vault(SecretField.SHEETS_ID, origin=VaultOrigin.OWN)
+    assert vault.entry(SecretField.SHEETS_ID) == VaultEntry(secret=_secret(SecretField.SHEETS_ID), origin=VaultOrigin.OWN)
+    assert vault.entry(SecretField.OPENAI_API_KEY) is None
+    assert vault.get(SecretField.SHEETS_ID) == _secret(SecretField.SHEETS_ID)
+    assert vault.origin_of(SecretField.SHEETS_ID) is VaultOrigin.OWN
+
+
+def test_the_own_layer_laid_over_the_supplied_one_wins() -> None:
+    """Правило §7.3 одно: поле своего слоя перекрывает поле поставки, остальные поля поставки остаются."""
+    supplied: Vault = _vault(SecretField.OPENAI_API_KEY, SecretField.SHEETS_ID)
+    own: Vault = _vault(SecretField.SHEETS_ID, SecretField.SHEETS_RANGE, origin=VaultOrigin.OWN)
+    vault: Vault = supplied.overlaid_by(own)
+    assert vault.origin_of(SecretField.OPENAI_API_KEY) is VaultOrigin.SUPPLIED
+    assert vault.origin_of(SecretField.SHEETS_ID) is VaultOrigin.OWN
+    assert vault.origin_of(SecretField.SHEETS_RANGE) is VaultOrigin.OWN
+    assert supplied.origin_of(SecretField.SHEETS_ID) is VaultOrigin.SUPPLIED       # прежний сейф не меняется
+
+
+def test_only_one_origin_is_a_layer() -> None:
+    vault: Vault = _vault(SecretField.OPENAI_API_KEY).overlaid_by(_vault(SecretField.SHEETS_ID, origin=VaultOrigin.OWN))
+    assert tuple(vault.only(VaultOrigin.OWN).entries) == (SecretField.SHEETS_ID,)
+    assert tuple(vault.only(VaultOrigin.SUPPLIED).entries) == (SecretField.OPENAI_API_KEY,)
+
+
+def test_missing_of_names_the_absent_fields_in_the_given_order() -> None:
+    vault: Vault = _vault(SecretField.SHEETS_ID)
+    wanted: tuple[SecretField, ...] = (SecretField.SHEETS_RANGE, SecretField.SHEETS_ID, SecretField.OPENAI_API_KEY)
+    assert vault.missing_of(wanted) == (SecretField.SHEETS_RANGE, SecretField.OPENAI_API_KEY)
+    assert vault.missing == vault.missing_of(REQUIRED_FIELDS)
