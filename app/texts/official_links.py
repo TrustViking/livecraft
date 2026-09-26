@@ -11,14 +11,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from app.core.sequence import unique_in_order
 from app.core.text_format import PARAGRAPH_BREAK
-from app.core.url_text import SourceUrl, dedupe_nonempty, is_youtube_url
-from app.observability.log_event import LogArea, get_logger
 from app.texts.description_marks import is_official_links_heading
-from app.texts.paragraphs import split_paragraphs
+from app.texts.paragraphs import nonempty_lines, split_paragraphs
+from app.texts.source_link import SourceLink
 from app.texts.tail import is_source_url_line
-
-LOGGER = get_logger(LogArea.TEXTS)
 
 
 def official_link_urls(lines: Sequence[str]) -> tuple[str, ...]:
@@ -30,13 +28,11 @@ def official_link_urls(lines: Sequence[str]) -> tuple[str, ...]:
             continue
         if not is_source_url_line(normalized):
             return ()
-        cleaned: SourceUrl = SourceUrl.of(normalized)
-        if cleaned.youtube_dropped:
-            LOGGER.info("%s", cleaned.log_line)
-        if cleaned.url is None or is_youtube_url(cleaned.url):
+        cleaned: SourceLink = SourceLink.of(normalized)
+        if cleaned.url is None or cleaned.is_youtube:
             continue
         urls.append(cleaned.url)
-    return dedupe_nonempty(urls)
+    return unique_in_order(urls)
 
 
 @dataclass(frozen=True)
@@ -63,7 +59,7 @@ class OfficialLinksBlocks:
                 kept.append(paragraph)
                 continue
             heading_found = True
-            own: tuple[str, ...] = official_link_urls(cls._nonempty_lines(paragraph)[1:])
+            own: tuple[str, ...] = official_link_urls(nonempty_lines(paragraph)[1:])
             if own:
                 urls.extend(own)
                 continue
@@ -77,15 +73,11 @@ class OfficialLinksBlocks:
         return cls(
             cleaned_text=PARAGRAPH_BREAK.join(item for item in kept if item).strip(),
             heading_found=heading_found,
-            source_urls=dedupe_nonempty(urls),
+            source_urls=unique_in_order(urls),
             empty_blocks_suppressed=suppressed,
         )
 
-    @staticmethod
-    def _nonempty_lines(paragraph: str) -> list[str]:
-        return [line for line in (str(item or "").strip() for item in str(paragraph or "").splitlines()) if line]
-
     @classmethod
     def _starts_with_heading(cls, paragraph: str) -> bool:
-        lines: list[str] = cls._nonempty_lines(paragraph)
+        lines: list[str] = nonempty_lines(paragraph)
         return bool(lines) and is_official_links_heading(lines[0])

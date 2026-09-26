@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Final
 
 from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
 from app.texts.analysis_text import AnalysisTextReport
+from app.texts.phrase_lexicon import ServiceHints
 
 if TYPE_CHECKING:
     from app.llm.merges.prompt_texts import MergePromptTexts
@@ -36,7 +37,7 @@ class PreparedSourceDescription:
     service_paragraphs_dropped: int
 
     @classmethod
-    def of(cls, text: str, service_hints: tuple[str, ...]) -> PreparedSourceDescription:
+    def of(cls, text: str, service_hints: ServiceHints) -> PreparedSourceDescription:
         normalized: str = str(text or "").replace("\r\n", NEWLINE).replace("\r", NEWLINE).strip()
         normalized = EXTRA_BREAKS_PATTERN.sub(PARAGRAPH_BREAK, normalized)
         if not normalized:

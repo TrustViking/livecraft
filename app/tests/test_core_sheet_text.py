@@ -8,16 +8,12 @@ import pytest
 from app.core.sheet_text import (
     SHEET_DATE_FORMATS,
     SHEET_TIME_FORMATS,
-    extract_youtube_video_id,
     is_real_local_time,
     normalize_header_name,
-    normalize_youtube_link,
     parse_sheet_datetime,
 )
 
 KYIV: ZoneInfo = ZoneInfo("Europe/Kyiv")
-VIDEO_ID: str = "dQw4w9WgXcQ"
-OTHER_ID: str = "aB3_-xYz012"
 
 
 @pytest.mark.parametrize(
@@ -90,63 +86,6 @@ def test_naive_moment_has_no_local_time_rule() -> None:
 
 
 @pytest.mark.parametrize(
-    "text",
-    [
-        f"https://youtu.be/{VIDEO_ID}",
-        f"youtu.be/{VIDEO_ID}?si=abc",
-        f"https://www.youtube.com/watch?v={VIDEO_ID}",
-        f"https://www.youtube.com/watch?v={VIDEO_ID}&t=42s",
-        f"https://www.youtube.com/watch?feature=share&v={VIDEO_ID}",
-        f"https://www.youtube.com/watch?feature=share&v={VIDEO_ID}&list=PL1",
-        f"https://m.youtube.com/watch?v={VIDEO_ID}",
-        f"https://www.youtube.com/shorts/{VIDEO_ID}",
-        f"https://www.youtube.com/embed/{VIDEO_ID}",
-        f"https://www.youtube.com/live/{VIDEO_ID}?feature=shared",
-        f"HTTPS://WWW.YOUTUBE.COM/watch?v={VIDEO_ID}",
-        VIDEO_ID,
-        f"  {VIDEO_ID}  ",
-        f"Стрим тут: https://youtu.be/{VIDEO_ID} — не пропустите",
-    ],
-)
-def test_every_link_kind_of_the_donor_gives_the_id(text: str) -> None:
-    assert extract_youtube_video_id(text) == VIDEO_ID
-    assert normalize_youtube_link(text) == f"https://youtu.be/{VIDEO_ID}"
-
-
-def test_of_two_links_the_earliest_wins_whatever_its_kind() -> None:
-    first_watch: str = f"https://www.youtube.com/watch?v={VIDEO_ID} и https://youtu.be/{OTHER_ID}"
-    first_short: str = f"https://youtu.be/{OTHER_ID} и https://www.youtube.com/watch?v={VIDEO_ID}"
-    assert extract_youtube_video_id(first_watch) == VIDEO_ID
-    assert extract_youtube_video_id(first_short) == OTHER_ID
-
-
-@pytest.mark.parametrize(
-    "link",
-    [f"https://youtu.be/{VIDEO_ID}", f"https://www.youtube.com/watch?v={VIDEO_ID}", f"https://youtube.com/live/{VIDEO_ID}"],
-)
-def test_a_link_wins_over_an_earlier_bare_id(link: str) -> None:
-    assert extract_youtube_video_id(f"{OTHER_ID} {link}") == VIDEO_ID
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "",
-        "   ",
-        "https://youtu.be/dQw4w9WgXc",
-        "https://youtu.be/short",
-        f"x{VIDEO_ID}x",
-        f"{VIDEO_ID}Q",
-        "https://vimeo.com/123456789",
-        "просто текст без ссылки",
-    ],
-)
-def test_no_id_is_none(text: str) -> None:
-    assert extract_youtube_video_id(text) is None
-    assert normalize_youtube_link(text) is None
-
-
-@pytest.mark.parametrize(
     ("text", "expected"),
     [
         ("Ссылка на видео!", "ссылканавидео"),
@@ -158,4 +97,13 @@ def test_no_id_is_none(text: str) -> None:
     ],
 )
 def test_header_name_keeps_only_letters_and_digits(text: str, expected: str) -> None:
+    assert normalize_header_name(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("Відео", "відео"), ("Посилання ї є ґ", "посиланняїєґ"), ("Врёмя", "время"), ("ЁЛКА", "елка")],
+)
+def test_header_name_folds_yo_and_keeps_ukrainian_letters(text: str, expected: str) -> None:
+    """«ё» сравнивается как «е»; украинские і ї є ґ — буквы имени, а не мусор."""
     assert normalize_header_name(text) == expected

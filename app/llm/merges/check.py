@@ -20,12 +20,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
 
+from app.core.sequence import unique_in_order
 from app.core.text_format import NEWLINE
 from app.llm.merges.agenda import AgendaLexicon
 from app.llm.merges.description import MergedDescription
 from app.llm.merges.hook import BadHookLexicon
 from app.llm.merges.links import OfficialLinkHints, OfficialLinkSelection
-from app.llm.merges.prompt_texts import SERVICE_HINTS_RESOURCE
 from app.llm.merges.quality import (
     QualityDiagnostics,
     QualityGateStatus,
@@ -50,9 +50,9 @@ from app.llm.merges.rules import (
     STYLE_CONTRACT_VERSION,
 )
 from app.observability.log_event import LogArea, LogValue, get_logger
-from app.resources.loader import TextResource
-from app.texts.description_marks import ALLOWED_BULLET_MARKERS, bullet_marker_for_line, extract_named_entities
+from app.texts.description_marks import ALLOWED_BULLET_MARKERS, BulletLine, extract_named_entities
 from app.texts.paragraphs import normalize_newlines
+from app.texts.phrase_lexicon import ServiceHints
 
 if TYPE_CHECKING:
     from app.sources.language import TextLanguageDetector
@@ -83,7 +83,7 @@ class MergeCheckRules:
     quality: QualityRules
     bad_hooks: BadHookLexicon
     agenda: AgendaLexicon
-    service_hints: tuple[str, ...]
+    service_hints: ServiceHints
     link_hints: OfficialLinkHints
 
     @classmethod
@@ -92,7 +92,7 @@ class MergeCheckRules:
             quality=QualityRules.load(detector),
             bad_hooks=BadHookLexicon.load(),
             agenda=AgendaLexicon.load(),
-            service_hints=TextResource(SERVICE_HINTS_RESOURCE).lines,
+            service_hints=ServiceHints.load(),
             link_hints=OfficialLinkHints.load(),
         )
 
@@ -176,7 +176,7 @@ class MergeDiagnostics:
         """Диагностика описания; имена из источников — по названию и описанию видео до чистки, как у донора."""
         trimmed: MergedDescription = MergedDescription(str(description.text or "").strip())
         markers: list[str] = [
-            marker for marker in map(bullet_marker_for_line, normalize_newlines(trimmed.text).split(NEWLINE)) if marker
+            bullet.marker for bullet in map(BulletLine.of, normalize_newlines(trimmed.text).split(NEWLINE)) if bullet.marker
         ]
         semantic: int = sum(1 for marker in markers if marker in ALLOWED_BULLET_MARKERS)
         source_entities: set[str] = cls._source_entities(request.sources)
@@ -190,7 +190,7 @@ class MergeDiagnostics:
             semantic_bullets_count=semantic,
             bullets_with_emoji_count=semantic,
             bullets_with_plain_marker_count=len(markers) - semantic,
-            bullet_marker_types=tuple(dict.fromkeys(markers)),
+            bullet_marker_types=unique_in_order(markers),
             named_entities_preserved=len(source_entities & answer_entities),
             source_named_entities_total=len(source_entities),
             emoji_count=trimmed.emoji_count,

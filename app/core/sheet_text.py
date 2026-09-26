@@ -1,20 +1,21 @@
-"""Чистые преобразования текста таблицы плана (CLAUDE.md §2, контур A; §5 — `core\\sheet_text.py`).
+"""Чистые преобразования текста таблицы плана: дата и время ряда, имя колонки шапки (CLAUDE.md §2 контур A, §5).
 
-Перенесено из restreamer как есть по поведению: `planning\\sheet_parser.py` (дата и время ряда),
-`google\\sheets_client.py::_normalize_header_name` (имя колонки шапки),
-`ingest\\youtube_metadata.py` (id видео и короткая ссылка). Логирования здесь нет — это чистые функции.
-
-Ни одна функция не знает о рядах, плане и слотах: это разрешённое §0 исключение «чистое преобразование
-без знания о предметных объектах». Правила над рядами живут в `app\\sheets\\`.
+Ни одна функция не знает о рядах, плане и слотах — разрешённое §0 исключение «чистое преобразование без знания
+о предметных объектах». Правила над рядами живут в `app\\sheets\\`; id видео в ячейке ссылки —
+`app\\core\\youtube_video.py::YouTubeVideoId`.
 """
 from __future__ import annotations
 
 import re
 from datetime import datetime, timezone, tzinfo
-from typing import Final
+from enum import Enum
+from typing import ClassVar, Final
 from zoneinfo import ZoneInfo
 
-# Форматы донора, порядок важен: берётся первый подошедший.
+from app.core.alphabet import CYRILLIC_LOWER, LATIN_LOWER, YO_FOLD
+from app.core.dates import require_aware
+
+# Форматы ячеек, порядок важен: берётся первый подошедший.
 SHEET_DATE_FORMATS: Final[tuple[str, ...]] = (
     "%d.%m.%Y",
     "%d.%m.%y",
@@ -32,38 +33,45 @@ SHEET_TIME_FORMATS: Final[tuple[str, ...]] = (
     "%I:%M %p",
     "%I %p",
 )
+# Имя колонки для сравнения: после нижнего регистра и свёртки «ё → е» остаются только буквы обоих алфавитов
+# (украинские і ї є ґ — тоже) и цифры.
+HEADER_JUNK_PATTERN: Final[re.Pattern[str]] = re.compile(f"[^{LATIN_LOWER}{CYRILLIC_LOWER}0-9]+")
 
-HEADER_JUNK_PATTERN: Final[re.Pattern[str]] = re.compile(r"[^a-zа-я0-9]+", flags=re.IGNORECASE)
 
-YOUTUBE_ID_CHARS: Final[str] = r"[A-Za-z0-9_-]"
-YOUTUBE_ID_LENGTH: Final[int] = 11
-_ID: Final[str] = rf"({YOUTUBE_ID_CHARS}{{{YOUTUBE_ID_LENGTH}}})"
-_ID_END: Final[str] = r"(?:[^A-Za-z0-9_-]|$)"
-# Ссылки с контекстом: из всех совпадений берётся самое раннее по позиции id в тексте.
-# У донора `watch\?[^#\s]*?(?:[?&]v=|&v=)` не ловил `watch?v=` первым параметром (`?` уже съеден), и такая
-# ссылка находилась только запасным поиском голого id — проигрывая более поздней `youtu.be`. Здесь исправлено.
-YOUTUBE_LINK_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
-    re.compile(rf"(?:https?://)?(?:www\.)?youtu\.be/{_ID}{_ID_END}", flags=re.IGNORECASE),
-    re.compile(
-        rf"(?:https?://)?(?:www\.)?(?:m\.)?youtube\.com/watch\?(?:[^#\s]*?&)?v={_ID}{_ID_END}",
-        flags=re.IGNORECASE,
-    ),
-    re.compile(
-        rf"(?:https?://)?(?:www\.)?(?:m\.)?youtube\.com/(?:shorts|embed|live)/{_ID}{_ID_END}",
-        flags=re.IGNORECASE,
-    ),
-)
-# Голый id: 11 символов, по краям — не символы id.
-YOUTUBE_BARE_ID_PATTERN: Final[re.Pattern[str]] = re.compile(
-    rf"(?<![A-Za-z0-9_-]){_ID}(?![A-Za-z0-9_-])"
-)
-YOUTUBE_SHORT_LINK_TEMPLATE: Final[str] = "https://youtu.be/{video_id}"
+class SheetCellError(ValueError):
+    """Ячейка даты или времени не подошла ни под один формат. Ряд с ней отсеивается, до человека ошибка не доходит."""
+
+    TEXT: ClassVar[str] = "unsupported {cell} format: {raw!r}"
+
+    def __init__(self, cell: SheetCell, raw: str) -> None:
+        super().__init__(self.TEXT.format(cell=cell.value, raw=raw))
+
+
+class SheetCell(str, Enum):
+    """Ячейка ряда, у которой есть формат: дата или время."""
+
+    DATE = "date"
+    TIME = "time"
+
+    @property
+    def formats(self) -> tuple[str, ...]:
+        return SHEET_DATE_FORMATS if self is SheetCell.DATE else SHEET_TIME_FORMATS
+
+    def parse(self, raw: str) -> datetime:
+        """Значение ячейки (края обрезаются) по первому подошедшему формату; не подошёл ни один — SheetCellError."""
+        text: str = raw.strip()
+        for pattern in self.formats:
+            try:
+                return datetime.strptime(text, pattern)
+            except ValueError:
+                continue
+        raise SheetCellError(self, raw)
 
 
 def parse_sheet_datetime(date_raw: str, time_raw: str, zone: ZoneInfo) -> datetime:
     """Дата и время ряда → момент в зоне `zone`; секунды отбрасываются; негодное — ValueError."""
-    parsed_date: datetime = _parse_first(date_raw.strip(), SHEET_DATE_FORMATS, "date", date_raw)
-    parsed_time: datetime = _parse_first(time_raw.strip(), SHEET_TIME_FORMATS, "time", time_raw)
+    parsed_date: datetime = SheetCell.DATE.parse(date_raw)
+    parsed_time: datetime = SheetCell.TIME.parse(time_raw)
     return datetime(
         year=parsed_date.year,
         month=parsed_date.month,
@@ -74,52 +82,17 @@ def parse_sheet_datetime(date_raw: str, time_raw: str, zone: ZoneInfo) -> dateti
     )
 
 
-def _parse_first(text: str, formats: tuple[str, ...], kind: str, raw: str) -> datetime:
-    for pattern in formats:
-        try:
-            return datetime.strptime(text, pattern)
-        except ValueError:
-            continue
-    raise ValueError(f"unsupported {kind} format: {raw!r}")
-
-
 def is_real_local_time(value: datetime) -> bool:
     """Существует ли такое местное время в зоне момента: в час перехода на летнее время его нет.
 
     Момент переводится в UTC и обратно; если часы и минуты не вернулись — местного времени не было.
-    Повторяющийся час осени существует (берётся первое наступление, fold=0).
+    Повторяющийся час осени существует (берётся первое наступление, fold=0). Момент без пояса — ValueError.
     """
-    zone: tzinfo | None = value.tzinfo
-    if zone is None:
-        raise ValueError("naive datetime has no zone")
+    zone: tzinfo | None = require_aware(value).tzinfo
     back: datetime = value.astimezone(timezone.utc).astimezone(zone)
     return back.replace(tzinfo=None, fold=0) == value.replace(tzinfo=None, fold=0)
 
 
 def normalize_header_name(text: str) -> str:
-    """Имя колонки шапки для сравнения: нижний регистр, только латиница, кириллица и цифры."""
-    return HEADER_JUNK_PATTERN.sub("", text.strip().lower())
-
-
-def extract_youtube_video_id(text: str) -> str | None:
-    """Id видео YouTube из ссылки или текста: сначала ссылки (самая ранняя), затем голый id; нет — None."""
-    cleaned: str = str(text or "").strip()
-    if not cleaned:
-        return None
-    earliest: re.Match[str] | None = None
-    for pattern in YOUTUBE_LINK_PATTERNS:
-        for match in pattern.finditer(cleaned):
-            if earliest is None or match.start(1) < earliest.start(1):
-                earliest = match
-    if earliest is not None:
-        return earliest.group(1)
-    bare: re.Match[str] | None = YOUTUBE_BARE_ID_PATTERN.search(cleaned)
-    return bare.group(1) if bare is not None else None
-
-
-def normalize_youtube_link(text: str) -> str | None:
-    """Ссылка или текст → `https://youtu.be/<id>`; id не найден — None."""
-    video_id: str | None = extract_youtube_video_id(text)
-    if video_id is None:
-        return None
-    return YOUTUBE_SHORT_LINK_TEMPLATE.format(video_id=video_id)
+    """Имя колонки шапки для сравнения: нижний регистр, «ё» как «е», только буквы латиницы и кириллицы и цифры."""
+    return HEADER_JUNK_PATTERN.sub("", text.strip().lower().translate(YO_FOLD))

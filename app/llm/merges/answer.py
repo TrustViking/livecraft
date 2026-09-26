@@ -13,11 +13,11 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Final
 
+from app.core.text_format import WHITESPACE_RUN_PATTERN
 from app.llm.backend import LlmResponse
 from app.llm.json_text import PARSE_CANDIDATE, PARSE_DIRECT, parse_json_tolerant
 from app.llm.merges.description import EMOJI_PATTERN, MergedDescription
@@ -37,7 +37,6 @@ TITLE_MAX_CHARS: Final[int] = 99
 MIN_BODY_PARAGRAPHS: Final[int] = 2
 # Предел тела, начиная с которого ответ ровно на один абзац длиннее отвергается до восстановления.
 SINGLE_STEP_OVERFLOW_MIN_LIMIT: Final[int] = 7
-WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 INVALID_TYPE_DETAIL: Final[str] = "invalid_type:{key}"
 PARAGRAPH_COUNT_DETAIL: Final[str] = "body_paragraphs={count} allowed={low}..{high}"
 TITLE_NOT_TEXT: Final[str] = "not_text"

@@ -1,61 +1,54 @@
-"""Текст видео для определения языка и для промта merge (CLAUDE.md §2: `core\\description_cleaner.py` restreamer).
+"""Текст видео для определения языка и для промта merge (CLAUDE.md §3 шаги 3–5, §14 решение 12).
 
-`clean_text_for_analysis` — правило `clean_description_for_analysis` донора: из каждой строки убираются
-ссылки и хештеги, строки-заголовки вида «🌐 …:» выпадают, пустые абзацы выпадают, а с конца текста
-снимаются короткие служебные абзацы («подпишитесь», «ссылки ниже» — лексикон `merge_service_hints.txt`).
-`AnalysisTextReport` — та же чистка со счётчиками (`_clean_description_for_analysis_report` донора): сколько ссылок
-и хештегов убрано и сколько абзацев выпало; счётчики пишет в лог подготовка описаний источников для промта merge.
-`is_service_tail_paragraph` — правило служебного абзаца, общее для чистки и проверки ответа merge.
-Лексикон приходит аргументом: модуль остаётся чистым преобразованием строки (§0).
+Из каждой строки убираются ссылки и хештеги, строка-заголовок «🌐 …:» выпадает (по ней о языке не судят), пустые
+строки и абзацы выпадают, а с конца текста снимаются служебные абзацы («подпишитесь», «ссылки ниже» —
+`ServiceHints`). `AnalysisTextReport` — очищенный текст и счётчики: сколько ссылок и хештегов убрано и сколько
+абзацев выпало; счётчики пишет в лог подготовка описаний источников для промта merge.
 """
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final
 
-from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
-from app.core.url_text import URL_PATTERN
+from app.core.text_format import NEWLINE, PARAGRAPH_BREAK, REPEATED_SPACE_PATTERN, SPACE
+from app.core.web_link import URL_PATTERN
+from app.texts.description_marks import is_official_links_heading
+from app.texts.hashtags import HASHTAG_PATTERN
+from app.texts.paragraphs import split_paragraphs
+from app.texts.phrase_lexicon import ServiceHints
 
-HASHTAG_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?<!\w)#[^\s#]+", flags=re.UNICODE)
-SEMANTIC_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"[0-9A-Za-zА-Яа-яЁёІіЇїЄєҐґ]{3,}", flags=re.UNICODE)
-HEADING_LINE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\s*🌐\s*[^\s:][^:\n]*:\s*$")
-PARAGRAPH_BREAK_PATTERN: Final[re.Pattern[str]] = re.compile(r"\n\s*\n")
-REPEATED_SPACE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s{2,}")
-ANY_SPACE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
-EDGE_PUNCTUATION: Final[str] = " ,;:-"
-SERVICE_TAIL_MAX_CHARS: Final[int] = 220
-SERVICE_TAIL_MAX_TOKENS: Final[int] = 12
-
-
-def _tidy(text: str) -> str:
-    """Повторные пробелы — в один, края — без пробелов и знаков `,;:-` (как донор после каждой чистки)."""
-    return REPEATED_SPACE_PATTERN.sub(" ", text).strip(EDGE_PUNCTUATION)
-
-
-def _is_heading_line(text: str) -> bool:
-    stripped: str = text.strip()
-    return bool(stripped) and bool(HEADING_LINE_PATTERN.fullmatch(stripped))
-
-
-def is_service_tail_paragraph(paragraph: str, service_hints: tuple[str, ...]) -> bool:
-    """Короткий абзац с подсказкой служебного хвоста или заголовок ссылок; пустой — тоже служебный.
-
-    Правило донора `core\\description_cleaner.py::_looks_like_service_tail_paragraph`: им же чистка снимает хвост
-    текста, а проверка ответа merge узнаёт служебную строку в тезисе и в начале описания.
-    """
-    text: str = ANY_SPACE_PATTERN.sub(" ", paragraph.strip()).lower()
-    if not text or _is_heading_line(text):
-        return True
-    return (
-        len(text) <= SERVICE_TAIL_MAX_CHARS
-        and len(SEMANTIC_TOKEN_PATTERN.findall(text)) <= SERVICE_TAIL_MAX_TOKENS
-        and any(hint in text for hint in service_hints)
-    )
+EDGE_PUNCTUATION: Final[str] = " ,;:-"      # края строки после чистки: пробелы и знаки, оставшиеся от ссылок
 
 
 @dataclass(frozen=True)
-class _CleanedParagraph:
+class CleanedLine:
+    """Строка после чистки: текст без ссылок и хештегов, сколько их убрано и была ли строка заголовком ссылок."""
+
+    text: str
+    urls_removed: int = 0
+    hashtags_removed: int = 0
+    is_heading: bool = False
+
+    @classmethod
+    def of(cls, raw_line: str) -> CleanedLine:
+        """Сначала ссылки (заголовок «🌐 …:» узнаётся по строке без них), затем хештеги; края — после каждой чистки."""
+        without_urls, urls = URL_PATTERN.subn("", raw_line.strip())
+        line: CleanedLine = cls(without_urls, urls, is_heading=is_official_links_heading(without_urls)).tidied
+        without_hashtags, hashtags = HASHTAG_PATTERN.subn("", line.text)
+        return replace(line, text=without_hashtags, hashtags_removed=hashtags).tidied
+
+    @property
+    def tidied(self) -> CleanedLine:
+        """Повторные пробелы — в один, края — без пробелов и знаков `,;:-`."""
+        return replace(self, text=REPEATED_SPACE_PATTERN.sub(SPACE, self.text).strip(EDGE_PUNCTUATION))
+
+    @property
+    def is_kept(self) -> bool:
+        return bool(self.text) and not self.is_heading
+
+
+@dataclass(frozen=True)
+class CleanedParagraph:
     """Абзац после чистки строк и счётчики убранного в нём."""
 
     text: str
@@ -63,20 +56,13 @@ class _CleanedParagraph:
     hashtags_removed: int
 
     @classmethod
-    def of(cls, paragraph: str) -> _CleanedParagraph:
-        """Каждая строка — без ссылок и хештегов; пустая или заголовок «🌐 …:» выпадает."""
-        lines: list[str] = []
-        urls_removed: int = 0
-        hashtags_removed: int = 0
-        for raw_line in paragraph.split(NEWLINE):
-            line, urls = URL_PATTERN.subn("", raw_line.strip())
-            line, hashtags = HASHTAG_PATTERN.subn("", _tidy(line))
-            urls_removed += urls
-            hashtags_removed += hashtags
-            line = _tidy(_tidy(line))
-            if line and not _is_heading_line(line):
-                lines.append(line)
-        return cls(text=NEWLINE.join(lines).strip(), urls_removed=urls_removed, hashtags_removed=hashtags_removed)
+    def of(cls, paragraph: str) -> CleanedParagraph:
+        lines: list[CleanedLine] = [CleanedLine.of(raw_line) for raw_line in paragraph.split(NEWLINE)]
+        return cls(
+            text=NEWLINE.join(line.text for line in lines if line.is_kept).strip(),
+            urls_removed=sum(line.urls_removed for line in lines),
+            hashtags_removed=sum(line.hashtags_removed for line in lines),
+        )
 
 
 @dataclass(frozen=True)
@@ -89,14 +75,11 @@ class AnalysisTextReport:
     service_paragraphs_dropped: int
 
     @classmethod
-    def of(cls, text: str, service_hints: tuple[str, ...]) -> AnalysisTextReport:
-        normalized: str = str(text or "").replace("\r\n", NEWLINE).replace("\r", NEWLINE).strip()
-        cleaned: list[_CleanedParagraph] = [
-            _CleanedParagraph.of(part.strip()) for part in PARAGRAPH_BREAK_PATTERN.split(normalized) if part.strip()
-        ]
+    def of(cls, text: str, hints: ServiceHints) -> AnalysisTextReport:
+        cleaned: list[CleanedParagraph] = [CleanedParagraph.of(paragraph) for paragraph in split_paragraphs(text)]
         paragraphs: list[str] = [paragraph.text for paragraph in cleaned if paragraph.text]
         dropped: int = len(cleaned) - len(paragraphs)
-        while paragraphs and is_service_tail_paragraph(paragraphs[-1], service_hints):
+        while paragraphs and hints.is_tail_paragraph(paragraphs[-1]):
             paragraphs.pop()
             dropped += 1
         return cls(
@@ -105,8 +88,3 @@ class AnalysisTextReport:
             hashtags_removed=sum(paragraph.hashtags_removed for paragraph in cleaned),
             service_paragraphs_dropped=dropped,
         )
-
-
-def clean_text_for_analysis(text: str, service_hints: tuple[str, ...]) -> str:
-    """Текст, по которому судят о языке: без ссылок, хештегов, заголовков ссылок и служебного хвоста."""
-    return AnalysisTextReport.of(text, service_hints).text

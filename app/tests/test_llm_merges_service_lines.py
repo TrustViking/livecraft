@@ -10,6 +10,7 @@ from app.llm.merges.service_lines import (
 )
 from app.resources.loader import TextResource
 from app.sources.language import TextLanguageDetector
+from app.texts.phrase_lexicon import PhraseLexicon, ServiceHints
 
 CATALOG: ServiceLineCatalog = ServiceLineCatalog.load()
 SERVICE: ServiceLanguage = ServiceLanguage.load()
@@ -82,7 +83,7 @@ def test_detect_paragraph_needs_twelve_chars() -> None:
 
 
 def test_langdetect_undecided_is_unknown() -> None:
-    silent: ServiceLanguage = ServiceLanguage.load(TextLanguageDetector(service_hints=(), min_length=10_000))
+    silent: ServiceLanguage = ServiceLanguage.load(TextLanguageDetector(service_hints=ServiceHints(PhraseLexicon(())), min_length=10_000))
     assert silent.detect_service("The government announced a new budget") == "unknown"
 
 

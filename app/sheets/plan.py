@@ -21,23 +21,19 @@ from typing import Final
 from zoneinfo import ZoneInfo
 
 from app.core.dates import require_aware
-from app.core.sheet_text import (
-    is_real_local_time,
-    normalize_header_name,
-    normalize_youtube_link,
-    parse_sheet_datetime,
-)
+from app.core.sheet_text import is_real_local_time, normalize_header_name, parse_sheet_datetime
+from app.core.youtube_video import YouTubeVideoId
 from app.observability.log_event import LogArea, get_logger
+from app.resources.loader import TextResource
 from app.sheets.rows import PlanRow, RowSkipReason
 from app.ui import messages_ru as msg
 
 LOGGER = get_logger(LogArea.SHEETS)
 
-# Псевдонимы колонок шапки (донор): сначала точное совпадение имени, затем вхождение псевдонима в имя.
-# У ссылки донор знал только латиницу; «ссылка» и «видео» добавлены по образцу «дата» и «время».
-LINK_ALIASES: Final[tuple[str, ...]] = ("links", "link", "url", "video", "youtube", "ссылка", "видео")
-DATE_ALIASES: Final[tuple[str, ...]] = ("date", "дата", "day")
-TIME_ALIASES: Final[tuple[str, ...]] = ("time", "время", "hour")
+# Названия колонок шапки — ресурсы: сначала точное совпадение имени, затем вхождение названия в имя.
+LINK_ALIASES_RESOURCE: Final[str] = "sheet_header_link.txt"
+DATE_ALIASES_RESOURCE: Final[str] = "sheet_header_date.txt"
+TIME_ALIASES_RESOURCE: Final[str] = "sheet_header_time.txt"
 FIRST_DATA_ROW_NUMBER: Final[int] = 2        # строка 1 таблицы — шапка
 HEADER_ITEM_TEMPLATE: Final[str] = "«{name}»"
 SUMMARY_COUNT_TEMPLATE: Final[str] = " {reason}={count}"
@@ -70,10 +66,27 @@ class SheetRow:
             return PlanRow.skipped(self, RowSkipReason.NONEXISTENT_TIME)
         if start < now:
             return PlanRow.skipped(self, RowSkipReason.IN_PAST, start)
-        link: str | None = normalize_youtube_link(self.link)
-        if link is None:
+        video: YouTubeVideoId | None = YouTubeVideoId.of(self.link)
+        if video is None:
             return PlanRow.skipped(self, RowSkipReason.BAD_LINK, start)
-        return PlanRow.admitted(self, start, link)
+        return PlanRow.admitted(self, start, video.short_url)
+
+
+@dataclass(frozen=True)
+class HeaderAliases:
+    """Названия колонок шапки, по которым план узнаёт колонки ссылки, даты и времени."""
+
+    link: tuple[str, ...]
+    date: tuple[str, ...]
+    time: tuple[str, ...]
+
+    @classmethod
+    def load(cls) -> HeaderAliases:
+        return cls(
+            link=TextResource(LINK_ALIASES_RESOURCE).lines,
+            date=TextResource(DATE_ALIASES_RESOURCE).lines,
+            time=TextResource(TIME_ALIASES_RESOURCE).lines,
+        )
 
 
 @dataclass(frozen=True)
@@ -88,9 +101,10 @@ class SheetColumns:
     def from_header(cls, header: list[str]) -> SheetColumns | None:
         """Колонки по шапке; не нашлась хотя бы одна — None."""
         names: list[str] = [normalize_header_name(str(cell)) for cell in header]
-        link: int | None = cls._find(names, LINK_ALIASES)
-        date: int | None = cls._find(names, DATE_ALIASES)
-        time: int | None = cls._find(names, TIME_ALIASES)
+        aliases: HeaderAliases = HeaderAliases.load()
+        link: int | None = cls._find(names, aliases.link)
+        date: int | None = cls._find(names, aliases.date)
+        time: int | None = cls._find(names, aliases.time)
         if link is None or date is None or time is None:
             return None
         return cls(link=link, date=date, time=time)

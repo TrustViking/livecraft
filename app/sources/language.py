@@ -22,14 +22,14 @@ from typing import Final
 from langdetect import DetectorFactory, detect
 from langdetect.lang_detect_exception import LangDetectException
 
+from app.core.sequence import unique_in_order
 from app.observability.log_event import LogArea, LogValue, get_logger
-from app.resources.loader import TextResource
 from app.sources.metadata import SourceMetadata
-from app.texts.analysis_text import clean_text_for_analysis
+from app.texts.analysis_text import AnalysisTextReport
+from app.texts.phrase_lexicon import ServiceHints
 
 LOGGER = get_logger(LogArea.SOURCES)
 
-SERVICE_HINTS_RESOURCE: Final[str] = "merge_service_hints.txt"
 DETECTOR_SEED: Final[int] = 0              # langdetect без сида отвечает по-разному на один текст
 MIN_DETECT_LENGTH: Final[int] = 20         # короче — langdetect гадает (порог донора)
 CONSENSUS_VOTES: Final[int] = 3
@@ -91,7 +91,7 @@ class LanguageSignal(str, Enum):
 class TextLanguageDetector:
     """langdetect по тексту видео: сначала чистка, короткий текст — без ответа."""
 
-    service_hints: tuple[str, ...]
+    service_hints: ServiceHints
     min_length: int = MIN_DETECT_LENGTH
 
     def __post_init__(self) -> None:
@@ -99,11 +99,11 @@ class TextLanguageDetector:
 
     @classmethod
     def from_resources(cls) -> TextLanguageDetector:
-        return cls(service_hints=TextResource(SERVICE_HINTS_RESOURCE).lines)
+        return cls(service_hints=ServiceHints.load())
 
     def detect(self, text: str) -> str | None:
         """Код языка текста; текст после чистки короче `min_length` или langdetect не решил — None."""
-        cleaned: str = clean_text_for_analysis(text, self.service_hints)
+        cleaned: str = AnalysisTextReport.of(text, self.service_hints).text
         if len(cleaned) < self.min_length:
             return None
         try:
@@ -147,12 +147,7 @@ class LanguageProfile:
     @staticmethod
     def _unique(raw_values: tuple[str, ...]) -> tuple[str, ...]:
         """Нормализованные коды в порядке первого появления, без повторов и без нераспознанных."""
-        codes: list[str] = []
-        for raw in raw_values:
-            code: str | None = normalize_language(raw)
-            if code is not None and code not in codes:
-                codes.append(code)
-        return tuple(codes)
+        return unique_in_order(code for code in map(normalize_language, raw_values) if code is not None)
 
     @staticmethod
     def _original_caption(raw_keys: tuple[str, ...]) -> str | None:
@@ -170,7 +165,7 @@ class LanguageProfile:
     @property
     def metadata_candidates(self) -> tuple[str, ...]:
         """Языки видео и канала без повторов — для строки лога, как у донора."""
-        return tuple(dict.fromkeys(code for code in (self.video_language, self.channel_language) if code))
+        return unique_in_order(code for code in (self.video_language, self.channel_language) if code)
 
     @property
     def votes(self) -> dict[LanguageSignal, str]:

@@ -12,7 +12,7 @@
 Официальные ссылки описания после санации (задача 3.14) — своё правило донора, похожее, но не то же:
 `publish\\sanitizers\\url_selector.py::AuthoritativeUrlSelector.select_authoritative_non_youtube` и `build_authoritative`
 → `AuthoritativeLinks`. Отличия от отбора выше: свой список подсказок контекста и заголовок «🌐 …:», кандидаты-ссылки самих
-видео, чистка ссылок санации (`SourceUrl`), вид ссылки блока (`normalize_official_link_display`), ссылки хвоста ответа
+видео, чистка ссылок санации (`SourceLink`), вид ссылки блока (`WebLink.official_display`), ссылки хвоста ответа
 без предела после трёх лучших. Рекомендуемые видео (`select_recommended_youtube`) — задача 3.14b; счётчики ссылок YouTube
 в описаниях источников считаются уже здесь (сети они не требуют).
 """
@@ -22,22 +22,9 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
-from urllib.parse import SplitResult, urlsplit
 
-from app.core.sheet_text import normalize_youtube_link
 from app.core.text_format import NEWLINE
-from app.core.url_text import (
-    SourceUrl,
-    canonical_link_key,
-    is_complete_source_url,
-    is_youtube_host,
-    is_youtube_url,
-    normalize_link_candidate,
-    normalize_official_link_display,
-    sanitize_url,
-    split_url,
-)
-from app.core.url_text import HTTPS_SCHEME
+from app.core.web_link import URL_PATTERN, WebLink
 from app.llm.merges.rules import (
     OFFICIAL_LINK_CONTEXT_SCORE,
     OFFICIAL_LINK_DOMAIN_SCORE_CAP,
@@ -50,8 +37,10 @@ from app.llm.merges.rules import (
 )
 from app.observability.log_event import LogArea, get_logger
 from app.resources.loader import TextResource
-from app.texts.description_marks import URL_PATTERN, is_official_links_heading
+from app.texts.description_marks import is_official_links_heading
 from app.texts.paragraphs import normalize_newlines
+from app.texts.phrase_lexicon import PhraseLexicon
+from app.texts.source_link import SourceLink
 
 if TYPE_CHECKING:
     from app.sources.video import SourceVideo
@@ -65,18 +54,16 @@ OFFICIAL_LINK_HINTS_RESOURCE: Final[str] = "lexicon_official_link_hints.txt"
 class OfficialLinkHints:
     """Подсказки «это официальная ссылка» в строке описания: подстроки в нижнем регистре."""
 
-    hints: tuple[str, ...]
+    hints: PhraseLexicon
 
     @classmethod
     def load(cls) -> OfficialLinkHints:
-        return cls(hints=TextResource(OFFICIAL_LINK_HINTS_RESOURCE).lines)
+        return cls(hints=PhraseLexicon(TextResource(OFFICIAL_LINK_HINTS_RESOURCE).lines))
 
     def has_context(self, line: str) -> bool:
         """В строке (без краёв, нижний регистр) есть подсказка."""
-        normalized_line: str = str(line or "").strip().lower()
-        if not normalized_line:
-            return False
-        return any(hint in normalized_line for hint in self.hints)
+        normalized_line: str = (line or "").strip().lower()
+        return bool(normalized_line) and self.hints.found_in(normalized_line)
 
 
 @dataclass(frozen=True)
@@ -89,17 +76,31 @@ class OfficialLinkCandidate:
 
     @property
     def domain(self) -> str:
-        return urlsplit(self.url).netloc.lower().strip()
+        return WebLink.of(self.url).host
 
     def score(self, domain_counts: Counter[str], hints: OfficialLinkHints) -> int:
-        parts: SplitResult = urlsplit(self.url)
-        score: int = OFFICIAL_LINK_HTTPS_SCORE if parts.scheme == HTTPS_SCHEME else 0
-        if hints.has_context(self.line):
+        link: WebLink = WebLink.of(self.url)
+        return OfficialLinkScore(link, hints.has_context(self.line), domain_counts.get(self.domain, 1)).value
+
+
+@dataclass(frozen=True)
+class OfficialLinkScore:
+    """Оценка ссылки-кандидата в официальные — одна формула обоих отборов: https, контекст строки, частота домена
+    (с потолком), штраф за query, короткая ссылка — выше."""
+
+    link: WebLink
+    has_context: bool
+    domain_count: int
+
+    @property
+    def value(self) -> int:
+        score: int = OFFICIAL_LINK_HTTPS_SCORE if self.link.is_https else 0
+        if self.has_context:
             score += OFFICIAL_LINK_CONTEXT_SCORE
-        score += min(OFFICIAL_LINK_DOMAIN_SCORE_CAP, domain_counts.get(self.domain, 1) * OFFICIAL_LINK_DOMAIN_SCORE_STEP)
-        if parts.query:
+        score += min(OFFICIAL_LINK_DOMAIN_SCORE_CAP, self.domain_count * OFFICIAL_LINK_DOMAIN_SCORE_STEP)
+        if self.link.has_query:
             score -= OFFICIAL_LINK_QUERY_PENALTY
-        return score + max(0, OFFICIAL_LINK_LENGTH_SCORE - len(self.url) // OFFICIAL_LINK_LENGTH_STEP)
+        return score + max(0, OFFICIAL_LINK_LENGTH_SCORE - len(self.link.text) // OFFICIAL_LINK_LENGTH_STEP)
 
 
 @dataclass(frozen=True)
@@ -123,7 +124,7 @@ class OfficialLinkSelection:
         kept: list[str] = []
         seen_keys: set[str] = set()
         for _, _, url in ranked:
-            key: str = canonical_link_key(url)
+            key: str = WebLink.of(url).key
             if key in seen_keys:
                 continue
             seen_keys.add(key)
@@ -143,8 +144,8 @@ class OfficialLinkSelection:
         for description in descriptions:
             for line in normalize_newlines(description).split(NEWLINE):
                 for match in URL_PATTERN.finditer(line):
-                    url: str | None = normalize_link_candidate(match.group(0))
-                    if url is None or is_youtube_host(urlsplit(url).netloc):
+                    url: str | None = WebLink.of(match.group(0)).candidate
+                    if url is None or WebLink.of(url).is_youtube:
                         continue
                     candidates.append(OfficialLinkCandidate(url=url, line=line, index=len(candidates)))
         return candidates
@@ -158,12 +159,6 @@ MIN_SOURCE_HITS_REPEATED: Final[int] = 2
 URL_SOURCES_MODE: Final[str] = "authoritative_non_youtube_from_inputs_plus_script_selected_recommended_materials"
 
 
-def _url_parts(url: str) -> SplitResult:
-    """Разбор уже очищенной ссылки; негодный адрес (у донора — исключение) — без схемы и хоста."""
-    parts: SplitResult | None = split_url(url)
-    return parts if parts is not None else SplitResult("", "", url, "", "")
-
-
 @dataclass(frozen=True)
 class DescriptionLink:
     """Ссылка из строки описания источника после чистки: ссылка, строка (без краёв), номер источника."""
@@ -174,7 +169,7 @@ class DescriptionLink:
 
     @property
     def is_youtube(self) -> bool:
-        return is_youtube_url(self.url)
+        return WebLink.of(self.url).unwrapped.is_youtube
 
 
 @dataclass(frozen=True)
@@ -191,9 +186,7 @@ class SourceDescriptionLinks:
             for raw_line in normalize_newlines(description).split(NEWLINE):
                 line: str = raw_line.strip()
                 for match in URL_PATTERN.finditer(line):
-                    cleaned: SourceUrl = SourceUrl.of(match.group(0).strip())
-                    if cleaned.youtube_dropped:
-                        LOGGER.info("%s", cleaned.log_line)
+                    cleaned: SourceLink = SourceLink.of(match.group(0).strip())
                     if cleaned.url is not None:
                         links.append(DescriptionLink(url=cleaned.url, line=line, source_index=index))
         return cls(links=tuple(links))
@@ -231,16 +224,12 @@ class AuthoritativeCandidate:
 
     def score(self, domain_counts: Counter[str]) -> int:
         """Оценка донора: https, контекст (заголовок «🌐 …:» или подсказка), частота домена, query, длина."""
-        parts: SplitResult = _url_parts(self.url)
-        score: int = OFFICIAL_LINK_HTTPS_SCORE if parts.scheme == HTTPS_SCHEME else 0
+        link: WebLink = WebLink.of(self.url)
         context: str = str(self.context or "")
-        if is_official_links_heading(context) or any(hint in context.lower() for hint in AUTHORITATIVE_CONTEXT_HINTS):
-            score += OFFICIAL_LINK_CONTEXT_SCORE
-        domain: str = parts.netloc.lower().strip()
-        score += min(OFFICIAL_LINK_DOMAIN_SCORE_CAP, domain_counts.get(domain, 1) * OFFICIAL_LINK_DOMAIN_SCORE_STEP)
-        if parts.query:
-            score -= OFFICIAL_LINK_QUERY_PENALTY
-        return score + max(0, OFFICIAL_LINK_LENGTH_SCORE - len(self.url) // OFFICIAL_LINK_LENGTH_STEP)
+        has_context: bool = is_official_links_heading(context) or any(
+            hint in context.lower() for hint in AUTHORITATIVE_CONTEXT_HINTS
+        )
+        return OfficialLinkScore(link, has_context, domain_counts.get(link.host, 1)).value
 
 
 @dataclass
@@ -253,8 +242,8 @@ class AuthoritativeSelection:
 
     def offer(self, url: str) -> bool:
         """Взять ссылку, если её ключа ещё нет; повтор — посчитать и не брать."""
-        display: str = normalize_official_link_display(url)
-        key: str = canonical_link_key(display)
+        display: str = WebLink.of(url).official_display
+        key: str = WebLink.of(display).key
         if key in self.keys:
             self.duplicates += 1
             return False
@@ -296,7 +285,7 @@ class AuthoritativeLinks:
                 break
         from_sources: int = len(selection.urls)
         tail: list[str] = [url.strip() for url in tail_urls if url.strip()]
-        preserved: list[str] = [url for url in tail if is_complete_source_url(url) and not is_youtube_url(url)]
+        preserved: list[str] = [url for url in tail if WebLink.of(url).is_complete and not WebLink.of(url).unwrapped.is_youtube]
         for url in preserved:
             selection.offer(url)
         links: AuthoritativeLinks = cls(
@@ -306,8 +295,8 @@ class AuthoritativeLinks:
             emitted_source_video_urls=from_sources,
             duplicate_urls_removed=selection.duplicates,
             preserved_tail=len(preserved),
-            ignored_llm_youtube_urls=sum(1 for url in tail_urls if is_youtube_url(url.strip())),
-            malformed_dropped=malformed_tail + sum(1 for url in tail_urls if not is_complete_source_url(url)),
+            ignored_llm_youtube_urls=sum(1 for url in tail_urls if WebLink.of(url).unwrapped.is_youtube),
+            malformed_dropped=malformed_tail + sum(1 for url in tail_urls if not WebLink.of(url).is_complete),
             raw_youtube_urls_found=description_links.raw_youtube_found,
             deduped_youtube_candidates=len(description_links.youtube_sources),
             repeated_youtube_candidates=description_links.repeated_youtube,
@@ -326,11 +315,11 @@ class AuthoritativeLinks:
         ]
         for source in sources:
             video_url: str | None = cls._video_url(source)
-            if not video_url or is_youtube_url(video_url):
+            if not video_url or WebLink.of(video_url).unwrapped.is_youtube:
                 continue
             title: str = source.metadata.title.strip() if source.metadata is not None else ""
             candidates.append(AuthoritativeCandidate(url=video_url, context=title, index=len(candidates)))
-        domain_counts: Counter[str] = Counter(_url_parts(link.url).netloc.lower().strip() for link in links.non_youtube)
+        domain_counts: Counter[str] = Counter(WebLink.of(link.url).host for link in links.non_youtube)
         ranked: list[tuple[int, int, str]] = sorted(
             ((candidate.score(domain_counts), -candidate.index, candidate.url) for candidate in candidates),
             reverse=True,
@@ -343,14 +332,9 @@ class AuthoritativeLinks:
         метаданных, исходная ссылка ряда — первая полная; не YouTube — очищенная, YouTube — короткая ссылка."""
         metadata_url: str = source.metadata.url if source.metadata is not None else ""
         for candidate in (source.row.link or "", metadata_url, source.row.row.link):
-            cleaned: str = str(candidate or "").strip()
-            if not cleaned or not is_complete_source_url(cleaned):
-                continue
-            if not is_youtube_url(cleaned):
-                return sanitize_url(cleaned)
-            youtube: str | None = normalize_youtube_link(cleaned)
-            if youtube is not None:
-                return youtube
+            link: SourceLink = SourceLink.of_video(candidate or "")
+            if link.url is not None:
+                return link.url
         return None
 
     @property

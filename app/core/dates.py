@@ -17,20 +17,11 @@ ISO_TIMESPEC: Final[str] = "seconds"                     # ISO-8601 момент
 SECONDS_PER_MINUTE: Final[int] = 60
 MINUTES_PER_HOUR: Final[int] = 60
 FILE_STAMP_FORMAT: Final[str] = "%d-%m-%Y_%H%M%S"   # имя файла: дата_время_наименование
-SLOT_TIME_FORMAT: Final[str] = "%H%M"
-SLOT_ID_TEMPLATE: Final[str] = "{date}_{time}_{language}"
-
-
-def parse_date(text: str) -> date:
-    return datetime.strptime(text, DATE_FORMAT).date()
+SLOT_TIME_FORMAT: Final[str] = "%H%M"                # время старта в `slot_id` и в имени пакета
 
 
 def format_date(value: date) -> str:
     return value.strftime(DATE_FORMAT)
-
-
-def parse_time(text: str) -> time:
-    return datetime.strptime(text, TIME_FORMAT).time()
 
 
 def format_time(value: time) -> str:
@@ -66,11 +57,3 @@ def parse_iso_start(text: str) -> datetime:
     """`start` слота: ISO-8601 со смещением; без смещения — NaiveMomentError (CLAUDE.md §4)."""
     return require_aware(datetime.fromisoformat(text))
 
-
-def build_slot_id(date_text: str, time_text: str, language: str) -> str:
-    """slot_id = {DD-MM-YYYY}_{HHMM}_{lang} (CLAUDE.md §4); неверные дата или время — ValueError."""
-    return SLOT_ID_TEMPLATE.format(
-        date=format_date(parse_date(date_text)),
-        time=parse_time(time_text).strftime(SLOT_TIME_FORMAT),
-        language=language,
-    )

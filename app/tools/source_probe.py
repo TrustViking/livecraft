@@ -17,7 +17,7 @@ from typing import Final
 
 from app.config.loader import ShippedSettings
 from app.core.dates import MINUTES_PER_HOUR, SECONDS_PER_MINUTE
-from app.core.sheet_text import normalize_youtube_link
+from app.core.youtube_video import YouTubeVideoId
 from app.observability.log_event import LogArea, get_logger
 from app.observability.logging_setup import close_logging, setup_logging
 from app.paths import LivecraftPaths, build_paths, ensure_dirs, resolve_root
@@ -171,19 +171,19 @@ class SourceProbe:
 
         Обложка качается только источнику с решённым языком — так же, как `SourceCatalog` в боевом запуске.
         """
-        link: str | None = normalize_youtube_link(raw)
-        if link is None:
+        video: YouTubeVideoId | None = YouTubeVideoId.of(raw)
+        if video is None:
             LOGGER.warning("source_probe_bad_link raw=%r", raw)
             self.say(msg.SOURCE_PROBE_BAD_LINK.format(raw=raw))
             return None
-        fetched: SourceFetch = self.fetcher.fetch(link)
+        fetched: SourceFetch = self.fetcher.fetch(video.short_url)
         preview: PreviewResult | None = None
         decision: LanguageDecision | None = None
         if fetched.is_ok and fetched.metadata is not None:
             decision = self.resolver.resolve(fetched.metadata)
             if decision.is_resolved:
                 preview = self.downloader.preview(fetched.metadata.thumbnail_url)
-        LOGGER.info("source_probe link=%s %s", link, fetched.log_line)
+        LOGGER.info("source_probe link=%s %s", video.short_url, fetched.log_line)
         report: SourceProbeReport = SourceProbeReport(fetched=fetched, preview=preview, decision=decision)
         for line in report.lines:
             self.say(line)

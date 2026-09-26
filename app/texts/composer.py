@@ -18,7 +18,7 @@ from typing import Final
 
 from app.core.language_code import LanguageCode
 from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
-from app.core.url_text import normalize_official_link_display
+from app.core.web_link import WebLink
 from app.observability.log_event import LogArea, get_logger
 from app.resources.loader import TextResource
 
@@ -125,7 +125,7 @@ class DescriptionParts:
         return PARAGRAPH_BREAK.join(part for part in parts if part).strip()
 
     def _official_block(self, language: str, headings: PublishHeadings) -> str:
-        urls: list[str] = [normalize_official_link_display(url.strip()) for url in self.official_urls if url.strip()]
+        urls: list[str] = [WebLink.of(url).official_display for url in self.official_urls if url.strip()]
         return NEWLINE.join([headings.official_links(language), *urls]).strip()
 
     def _recommended_block(self, language: str, headings: PublishHeadings) -> str:

@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.observability.log_event import LogArea
-from app.sheets.plan import SheetColumns, SheetPlan, SheetRow
+from app.sheets.plan import HeaderAliases, SheetColumns, SheetPlan, SheetRow
 from app.sheets.rows import PlanRow, RowSkipReason
 from app.tests.conftest import SUPPLIED_VALUES
 from app.tests.fixtures.logs import LogCapture
@@ -45,6 +45,20 @@ def test_russian_header_is_recognized() -> None:
     plan: SheetPlan = SheetPlan.from_values([["Ссылка на видео", "Дата", "Время"]])
     assert plan.columns == SheetColumns(link=0, date=1, time=2)
     assert plan.problem is None
+
+
+def test_ukrainian_header_and_yo_are_recognized() -> None:
+    """«ё» в имени колонки сравнивается как «е», украинские буквы сохраняются: «Відео» — колонка ссылки."""
+    plan: SheetPlan = SheetPlan.from_values([["Відео", "Дата", "Врёмя"]])
+    assert plan.columns == SheetColumns(link=0, date=1, time=2)
+    assert plan.problem is None
+
+
+def test_header_aliases_are_the_resource_files() -> None:
+    aliases: HeaderAliases = HeaderAliases.load()
+    assert aliases.link[:3] == ("links", "link", "url") and "відео" in aliases.link and "посилання" in aliases.link
+    assert aliases.date == ("date", "дата", "day")
+    assert aliases.time == ("time", "время", "hour")
 
 
 def test_shuffled_columns_with_extra_ones_are_found() -> None:

@@ -5,15 +5,14 @@
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Final
 
+from app.core.text_format import WHITESPACE_RUN_PATTERN
 from app.resources.loader import TextResource
 from app.texts.paragraphs import normalize_newlines
 
 AGENDA_HEADINGS_RESOURCE: Final[str] = "merge_agenda_headings.txt"
-WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 # Края строки, которые не мешают узнать заголовок: пробел, тире, двоеточие и знаки конца фразы.
 HEADING_EDGE_CHARS: Final[str] = " -\u2013\u2014:;.!?"
 # Заголовок, за которым идёт продолжение строки: двоеточие или тире.

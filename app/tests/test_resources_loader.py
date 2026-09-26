@@ -10,10 +10,17 @@ from app.resources.loader import ResourceBundle, ResourceError, TextResource
 
 REPO_TEXT_DIR: Path = Path(loader.__file__).resolve().parent / "text"
 SERVICE_HINTS: str = "merge_service_hints.txt"
-DONOR_DIGESTS: dict[str, str] = {
+# Стартовые данные (CLAUDE.md §14 решение 23): меняются только задачей продукта с названной причиной — тогда и здесь.
+STARTING_DATA_DIGESTS: dict[str, str] = {
     "canonical_service_lines.json": "b2b5f82762308ad1",
     "lexicon_cta_hints.txt": "60a2f00b77f5b753",
+    "lexicon_cta_prefix_hints.txt": "308a0dec35b909bf",
+    "lexicon_cta_prefixes.txt": "3c847f9aced85bf1",
     "merge_agenda_headings.txt": "e4a480c55af14ffd",
+    "merge_service_hints.txt": "aa638ae8aadbd175",
+    "sheet_header_date.txt": "ff5500f9e955479a",
+    "sheet_header_link.txt": "65ea718ff245bae9",
+    "sheet_header_time.txt": "498d18d524ae7fab",
 }
 
 
@@ -30,7 +37,7 @@ def test_the_process_is_not_frozen_under_the_tests() -> None:
     assert ResourceBundle.of_process() == ResourceBundle(frozen=False, bundle_dir=None)
 
 
-def test_service_hints_are_the_donor_lexicon() -> None:
+def test_service_hints_are_the_starting_lexicon() -> None:
     hints: tuple[str, ...] = TextResource(SERVICE_HINTS).lines
     assert hints[:3] == ("watch", "join", "share")
     assert "подпис" in hints and "залиште" in hints
@@ -66,8 +73,7 @@ def test_body_without_a_source_line_is_the_whole_text(tmp_path: Path) -> None:
     assert TextResource("probe_plain.txt", tmp_path).body == "Ответь {model_name}\n"
 
 
-# --- 3.11b: объект JSON (донор: resource_loader.py::load_json_resource)
-def test_data_reads_the_donor_service_lines() -> None:
+def test_data_reads_the_starting_service_lines() -> None:
     data = TextResource("canonical_service_lines.json").data
     assert list(data) == ["uk", "en", "ru", "other"]
     assert data["ru"]["cta"] == "Смотрите эфир и делитесь мнением."
@@ -90,18 +96,17 @@ def test_data_is_read_once_and_read_only(tmp_path: Path) -> None:
         data["a"] = 3  # type: ignore[index]
 
 
-def test_allowed_latin_tokens_are_the_donor_list() -> None:
-    """Донор: quality_diagnostics.py::_ALLOWED_LATIN_SCRIPT_TOKENS — значения без правки."""
+def test_allowed_latin_tokens_are_the_starting_list() -> None:
+    """Латинские слова, допустимые в тексте кириллицей, — значения без правки; первая строка файла — комментарий."""
     lines: tuple[str, ...] = TextResource("merge_allowed_latin_tokens.txt").lines
     assert lines == ("ai", "api", "docs", "gpt", "google", "nasa", "openai", "telegram", "youtube")
     first_line: str = TextResource("merge_allowed_latin_tokens.txt").path.read_text(encoding="utf-8").splitlines()[0]
-    assert first_line.startswith("#") and "restreamer" in first_line
+    assert first_line.startswith("#")
 
 
-def test_donor_resources_are_copied_byte_for_byte() -> None:
-    """Файлы донора: побайтно, контрольные суммы restreamer 35324e5."""
+def test_starting_data_resources_are_unchanged() -> None:
+    """Стартовые данные лежат побайтно такими, какими их приняли: случайная правка лексикона видна сразу."""
     digests: dict[str, str] = {
-        name: hashlib.sha256(TextResource(name).path.read_bytes()).hexdigest()[:16]
-        for name in ("canonical_service_lines.json", "lexicon_cta_hints.txt", "merge_agenda_headings.txt")
+        name: hashlib.sha256(TextResource(name).path.read_bytes()).hexdigest()[:16] for name in STARTING_DATA_DIGESTS
     }
-    assert digests == DONOR_DIGESTS
+    assert digests == STARTING_DATA_DIGESTS

@@ -10,20 +10,21 @@
 """
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Final
 
+from app.core.alphabet import RUSSIAN_LETTER_PATTERN, UKRAINIAN_LETTER_PATTERN, CoreLanguage
 from app.resources.loader import TextResource
 from app.sources.language import TextLanguageDetector
+from app.texts.hashtags import HASHTAG_AFTER_SPACE_PATTERN
+from app.texts.paragraphs import collapse_spaces
 
 SERVICE_LINES_RESOURCE: Final[str] = "canonical_service_lines.json"
 LANGUAGE_HINTS_RESOURCE: Final[str] = "merge_service_language_hints.json"
 FALLBACK_LANGUAGE: Final[str] = "other"
-CORE_LANGUAGES: Final[frozenset[str]] = frozenset({"uk", "en", "ru"})
 
 # Метки языка, которые не код языка: пустой текст, «прочий язык», langdetect не решил.
 LANGUAGE_NONE: Final[str] = "none"
@@ -35,11 +36,6 @@ UNDECIDED_LANGUAGES: Final[frozenset[str]] = frozenset({LANGUAGE_NONE, LANGUAGE_
 SERVICE_LINE_MAX_CHARS: Final[int] = 140
 PARAGRAPH_MIN_CHARS: Final[int] = 12
 
-WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
-HASHTAG_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?:^|\s)(#[^\s#]+)")
-# Буквы, которые есть только в одном из двух алфавитов: украинские і ї є ґ, русские ы э ъ.
-UKRAINIAN_LETTER_PATTERN: Final[re.Pattern[str]] = re.compile(r"[іїєґ]")
-RUSSIAN_LETTER_PATTERN: Final[re.Pattern[str]] = re.compile(r"[ыэъ]")
 
 HINT_KEYS: Final[tuple[str, ...]] = ("uk_phrases", "ru_phrases", "en_phrases", "uk_words", "ru_words")
 BAD_SERVICE_LINES: Final[str] = "resource {name}: language {language} lacks keys {keys}"
@@ -87,7 +83,7 @@ class ServiceLineCatalog:
 
     def cta_preserving_hashtags(self, text: str, language: str) -> str:
         """Канонический призыв языка, за ним — хештеги прежнего призыва через пробел."""
-        hashtags: list[str] = [match.group(1) for match in HASHTAG_PATTERN.finditer(str(text or ""))]
+        hashtags: list[str] = [match.group(1) for match in HASHTAG_AFTER_SPACE_PATTERN.finditer(text or "")]
         base_text: str = self.line(language, ServiceLineKey.CTA)
         if hashtags:
             return f"{base_text} {' '.join(hashtags)}".strip()
@@ -120,7 +116,7 @@ class ServiceLanguage:
 
     def detect_service(self, text: str) -> str:
         """Язык служебной строки: пусто — `none`; фразы-подсказки uk, ru, en; дальше — правило текста."""
-        normalized: str = WHITESPACE_RUN_PATTERN.sub(" ", str(text or "")).strip().lower()
+        normalized: str = collapse_spaces(text).lower()
         if not normalized:
             return LANGUAGE_NONE
         for language, phrases in (("uk", self.uk_phrases), ("ru", self.ru_phrases), ("en", self.en_phrases)):
@@ -130,7 +126,7 @@ class ServiceLanguage:
 
     def detect_paragraph(self, text: str) -> str:
         """Язык абзаца: короче 12 знаков — `none`; иначе правило текста."""
-        normalized: str = WHITESPACE_RUN_PATTERN.sub(" ", str(text or "")).strip()
+        normalized: str = collapse_spaces(text)
         if len(normalized) < PARAGRAPH_MIN_CHARS:
             return LANGUAGE_NONE
         return self._detect_text(normalized.lower())
@@ -150,10 +146,10 @@ class ServiceLanguage:
     @staticmethod
     def is_wrong(detected: str, expected: str) -> bool:
         """Язык служебной строки явно не тот: определён, язык блока — uk, en или ru, и они различаются."""
-        if detected in UNDECIDED_LANGUAGES or expected not in CORE_LANGUAGES:
+        if detected in UNDECIDED_LANGUAGES or not CoreLanguage.covers(expected):
             return False
         return detected != expected
 
     @staticmethod
     def is_short_service_line(text: str) -> bool:
-        return len(WHITESPACE_RUN_PATTERN.sub(" ", str(text or "")).strip()) <= SERVICE_LINE_MAX_CHARS
+        return len(collapse_spaces(text)) <= SERVICE_LINE_MAX_CHARS

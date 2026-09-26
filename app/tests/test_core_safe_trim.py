@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.core.safe_trim import SafeTrimResult, safe_trim_right
+from app.core.safe_trim import SENTENCE_END_CHARS, SafeTrimResult, TrimBoundary, TrimReason, safe_trim_right
 
 
 def test_text_within_the_limit_is_not_trimmed() -> None:
@@ -63,3 +63,25 @@ def test_cyrillic_words_are_word_characters() -> None:
     result: SafeTrimResult = safe_trim_right("привет большой мир", max_length=12)
     assert (result.text, result.reason) == ("привет", "word_boundary")
 
+
+
+def test_boundaries_are_tried_sentence_then_word_then_symbol() -> None:
+    assert [boundary.reason for boundary in TrimBoundary] == [
+        TrimReason.SENTENCE_BOUNDARY, TrimReason.WORD_BOUNDARY, TrimReason.SYMBOL_BOUNDARY,
+    ]
+    assert [boundary.min_share for boundary in TrimBoundary] == [0.6, 0.5, 0]
+
+
+def test_sentence_end_marks_include_the_ellipsis() -> None:
+    assert SENTENCE_END_CHARS == ".!?…"
+    result: SafeTrimResult = safe_trim_right("Первая часть текста… вторая часть длинная", max_length=25)
+    assert (result.text, result.reason) == ("Первая часть текста…", TrimReason.SENTENCE_BOUNDARY)
+
+
+def test_boundary_earlier_than_its_share_is_not_found() -> None:
+    assert TrimBoundary.SENTENCE.cut("Hi. alpha beta gamma delta", 20) == 0
+    assert TrimBoundary.WORD.cut("Hi. alpha beta gamma delta", 20) == 15
+
+
+def test_reason_is_written_by_its_value() -> None:
+    assert f"{TrimReason.NOT_TRIMMED}" == "not_trimmed"

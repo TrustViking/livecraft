@@ -12,14 +12,11 @@ from app.core.dates import (
     TIME_FORMAT,
     TIMESTAMP_FORMAT,
     NaiveMomentError,
-    build_slot_id,
     format_date,
     format_datetime_text,
     format_time,
     format_timestamp,
-    parse_date,
     parse_iso_start,
-    parse_time,
     require_aware,
 )
 
@@ -35,26 +32,13 @@ def test_formats_are_the_ones_invariant_four_names() -> None:
     assert SLOT_TIME_FORMAT == "%H%M"
 
 
-def test_date_goes_there_and_back() -> None:
-    assert parse_date("16-09-2026") == date(2026, 9, 16)
+def test_date_is_written_day_month_year() -> None:
     assert format_date(date(2026, 9, 16)) == "16-09-2026"
 
 
-@pytest.mark.parametrize("bad", ["2026-09-16", "16.09.2026", "16-9-26", "", "16-13-2026"])
-def test_date_in_another_shape_is_an_error(bad: str) -> None:
-    with pytest.raises(ValueError):
-        parse_date(bad)
-
-
-def test_time_goes_there_and_back() -> None:
-    assert parse_time("19:00") == time(19, 0)
+def test_time_is_written_hours_and_minutes() -> None:
     assert format_time(time(19, 0)) == "19:00"
-
-
-@pytest.mark.parametrize("bad", ["1900", "19-00", "7:00 PM", "25:00", ""])
-def test_time_in_another_shape_is_an_error(bad: str) -> None:
-    with pytest.raises(ValueError):
-        parse_time(bad)
+    assert format_time(time(9, 5)) == "09:05"
 
 
 def test_datetime_text_is_date_and_time() -> None:
@@ -77,24 +61,6 @@ def test_iso_start_without_an_offset_is_an_error(bad: str) -> None:
     """Момент без смещения нельзя сравнить с минутой старта на YouTube — значит это ошибка, а не догадка."""
     with pytest.raises(ValueError):
         parse_iso_start(bad)
-
-
-def test_slot_id_is_date_time_language() -> None:
-    """slot_id = {DD-MM-YYYY}_{HHMM}_{lang} (CLAUDE.md §4)."""
-    assert build_slot_id("16-09-2026", "19:00", "uk") == "16-09-2026_1900_uk"
-
-
-def test_slot_id_normalises_a_single_digit_hour() -> None:
-    assert build_slot_id("01-01-2027", "09:05", "ru") == "01-01-2027_0905_ru"
-
-
-@pytest.mark.parametrize(
-    ("date_text", "time_text"),
-    [("2026-09-16", "19:00"), ("16-09-2026", "1900"), ("", "19:00"), ("16-09-2026", "")],
-)
-def test_slot_id_refuses_a_wrong_date_or_time(date_text: str, time_text: str) -> None:
-    with pytest.raises(ValueError):
-        build_slot_id(date_text, time_text, "uk")
 
 
 def test_file_stamp_is_the_name_of_the_log_and_the_report() -> None:

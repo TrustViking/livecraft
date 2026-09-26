@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.config.loader import FormSettings, LivecraftSettings
-from app.core.dates import build_slot_id, parse_iso_start
+from app.core.dates import parse_iso_start
 from app.observability.log_event import LogArea
 from app.packages import package as package_module
 from app.packages.package import (
@@ -155,7 +155,7 @@ def test_slots_follow_start_then_language_and_pass_the_reader_rules(written: Pac
         "16-10-2026_1900_en", "16-10-2026_1900_uk", "18-10-2026_2000_uk",
     ]
     for slot in slots:
-        assert slot["slot_id"] == build_slot_id(slot["date"], slot["time"], slot["language"])
+        assert slot["slot_id"] == f'{slot["date"]}_{slot["time"].replace(":", "")}_{slot["language"]}'
         assert parse_iso_start(slot["start"]).utcoffset() is not None
         assert slot["title"].strip()
         assert slot["sources"] and all(isinstance(source, str) and source for source in slot["sources"])

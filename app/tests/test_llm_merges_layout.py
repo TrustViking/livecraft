@@ -67,6 +67,13 @@ def test_tail_block_of_paragraph(paragraph: str, block: TailBlock | None) -> Non
     assert TailBlock.of(paragraph) is block
 
 
+def test_links_to_a_youtube_like_site_are_not_a_youtube_block() -> None:
+    """Ссылка YouTube — только хост из списка: «youtu» в имени чужого сайта блок ссылок YouTube не делает."""
+    paragraph: str = "https://youtube-like.example.com/a\nhttps://youtu.example.org/b"
+    assert TailBlock.of(paragraph) is None
+    assert TailBlock.of("https://m.youtube.com/watch?v=b") is TailBlock.YOUTUBE_LINKS
+
+
 # --- донор: test_merge_contract_parser.py::test_body_only_recovery_accepts_near_good_body
 def test_five_body_paragraphs_collapse_to_four() -> None:
     layout: DescriptionLayout = DescriptionLayout.of(

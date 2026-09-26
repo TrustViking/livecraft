@@ -8,21 +8,18 @@
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
 
 from app.core.text_format import NEWLINE, PARAGRAPH_BREAK, SPACE
+from app.core.web_link import URL_LINE_PATTERN, WebLink
 from app.llm.merges.description import MergedDescription
 from app.llm.merges.reject import MergeRejectCode
 from app.observability.log_event import LogValue
-from app.texts.description_marks import URL_LINE_PATTERN, is_official_links_heading
-from app.texts.paragraphs import normalize_multiline_text, split_paragraphs
-
-HASHTAG_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"^#[^\s#]+$")
-SENTENCE_BREAK_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?<=[.!?\u2026])\s+")
-YOUTUBE_MARK: Final[str] = "youtu"
+from app.texts.description_marks import is_official_links_heading
+from app.texts.hashtags import is_hashtags_line
+from app.texts.paragraphs import SENTENCE_BREAK_PATTERN, nonempty_lines, normalize_multiline_text, split_paragraphs
 # Один абзац тела делится, только если в нём не меньше четырёх фраз; левая часть — не меньше двух фраз.
 SPLIT_MIN_SENTENCES: Final[int] = 4
 SPLIT_MIN_LEFT_SENTENCES: Final[int] = 2
@@ -40,7 +37,7 @@ class TailBlock(str, Enum):
     @classmethod
     def of(cls, paragraph: str) -> TailBlock | None:
         """Вид хвостового абзаца; абзац тела — None. Порядок проверки донорский."""
-        if cls._is_hashtags(paragraph):
+        if is_hashtags_line(paragraph):
             return cls.HASHTAGS
         if cls._is_official_links(paragraph):
             return cls.OFFICIAL_LINKS
@@ -48,28 +45,20 @@ class TailBlock(str, Enum):
             return cls.YOUTUBE_LINKS
         return None
 
-    @staticmethod
-    def _lines(paragraph: str) -> list[str]:
-        return [line.strip() for line in str(paragraph or "").split(NEWLINE) if line.strip()]
-
-    @staticmethod
-    def _is_hashtags(paragraph: str) -> bool:
-        tokens: list[str] = [token.strip() for token in str(paragraph or "").split() if token.strip()]
-        return bool(tokens) and all(HASHTAG_TOKEN_PATTERN.fullmatch(token) for token in tokens)
-
     @classmethod
     def _is_official_links(cls, paragraph: str) -> bool:
-        lines: list[str] = cls._lines(paragraph)
+        lines: list[str] = nonempty_lines(paragraph)
         if not lines or not is_official_links_heading(lines[0]):
             return False
         return all(URL_LINE_PATTERN.fullmatch(line) for line in lines[1:])
 
     @classmethod
     def _is_youtube_links(cls, paragraph: str) -> bool:
-        lines: list[str] = cls._lines(paragraph)
+        """Все строки абзаца — ссылки на YouTube: хост из списка, а не похожее имя сайта."""
+        lines: list[str] = nonempty_lines(paragraph)
         if not lines:
             return False
-        return all(URL_LINE_PATTERN.fullmatch(line) and YOUTUBE_MARK in line.lower() for line in lines)
+        return all(URL_LINE_PATTERN.fullmatch(line) and WebLink.of(line).unwrapped.is_youtube for line in lines)
 
 
 class LayoutRecovery(str, Enum):

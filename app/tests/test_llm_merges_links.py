@@ -27,7 +27,7 @@ def select(*descriptions: str) -> OfficialLinkSelection:
 def test_hints_resource_is_the_donor_file_byte_for_byte() -> None:
     path: pathlib.Path = TextResource(OFFICIAL_LINK_HINTS_RESOURCE).path
     assert hashlib.sha256(path.read_bytes()).hexdigest() == DONOR_HINTS_SHA256
-    assert "official" in HINTS.hints and "сайт" in HINTS.hints
+    assert "official" in HINTS.hints.phrases and "сайт" in HINTS.hints.phrases
 
 
 def test_context_is_a_lowercase_substring_of_the_line() -> None:

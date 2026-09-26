@@ -8,6 +8,7 @@ from app.llm.merges.hook import BAD_HOOK_PATTERNS_RESOURCE, BadHookLexicon
 from app.llm.merges.quality import QualityRequest, QualityRules
 from app.resources.loader import TextResource
 from app.texts.description_marks import CtaLexicon
+from app.texts.phrase_lexicon import ServiceHints
 
 # Список донора `merge_validation_helpers.py::_BAD_HOOK_PATTERNS` (restreamer 35324e5) — в том же порядке.
 DONOR_BAD_HOOK_PATTERNS: tuple[str, ...] = (
@@ -44,7 +45,7 @@ def repaired(text: str) -> str | None:
 
 # --- ресурс признаков негодного первого абзаца
 def test_bad_hook_resource_is_the_donor_list() -> None:
-    assert BadHookLexicon.load().patterns == DONOR_BAD_HOOK_PATTERNS
+    assert BadHookLexicon.load().patterns.phrases == DONOR_BAD_HOOK_PATTERNS
 
 
 def test_bad_hook_resource_starts_with_the_origin_comment() -> None:
@@ -348,7 +349,7 @@ def test_quality_normalized_returns_a_new_description() -> None:
 
 CTA: CtaLexicon = CtaLexicon.load()
 BAD_HOOKS: BadHookLexicon = BadHookLexicon.load()
-SERVICE_HINTS: tuple[str, ...] = TextResource("merge_service_hints.txt").lines
+SERVICE_HINTS: ServiceHints = ServiceHints.load()
 NEUTRAL: str = chr(0x1F539)
 PIN: str = chr(0x1F4CC)
 FIRE: str = chr(0x1F525)

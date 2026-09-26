@@ -14,13 +14,13 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
+from app.core.text_format import WHITESPACE_RUN_PATTERN
 from app.llm.merges import rules
 from app.llm.merges.prompt_texts import MergeContractMode, MergePromptTexts, fill_placeholders
 from app.texts.description_marks import extract_named_entities
 
 __all__ = ["MergeContract", "MergeContractMode", "SourceTextSet"]
 
-WORD_SPLIT_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 NON_WORD_PATTERN: Final[re.Pattern[str]] = re.compile(r"[^\w]")
 MIN_RUN_WORDS: Final[int] = 2
 SPEAKER_ANCHOR_PLACEHOLDER: Final[str] = "{speaker_anchor_line}"
@@ -34,7 +34,7 @@ def capitalized_runs(text: str) -> set[str]:
     """
     runs: set[str] = set()
     current: list[str] = []
-    for word in WORD_SPLIT_PATTERN.split(text):
+    for word in WHITESPACE_RUN_PATTERN.split(text):
         cleaned: str = NON_WORD_PATTERN.sub("", word)
         if cleaned and cleaned[0].isalpha() and cleaned[0].isupper():
             current.append(cleaned)

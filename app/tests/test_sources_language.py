@@ -18,6 +18,7 @@ from app.sources.language import (
     TextLanguageDetector,
     normalize_language,
 )
+from app.texts.phrase_lexicon import PhraseLexicon, ServiceHints
 from app.sources.metadata import SourceMetadata
 from app.tests.fixtures.logs import LogCapture
 
@@ -118,7 +119,7 @@ def test_threshold_is_a_field(detector: TextLanguageDetector) -> None:
 
 def test_langdetect_refusal_is_none() -> None:
     text: str = "12345 67890 12345 67890 12345"             # цифры: langdetect не находит признаков
-    assert TextLanguageDetector(service_hints=()).detect(text) is None
+    assert TextLanguageDetector(service_hints=ServiceHints(PhraseLexicon(()))).detect(text) is None
 
 
 # --- LanguageProfile.of

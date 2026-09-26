@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.core.dates import build_slot_id, parse_iso_start
+from app.core.dates import parse_iso_start
 from app.sheets.plan import SheetPlan, SheetRow
 from app.sheets.rows import PlanRow
 from app.slots.builder import SlotBuild, SlotBuilder, SlotGroup
@@ -249,7 +249,7 @@ def test_record_passes_the_rules_of_the_package_reader() -> None:
     rows: tuple[PlanRow, ...] = plan([link(0), "25.10.2026", "02:30"], [link(1), "29.03.2026", "04:15"])
     for slot in build(sources(rows, {2: "en", 3: "uk"})).slots:
         record: dict[str, object] = slot.to_record(())
-        assert record["slot_id"] == build_slot_id(str(record["date"]), str(record["time"]), str(record["language"]))
+        assert record["slot_id"] == f'{record["date"]}_{str(record["time"]).replace(":", "")}_{record["language"]}'
         assert parse_iso_start(str(record["start"])) == slot.start
         assert datetime.fromisoformat(str(record["start"])) == slot.start
         assert isinstance(record["title"], str) and record["title"]

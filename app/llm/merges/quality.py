@@ -12,15 +12,14 @@
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Final
 
+from app.core.alphabet import CoreLanguage
 from app.llm.merges.blocks import DescriptionBlocks
 from app.llm.merges.rules import ACCENT_MARKER_CAP, COMPACT_BULLET_MAX, COMPACT_MAX_SOURCES
 from app.llm.merges.service_lines import (
-    CORE_LANGUAGES,
     LANGUAGE_NONE,
     LANGUAGE_OTHER,
     ServiceLanguage,
@@ -33,19 +32,15 @@ from app.texts.description_marks import (
     ACCENT_BULLET_MARKERS,
     ALLOWED_BULLET_MARKERS,
     NEUTRAL_BULLET_MARKER,
+    BulletLine,
     CtaLexicon,
-    is_bullet_line,
 )
+from app.texts.paragraphs import collapse_spaces
 
 if TYPE_CHECKING:
     from app.llm.merges.description import MergedDescription
 
 ALLOWED_LATIN_TOKENS_RESOURCE: Final[str] = "merge_allowed_latin_tokens.txt"
-# Простой маркер пункта с пробелами после него («- », «• », «1) », «2. »).
-PLAIN_BULLET_MARKER_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"^\s*(?:[-*\u2022\u25aa\u25e6\u2023\u2013\u2014]|(?:\d+[.)]))\s+", flags=re.UNICODE
-)
-WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 
 
 class QualityReasonCode(str, Enum):
@@ -121,8 +116,8 @@ class BulletNormalization:
         neutral_count: int = 0
         overflow: bool = False
         for index, line in enumerate(theses_lines):
-            if index == 0 and not is_bullet_line(line):
-                lines.append(WHITESPACE_RUN_PATTERN.sub(" ", str(line or "")).strip())
+            if index == 0 and not BulletLine.of(line).is_list_item:
+                lines.append(collapse_spaces(line))
                 continue
             marker, content = cls._split_marker(line)
             if marker not in ALLOWED_BULLET_MARKERS:
@@ -142,14 +137,12 @@ class BulletNormalization:
     @staticmethod
     def _split_marker(line: str) -> tuple[str, str]:
         """Маркер и текст пункта; строка без маркера-эмодзи получает маркер `plain` (дальше он станет 🔹)."""
-        stripped: str = str(line or "").strip()
-        for marker in ALLOWED_BULLET_MARKERS:
-            if stripped.startswith(f"{marker} "):
-                return marker, stripped[len(marker) :].strip()
-        content: str = PLAIN_BULLET_MARKER_PATTERN.sub("", stripped, count=1).strip()
-        if content:
-            return "plain", content
-        return NEUTRAL_BULLET_MARKER, stripped
+        bullet: BulletLine = BulletLine.of(line)
+        if bullet.emoji_marker:
+            return bullet.emoji_marker, bullet.content
+        if bullet.content:
+            return "plain", bullet.content
+        return NEUTRAL_BULLET_MARKER, bullet.text
 
 
 @dataclass(frozen=True)
@@ -164,13 +157,13 @@ class CompactTrim:
 
     @classmethod
     def of(cls, theses_lines: tuple[str, ...], source_count: int) -> CompactTrim:
-        bullet_count: int = sum(1 for line in theses_lines if is_bullet_line(line))
+        bullet_count: int = sum(1 for line in theses_lines if BulletLine.of(line).is_list_item)
         if source_count <= 0 or source_count > COMPACT_MAX_SOURCES or bullet_count <= COMPACT_BULLET_MAX:
             return cls(theses_lines, False, bullet_count, bullet_count, source_count)
         kept_lines: list[str] = []
         kept_bullets: int = 0
         for line in theses_lines:
-            if not is_bullet_line(line):
+            if not BulletLine.of(line).is_list_item:
                 kept_lines.append(line)
             elif kept_bullets < COMPACT_BULLET_MAX:
                 kept_lines.append(line)
@@ -311,7 +304,7 @@ class QualityDiagnostics:
 
 def _core_language_mismatch(detected: str, expected: str) -> bool:
     """Язык тезиса явно не язык блока: определён (в том числе `unknown` — как у донора) и блок uk, en или ru."""
-    if detected in {LANGUAGE_NONE, LANGUAGE_OTHER} or expected not in CORE_LANGUAGES:
+    if detected in {LANGUAGE_NONE, LANGUAGE_OTHER} or not CoreLanguage.covers(expected):
         return False
     return detected != expected
 

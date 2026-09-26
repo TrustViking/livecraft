@@ -13,20 +13,15 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
-from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
-from app.texts.description_marks import (
-    URL_LINE_PATTERN,
-    URL_PATTERN,
-    CtaLexicon,
-    is_bullet_line,
-    is_official_links_heading,
-)
+from app.core.alphabet import CYRILLIC_LETTER_PATTERN, LATIN_LETTER_PATTERN, LETTERS, CoreLanguage
+from app.core.text_format import NEWLINE, PARAGRAPH_BREAK, PARAGRAPH_BREAK_PATTERN
+from app.core.web_link import URL_LINE_PATTERN, URL_PATTERN
+from app.texts.description_marks import BulletLine, CtaLexicon, is_official_links_heading
+from app.texts.hashtags import HASHTAG_AFTER_SPACE_PATTERN
+from app.texts.paragraphs import collapse_spaces, nonempty_lines
 
-PARAGRAPH_BREAK_PATTERN: Final[re.Pattern[str]] = re.compile(r"\n\s*\n")
-WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 URL_PATH_SLASHES: Final[int] = 3                  # «https://site.org/» — у ссылки на корень сайта слэш снимается
 
-SCRIPT_MIX_LANGUAGES: Final[frozenset[str]] = frozenset({"uk", "en", "ru"})
 CYRILLIC_TEXT_LANGUAGES: Final[frozenset[str]] = frozenset({"uk", "ru"})
 SCRIPT_MIX_MAX_SUSPECTS: Final[int] = 5
 # В английском тексте подозрительно слово хотя бы с двумя кириллическими буквами; в тексте кириллицей —
@@ -34,34 +29,21 @@ SCRIPT_MIX_MAX_SUSPECTS: Final[int] = 5
 # с заглавной буквы и не допустимое слово.
 EN_MIN_CYRILLIC_CHARS: Final[int] = 2
 CYRILLIC_TEXT_MIN_LATIN_CHARS: Final[int] = 4
-SCRIPT_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ][A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9'_-]*", flags=re.UNICODE
-)
-CYRILLIC_PATTERN: Final[re.Pattern[str]] = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґ]", re.UNICODE)
-LATIN_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Za-z]", re.UNICODE)
+SCRIPT_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(f"[{LETTERS}][{LETTERS}0-9'_-]*")
 NOT_LATIN_PATTERN: Final[re.Pattern[str]] = re.compile(r"[^A-Za-z]")
 ABBREVIATION_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Z0-9]{2,6}")
 CAPITALIZED_WORD_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Z][a-z]{1,14}")
-HASHTAG_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?:^|\s)(#[^\s#]+)")
 EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b\S+@\S+\.\S+\b", re.IGNORECASE)
 BARE_DOMAIN_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z]{2,}){1,3}\b", flags=re.IGNORECASE
 )
 
 
-def _collapse(text: str) -> str:
-    return WHITESPACE_RUN_PATTERN.sub(" ", text).strip()
-
-
-def _lines(paragraph: str) -> list[str]:
-    return [line.strip() for line in paragraph.split(NEWLINE) if line.strip()]
-
-
 def _script_mix_probe_text(text: str) -> str:
     """Текст без ссылок, почты, хештегов и доменов — в них смесь алфавитов законна."""
     probe: str = URL_PATTERN.sub(" ", str(text or ""))
     probe = EMAIL_PATTERN.sub(" ", probe)
-    probe = HASHTAG_PATTERN.sub(" ", probe)
+    probe = HASHTAG_AFTER_SPACE_PATTERN.sub(" ", probe)
     return BARE_DOMAIN_PATTERN.sub(" ", probe)
 
 
@@ -78,12 +60,12 @@ def _is_suspicious_token(token: str, language: str, allowed_latin_tokens: frozen
     normalized_token: str = str(token or "").strip()
     if not normalized_token:
         return False
-    has_cyrillic: bool = bool(CYRILLIC_PATTERN.search(normalized_token))
-    has_latin: bool = bool(LATIN_PATTERN.search(normalized_token))
+    has_cyrillic: bool = bool(CYRILLIC_LETTER_PATTERN.search(normalized_token))
+    has_latin: bool = bool(LATIN_LETTER_PATTERN.search(normalized_token))
     if has_cyrillic and has_latin:
         return True
     if language == "en":
-        return has_cyrillic and len(CYRILLIC_PATTERN.findall(normalized_token)) >= EN_MIN_CYRILLIC_CHARS
+        return has_cyrillic and len(CYRILLIC_LETTER_PATTERN.findall(normalized_token)) >= EN_MIN_CYRILLIC_CHARS
     if language not in CYRILLIC_TEXT_LANGUAGES or not has_latin:
         return False
     if len(NOT_LATIN_PATTERN.sub("", normalized_token)) < CYRILLIC_TEXT_MIN_LATIN_CHARS:
@@ -117,13 +99,13 @@ class DescriptionBlocks:
         """Текст из блоков: тезис, пункты, заголовок и ссылки, призыв — абзацами через пустую строку."""
         paragraphs: list[str] = []
         if self.hook:
-            paragraphs.append(_collapse(self.hook))
+            paragraphs.append(collapse_spaces(self.hook))
         if self.theses_lines:
             paragraphs.append(NEWLINE.join(line.strip() for line in self.theses_lines if line.strip()).strip())
         if self.links_heading:
             paragraphs.append(NEWLINE.join([self.links_heading.strip(), *self._rendered_urls()]).strip())
         if self.cta:
-            paragraphs.append(_collapse(self.cta))
+            paragraphs.append(collapse_spaces(self.cta))
         return PARAGRAPH_BREAK.join(paragraph for paragraph in paragraphs if paragraph).strip()
 
     def _rendered_urls(self) -> list[str]:
@@ -154,7 +136,7 @@ class DescriptionBlocks:
 
     def script_mix_suspects(self, title: str, language: str, allowed_latin_tokens: frozenset[str]) -> tuple[str, ...]:
         """До пяти слов со смесью алфавитов в названии, тезисе и пунктах (только для uk, en, ru)."""
-        if language not in SCRIPT_MIX_LANGUAGES:
+        if not CoreLanguage.covers(language):
             return ()
         suspects: list[str] = []
         for raw_text in (title, self.hook, *self.theses_lines):
@@ -181,22 +163,22 @@ class _BlocksBuilder:
         self.cta: str = ""
 
     def take(self, paragraph: str, cta: CtaLexicon) -> None:
-        lines: list[str] = _lines(paragraph)
+        lines: list[str] = nonempty_lines(paragraph)
         if not lines:
             return
         if is_official_links_heading(lines[0]):
             self._take_links(lines)
             return
-        if any(is_bullet_line(line) for line in lines):
+        if any(BulletLine.of(line).is_list_item for line in lines):
             self._take_bullets(lines)
             return
         if cta.looks_like_cta_paragraph(paragraph):
-            self.cta = _collapse(paragraph)
+            self.cta = collapse_spaces(paragraph)
             return
         if not self.hook:
             self.hook = " ".join(lines).strip()
         elif not self.cta:
-            self.cta = _collapse(paragraph)
+            self.cta = collapse_spaces(paragraph)
 
     def _take_links(self, lines: list[str]) -> None:
         """Заголовок ссылок, за ним строки-ссылки; прочие строки после ссылок — призыв, если его ещё нет."""
@@ -208,12 +190,12 @@ class _BlocksBuilder:
             else:
                 trailing_after_urls.append(line)
         if trailing_after_urls and not self.cta:
-            self.cta = _collapse(" ".join(trailing_after_urls))
+            self.cta = collapse_spaces(" ".join(trailing_after_urls))
 
     def _take_bullets(self, lines: list[str]) -> None:
-        first_bullet: int = next(index for index, line in enumerate(lines) if is_bullet_line(line))
+        first_bullet: int = next(index for index, line in enumerate(lines) if BulletLine.of(line).is_list_item)
         bullet_end: int = first_bullet
-        while bullet_end < len(lines) and is_bullet_line(lines[bullet_end]):
+        while bullet_end < len(lines) and BulletLine.of(lines[bullet_end]).is_list_item:
             bullet_end += 1
         bullets: list[str] = lines[first_bullet:bullet_end]
         if first_bullet > 0:
@@ -226,7 +208,7 @@ class _BlocksBuilder:
         if is_official_links_heading(trailing_lines[0]):
             self._take_links(trailing_lines)
         elif not self.cta:
-            self.cta = _collapse(" ".join(trailing_lines))
+            self.cta = collapse_spaces(" ".join(trailing_lines))
 
     def _take_lead_in_and_bullets(self, lines: list[str], first_bullet: int, bullets: list[str]) -> None:
         """Строка перед первым пунктом — вводная (если пунктов ещё не было); строки до неё — тезис."""
@@ -243,13 +225,13 @@ class _BlocksBuilder:
         им становится первый абзац."""
         if not self.theses_lines:
             for paragraph in paragraphs[1:2]:
-                lines: list[str] = _lines(paragraph)
+                lines: list[str] = nonempty_lines(paragraph)
                 if lines:
                     self.theses_lines = lines
                     self.lead_in = lines[0]
                     break
         if not self.hook and paragraphs:
-            self.hook = _collapse(paragraphs[0])
+            self.hook = collapse_spaces(paragraphs[0])
         return DescriptionBlocks(
             hook=self.hook,
             lead_in=self.lead_in,

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
+from app.core.sequence import unique_in_order
 from app.core.text_format import NEWLINE
 from app.llm.merges import rules
 from app.llm.merges.prompt_texts import MergePromptTexts
@@ -122,10 +123,6 @@ class RetryFacts:
         return {}
 
 
-def _unique_in_order(signals: Iterable[str]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(signals))
-
-
 @dataclass(frozen=True)
 class RetryProfile:
     """Профиль повтора: режим, сигналы отказа, метки фокуса для лога и строки инструкции модели."""
@@ -178,6 +175,6 @@ class RetryProfile:
     def standard(cls, reject_signals: Iterable[str] = ()) -> RetryProfile:
         """Обычный повтор без инструкции; сигналы — без повторов, пустые после `strip` выпадают (сами не срезаются)."""
         signals: tuple[str, ...] = tuple(
-            signal for signal in _unique_in_order(reject_signals) if str(signal or "").strip()
+            signal for signal in unique_in_order(reject_signals) if str(signal or "").strip()
         )
         return cls(mode=RetryMode.STANDARD, reject_signals=signals, focus_tags=(), reinforcement_lines=())

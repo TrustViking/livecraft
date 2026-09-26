@@ -20,7 +20,7 @@ from types import MappingProxyType
 from typing import Any, Final
 
 from app.resources.loader import TextResource
-from app.sources.language import SERVICE_HINTS_RESOURCE
+from app.texts.phrase_lexicon import ServiceHints
 
 TITLE_DESCRIPTION_RESOURCE: Final[str] = "merge_prompt_title_description.txt"
 STRUCTURAL_RULES_RESOURCE: Final[str] = "merge_prompt_structural_rules.txt"
@@ -67,7 +67,7 @@ class MergePromptTexts:
     cross_domain_policy: str
     speaker_anchor: str
     retry_fallbacks: Mapping[str, tuple[str, ...]]
-    service_hints: tuple[str, ...]
+    service_hints: ServiceHints
 
     @classmethod
     @cache
@@ -84,7 +84,7 @@ class MergePromptTexts:
             cross_domain_policy=cls._resource_text(CROSS_DOMAIN_POLICY_RESOURCE),
             speaker_anchor=cls._resource_text(SPEAKER_ANCHOR_RESOURCE),
             retry_fallbacks=cls._resource_lines(RETRY_FALLBACKS_RESOURCE),
-            service_hints=TextResource(SERVICE_HINTS_RESOURCE).lines,
+            service_hints=ServiceHints.load(),
         )
 
     @staticmethod

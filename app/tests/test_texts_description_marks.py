@@ -2,28 +2,25 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.web_link import URL_LINE_PATTERN
 from app.resources.loader import TextResource
 from app.texts.description_marks import (
     ALLOWED_BULLET_MARKERS,
     CTA_HINTS_RESOURCE,
     CTA_PREFIXES_RESOURCE,
-    URL_LINE_PATTERN,
+    BulletLine,
     CtaLexicon,
-    bullet_marker_for_line,
     extract_named_entities,
-    is_bullet_line,
     is_official_links_heading,
-    starts_with_cta_prefix,
 )
 
-DONOR_CTA_PREFIXES: tuple[str, ...] = (
+CTA_PREFIXES: tuple[str, ...] = (
     "Підпишіть", "Підписуйт", "Слідкуй", "Subscribe", "Watch", "Follow", "Join", "Смотри", "Подпишит", "Следи",
     "Поширюйт", "Поділіться", "Приєднуйт", "Подпишитесь", "Leave a comment", "Write a comment",
     "Напишіть у коментар", "Залиште коментар", "Напишите в комментар", "Оставьте комментар", "Оставляйте комментар",
 )
 
 
-# --- донор: test_heading_resolver.py::test_is_official_links_heading_accepts_multi_language_input
 @pytest.mark.parametrize("value", ["🌐 Hivatalos linkek:", "🌐 Officiële links:", "🌐 公式リンク:", "🌐 Officiel lenker:"])
 def test_official_links_heading_in_any_language(value: str) -> None:
     assert is_official_links_heading(value) is True
@@ -38,8 +35,8 @@ def test_heading_edges_are_ignored() -> None:
     assert is_official_links_heading("   🌐Links:   ") is True
 
 
-def test_cta_lexicon_is_the_donor_file() -> None:
-    assert CtaLexicon.load().prefixes == DONOR_CTA_PREFIXES
+def test_cta_lexicon_is_the_resource_file() -> None:
+    assert CtaLexicon.load().prefixes == CTA_PREFIXES
     assert TextResource(CTA_PREFIXES_RESOURCE).path.is_file()
 
 
@@ -48,14 +45,18 @@ def test_cta_lexicon_is_the_donor_file() -> None:
     [
         ("Підпишіться та напишіть у коментарях", True),
         ("  subscribe to the channel", True),
-        ("Watching the vote is key", True),        # префикс, а не слово: так у донора
+        ("Watching the vote is key", True),        # префикс, а не слово
         ("Сьогодні розбираємо рішення", False),
         ("", False),
     ],
 )
 def test_starts_with_cta_prefix(text: str, expected: bool) -> None:
-    assert starts_with_cta_prefix(text, DONOR_CTA_PREFIXES) is expected
-    assert CtaLexicon(DONOR_CTA_PREFIXES).starts_with_prefix(text) is expected
+    assert CtaLexicon(CTA_PREFIXES).starts_with_prefix(text) is expected
+
+
+def test_blank_prefixes_never_match() -> None:
+    assert CtaLexicon(("", "  ")).starts_with_prefix("anything") is False
+    assert CtaLexicon(("", "watch")).starts_with_prefix("WATCH now") is True
 
 
 def test_markers_and_url_line() -> None:
@@ -64,8 +65,7 @@ def test_markers_and_url_line() -> None:
     assert URL_LINE_PATTERN.fullmatch("https://example.org/a b") is None
 
 
-# --- 3.11b: подсказки призыва (донор: core\cta_detection.py), пункты и имена (merge_text_utils.py)
-DONOR_CTA_HINTS: tuple[str, ...] = (
+CTA_HINTS: tuple[str, ...] = (
     "watch", "learn more", "join", "subscribe", "follow", "read more", "links below", "details below", "дивіться",
     "долуч", "підпис", "узнать больше", "смотрите", "подпис", "подробности", "comment", "leave a comment",
     "write a comment", "коментар", "напишіть у коментар", "залиште коментар", "комментар", "оставьте комментар",
@@ -74,9 +74,14 @@ DONOR_CTA_HINTS: tuple[str, ...] = (
 LEXICON: CtaLexicon = CtaLexicon.load()
 
 
-def test_cta_hints_are_the_donor_file() -> None:
-    assert LEXICON.hints == DONOR_CTA_HINTS
+def test_cta_hints_are_the_resource_file() -> None:
+    assert LEXICON.hints == CTA_HINTS
     assert TextResource(CTA_HINTS_RESOURCE).path.is_file()
+
+
+def test_word_start_hints_are_the_resource_file() -> None:
+    assert LEXICON.prefix_hints == {"долуч", "підпис", "подпис", "коментар", "комментар", "comment"}
+    assert LEXICON.prefix_hints <= set(LEXICON.hints)
 
 
 @pytest.mark.parametrize(
@@ -116,13 +121,13 @@ def test_looks_like_cta_paragraph(text: str, expected: bool) -> None:
 
 
 def test_lexicon_without_hints_only_sees_hashtags() -> None:
-    bare: CtaLexicon = CtaLexicon(DONOR_CTA_PREFIXES)
+    bare: CtaLexicon = CtaLexicon(CTA_PREFIXES)
     assert bare.looks_like_cta_paragraph("Watch the stream") is False
     assert bare.looks_like_cta_paragraph("Watch the stream #tag") is True
 
 
 @pytest.mark.parametrize(
-    ("line", "is_bullet", "marker"),
+    ("line", "is_list_item", "marker"),
     [
         ("🔹 point", True, "🔹"),
         ("  ✅ done", True, "✅"),
@@ -133,14 +138,38 @@ def test_lexicon_without_hints_only_sees_hashtags() -> None:
         ("3. point", True, "3."),
         ("— point", True, "—"),
         ("-point", False, ""),
-        ("🌐 Official links:", False, "🌐"),    # правило донора: заголовок ссылок маркер 🌐 сохраняет
+        ("🌐 Official links:", False, "🌐"),    # заголовок ссылок — не пункт, но маркер 🌐 у него есть
         ("🌐 site.org", True, "🌐"),
         ("", False, ""),
     ],
 )
-def test_bullet_line_and_marker(line: str, is_bullet: bool, marker: str) -> None:
-    assert is_bullet_line(line) is is_bullet
-    assert bullet_marker_for_line(line) == marker
+def test_bullet_line_and_marker(line: str, is_list_item: bool, marker: str) -> None:
+    assert BulletLine.of(line).is_list_item is is_list_item
+    assert BulletLine.of(line).marker == marker
+
+
+def test_links_heading_is_a_bullet_for_sanitation_but_not_for_the_answer_check() -> None:
+    heading: BulletLine = BulletLine.of("🌐 Official links:")
+    assert heading.is_bullet is True
+    assert heading.is_list_item is False
+
+
+@pytest.mark.parametrize(
+    ("line", "content", "has_marker_prefix"),
+    [
+        ("🔹 point", "point", True),
+        ("  📌   pinned ", "pinned", True),
+        ("🔹point", "🔹point", True),                # маркер без пробела — не пункт, но строка начинается маркером
+        ("- dash point", "dash point", False),
+        ("2) numbered", "numbered", False),
+        ("plain text", "plain text", False),
+        ("", "", False),
+    ],
+)
+def test_bullet_content_and_marker_prefix(line: str, content: str, has_marker_prefix: bool) -> None:
+    bullet: BulletLine = BulletLine.of(line)
+    assert bullet.content == content
+    assert bullet.has_marker_prefix is has_marker_prefix
 
 
 def test_named_entities() -> None:

@@ -25,9 +25,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
-from urllib.parse import SplitResult, urlsplit
 
-from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
+from app.core.alphabet import (
+    CYRILLIC_LETTER_PATTERN,
+    LANGUAGE_HOMOGLYPHS,
+    LATIN_LETTER_PATTERN,
+    LETTERS,
+    LOWER_LETTERS,
+    SAFE_HOMOGLYPHS,
+    UPPER_LETTERS,
+)
+from app.core.text_format import NEWLINE, PARAGRAPH_BREAK, REPEATED_SPACE_PATTERN, WHITESPACE_RUN_PATTERN
+from app.core.web_link import URL_PATTERN, WebLink
+from app.core.youtube_video import YouTubeVideoId
 from app.llm.merges.agenda import AgendaLexicon
 from app.llm.merges.blocks import DescriptionBlocks
 from app.llm.merges.quality import (
@@ -40,8 +50,6 @@ from app.llm.merges.quality import (
     QualityRules,
     ServiceLineFix,
 )
-from app.core.sheet_text import normalize_youtube_link
-from app.core.url_text import canonical_link_key, is_youtube_host, normalize_link_candidate, split_url
 from app.llm.merges.rules import (
     ADJACENT_LINE_JACCARD,
     ADJACENT_LINE_MIN_CHARS,
@@ -56,21 +64,14 @@ from app.llm.merges.rules import (
     PARAGRAPH_PREFIX_RATIO,
 )
 from app.observability.log_event import LogArea, LogValue, get_logger
-from app.texts.analysis_text import is_service_tail_paragraph
-from app.texts.description_marks import (
-    ALLOWED_BULLET_MARKERS,
-    BULLET_PREFIXES,
-    SEMANTIC_TOKEN_PATTERN,
-    URL_PATTERN,
-    CtaLexicon,
-    bullet_marker_for_line,
-)
+from app.texts.description_marks import ALLOWED_BULLET_MARKERS, BULLET_PREFIXES, BulletLine, CtaLexicon
 from app.texts.paragraphs import has_duplicate_paragraphs, normalize_newlines, split_paragraphs
+from app.texts.similarity import TextPair, WordRule
 
 if TYPE_CHECKING:
     from app.llm.merges.hook import BadHookLexicon
+    from app.texts.phrase_lexicon import ServiceHints
 
-WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 META_LINE_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?i)^\s*(?:title|description|sources?)\s*:")
 
 # Эхо тезиса (пороги донора): оба текста не короче 40 знаков; общее начало больше половины; последняя фраза
@@ -87,32 +88,13 @@ FUSED_BULLET_MIN_POSITION: Final[int] = 40
 SENTENCE_ENDINGS: Final[tuple[str, ...]] = (". ", "! ", "? ")
 
 HOMOGLYPH_LANGUAGES: Final[tuple[str, ...]] = ("uk", "ru")
-# Латинские буквы, у которых в обычных шрифтах есть неотличимый кириллический двойник. Остальные латинские буквы
-# (b, d, f, g, …) двойника не имеют: слово с такой буквой — настоящая смесь алфавитов, её не трогаем.
-SAFE_HOMOGLYPHS: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "a": "а", "c": "с", "e": "е", "k": "к", "o": "о", "p": "р", "x": "х", "y": "у",
-        "A": "А", "B": "В", "C": "С", "E": "Е", "H": "Н", "K": "К", "M": "М", "O": "О", "P": "Р", "T": "Т",
-        "X": "Х", "Y": "У",
-    }
-)
-# Латинская «i»: в украинском — «і», в русском — «и».
-LANGUAGE_HOMOGLYPHS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
-    {
-        "uk": MappingProxyType({"i": "і", "I": "І"}),
-        "ru": MappingProxyType({"i": "и", "I": "И"}),
-    }
-)
-CYRILLIC_CHAR_PATTERN: Final[re.Pattern[str]] = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґ]")
-LATIN_CHAR_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Za-z]")
 # Слово — буквы латиницы и кириллицы с апострофами (ʼ и '); цифры, знаки и пробелы — границы слова.
-WORD_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile("[A-Za-zА-Яа-яЁёІіЇїЄєҐґ\u02bc']+")
+WORD_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(f"[{LETTERS}\u02bc']+")
 
 LOGGER: logging.Logger = get_logger(LogArea.LLM)
 # Имя собственное для перегруженного пункта: от двух до четырёх слов подряд с заглавной буквы.
-PROPER_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"\b[A-ZА-ЯЁІЇЄҐ][a-zа-яёіїєґ'`-]{1,25}(?:\s+[A-ZА-ЯЁІЇЄҐ][a-zа-яёіїєґ'`-]{1,25}){1,3}\b", re.UNICODE
-)
+PROPER_NAME_WORD: Final[str] = f"[{UPPER_LETTERS}][{LOWER_LETTERS}'`-]{{1,25}}"
+PROPER_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(rf"\b{PROPER_NAME_WORD}(?:\s+{PROPER_NAME_WORD}){{1,3}}\b")
 # Выгрузка по источникам: строки «Source 1:», «Video 2)» — хотя бы две; или в тексте есть «source 1» и «source 2».
 SOURCE_LINE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\s*(?:source|video)\s*\d+[:.)-]?", flags=re.IGNORECASE)
 SOURCE_LINE_MIN_HITS: Final[int] = 2
@@ -120,16 +102,6 @@ SOURCE_DUMP_PAIRS: Final[tuple[tuple[str, str], ...]] = (("source 1", "source 2"
 # Эмодзи для счёта и снятия (`merge_validation.py::_count_emoji`, `merge_formatting.py::_EMOJI_PATTERN`).
 EMOJI_PATTERN: Final[re.Pattern[str]] = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", flags=re.UNICODE)
 SPACE_BEFORE_PUNCTUATION_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+([,.;:!?])")
-REPEATED_SPACE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s{2,}")
-
-
-def _line_starts_with_bullet(line_text: str) -> bool:
-    stripped_line: str = line_text.strip()
-    return any(stripped_line.startswith(marker) for marker in ALLOWED_BULLET_MARKERS)
-
-
-def _semantic_token_set(text: str) -> set[str]:
-    return {token.lower() for token in SEMANTIC_TOKEN_PATTERN.findall(str(text or "")) if token.strip()}
 
 
 def _without_emoji_in_line(line: str) -> tuple[str, bool]:
@@ -147,25 +119,6 @@ def _without_emoji_in_line(line: str) -> tuple[str, bool]:
     tail = REPEATED_SPACE_PATTERN.sub(" ", tail).strip()
     sanitized: str = f"{protected_prefix}{tail}".strip()
     return sanitized, sanitized != line.strip()
-
-
-def _jaccard(first: set[str], second: set[str]) -> float | None:
-    union_size: int = len(first | second)
-    if union_size == 0:
-        return None
-    return len(first & second) / union_size
-
-
-def _common_prefix_ratio(first_text: str, second_text: str) -> float:
-    shorter_length: int = min(len(first_text), len(second_text))
-    if shorter_length <= 0:
-        return 0.0
-    common_prefix_length: int = 0
-    for first_char, second_char in zip(first_text, second_text):
-        if first_char != second_char:
-            break
-        common_prefix_length += 1
-    return common_prefix_length / shorter_length
 
 
 @dataclass(frozen=True)
@@ -187,7 +140,7 @@ class HookParagraph:
 
     def _split_multiline(self, hook_lines: list[str]) -> tuple[str, str | None]:
         for line_index in range(1, len(hook_lines)):
-            if _line_starts_with_bullet(hook_lines[line_index]):
+            if BulletLine.of(hook_lines[line_index]).has_marker_prefix:
                 return NEWLINE.join(hook_lines[:line_index]).strip(), hook_lines[line_index].strip()
         return self.text, None
 
@@ -202,7 +155,7 @@ class HookParagraph:
         if cut_position is None:
             return self.text, None
         extracted_bullet: str = single_line[bullet_position:].strip()
-        if not _line_starts_with_bullet(extracted_bullet):
+        if not BulletLine.of(extracted_bullet).has_marker_prefix:
             return self.text, None
         return single_line[:cut_position].strip(), extracted_bullet
 
@@ -242,8 +195,8 @@ class HomoglyphMap:
         Чинится только настоящая смесь, где кириллицы больше, чем латиницы, и у каждой латинской буквы есть
         двойник.
         """
-        cyrillic_chars: list[str] = CYRILLIC_CHAR_PATTERN.findall(token)
-        latin_chars: list[str] = LATIN_CHAR_PATTERN.findall(token)
+        cyrillic_chars: list[str] = CYRILLIC_LETTER_PATTERN.findall(token)
+        latin_chars: list[str] = LATIN_LETTER_PATTERN.findall(token)
         if not cyrillic_chars or not latin_chars:
             return None
         if len(cyrillic_chars) <= len(latin_chars):
@@ -299,26 +252,25 @@ class MergedDescription:
         body_opener_line: str = paragraphs[1].split(NEWLINE)[0].strip()
         if len(hook_text) < ECHO_MIN_CHARS or len(body_opener_line) < ECHO_MIN_CHARS:
             return False
-        if _common_prefix_ratio(hook_text, body_opener_line) > ECHO_PREFIX_RATIO:
+        pair: TextPair = TextPair(hook_text, body_opener_line)
+        if pair.prefix_ratio > ECHO_PREFIX_RATIO:
             return True
-        hook_tokens: set[str] = _semantic_token_set(hook_text)
-        body_tokens: set[str] = _semantic_token_set(body_opener_line)
-        similarity: float | None = _jaccard(hook_tokens, body_tokens)
+        similarity: float | None = pair.jaccard
         if similarity is None:
             return False
-        if self._last_hook_sentence_echoes(hook_text, body_opener_line, body_tokens):
+        if self._last_hook_sentence_echoes(hook_text, body_opener_line):
             return True
         return similarity >= ECHO_JACCARD
 
     @staticmethod
-    def _last_hook_sentence_echoes(hook_text: str, body_opener_line: str, body_tokens: set[str]) -> bool:
+    def _last_hook_sentence_echoes(hook_text: str, body_opener_line: str) -> bool:
         sentences: list[str] = [part.strip() for part in HOOK_SENTENCE_PATTERN.split(hook_text) if part.strip()]
         if not sentences:
             return False
         last_sentence: str = sentences[-1]
         if len(last_sentence) < ECHO_SENTENCE_MIN_CHARS or len(body_opener_line) < ECHO_SENTENCE_MIN_CHARS:
             return False
-        similarity: float | None = _jaccard(_semantic_token_set(last_sentence), body_tokens)
+        similarity: float | None = TextPair(last_sentence, body_opener_line).jaccard
         return similarity is not None and similarity >= ECHO_SENTENCE_JACCARD
 
     def hook_echo_repaired(self) -> MergedDescription | None:
@@ -342,12 +294,12 @@ class MergedDescription:
     def _without_echo_prefix(hook: str, echo: str, remaining: list[str]) -> MergedDescription | None:
         echo_lines: list[str] = echo.split(NEWLINE)
         first_bullet_index: int | None = next(
-            (index for index, line in enumerate(echo_lines) if _line_starts_with_bullet(line)), None
+            (index for index, line in enumerate(echo_lines) if BulletLine.of(line).has_marker_prefix), None
         )
         if first_bullet_index is not None:
             trimmed_echo: str = NEWLINE.join(echo_lines[first_bullet_index:])
             return MergedDescription(PARAGRAPH_BREAK.join([hook, trimmed_echo, *remaining]))
-        if not remaining or not _line_starts_with_bullet(remaining[0]):
+        if not remaining or not BulletLine.of(remaining[0]).has_marker_prefix:
             return None
         return MergedDescription(PARAGRAPH_BREAK.join([hook, *remaining]))
 
@@ -359,7 +311,7 @@ class MergedDescription:
         clean_hook, extracted_bullet = HookParagraph(paragraphs[0]).split_trailing_bullet()
         if extracted_bullet is None:
             return None
-        body_bullets: list[str] = [line.strip() for line in body_block.split(NEWLINE) if _line_starts_with_bullet(line)]
+        body_bullets: list[str] = [line.strip() for line in body_block.split(NEWLINE) if BulletLine.of(line).has_marker_prefix]
         is_same_bullet: bool = bool(body_bullets) and (
             WHITESPACE_RUN_PATTERN.sub(" ", body_bullets[0])
             == WHITESPACE_RUN_PATTERN.sub(" ", extracted_bullet.strip())
@@ -468,10 +420,10 @@ class MergedDescription:
         """Разных ссылок (не YouTube) в тексте — по ключу повтора после снятия меток слежения."""
         keys: set[str] = set()
         for match in URL_PATTERN.finditer(str(self.text or "")):
-            url: str | None = normalize_link_candidate(match.group(0))
-            if url is None or is_youtube_host(urlsplit(url).netloc):
+            url: str | None = WebLink.of(match.group(0)).candidate
+            if url is None or WebLink.of(url).is_youtube:
                 continue
-            keys.add(canonical_link_key(url))
+            keys.add(WebLink.of(url).key)
         return len(keys)
 
     @property
@@ -480,12 +432,11 @@ class MergedDescription:
         links: set[str] = set()
         for match in URL_PATTERN.finditer(str(self.text or "")):
             raw_url: str = match.group(0).strip()
-            parts: SplitResult | None = split_url(raw_url)
-            if parts is None or not is_youtube_host(parts.netloc):
+            if not WebLink.of(raw_url).is_youtube:
                 continue
-            link: str | None = normalize_youtube_link(raw_url)
-            if link is not None:
-                links.add(link)
+            video: YouTubeVideoId | None = YouTubeVideoId.of(raw_url)
+            if video is not None:
+                links.add(video.short_url)
         return len(links)
 
     @property
@@ -522,11 +473,11 @@ class MergedDescription:
             for second in paragraphs[first_index + 1 :]:
                 if min(len(first), len(second)) < PARAGRAPH_PREFIX_MIN_CHARS:
                     continue
-                if _common_prefix_ratio(first, second) > PARAGRAPH_PREFIX_RATIO:
+                if TextPair(first, second).prefix_ratio > PARAGRAPH_PREFIX_RATIO:
                     return True
         return False
 
-    def cta_in_opening_lines(self, cta: CtaLexicon, bad_hooks: BadHookLexicon, service_hints: tuple[str, ...]) -> bool:
+    def cta_in_opening_lines(self, cta: CtaLexicon, bad_hooks: BadHookLexicon, service_hints: ServiceHints) -> bool:
         """В окне первых трёх строк первых двух абзацев призыв (или негодный тезис) стоит раньше тезиса и пунктов.
 
         Тезис или пункт — первая строка окна, которая не призыв, не негодный тезис и не служебная строка; строка
@@ -542,11 +493,11 @@ class MergedDescription:
             (
                 index
                 for index, line in enumerate(window)
-                if bullet_marker_for_line(line)
+                if BulletLine.of(line).marker
                 or not (
                     cta.starts_with_prefix(line)
                     or bad_hooks.matches(line)
-                    or is_service_tail_paragraph(line, service_hints)
+                    or service_hints.is_tail_paragraph(line)
                 )
             ),
             None,
@@ -562,13 +513,13 @@ class MergedDescription:
         ]
         return lines[:OPENING_LINES]
 
-    def cta_in_hook(self, bad_hooks: BadHookLexicon, service_hints: tuple[str, ...]) -> bool:
+    def cta_in_hook(self, bad_hooks: BadHookLexicon, service_hints: ServiceHints) -> bool:
         """Первый абзац — служебная строка (призыв, заголовок ссылок) или негодный тезис."""
         paragraphs: list[str] = self.paragraphs
         if not paragraphs:
             return False
         first: str = paragraphs[0]
-        return is_service_tail_paragraph(first, service_hints) or bad_hooks.matches(first)
+        return service_hints.is_tail_paragraph(first) or bad_hooks.matches(first)
 
 
 def _lines_repeat(current: str, following: str) -> bool:
@@ -577,11 +528,12 @@ def _lines_repeat(current: str, following: str) -> bool:
         return False
     if min(len(current), len(following)) < ADJACENT_LINE_MIN_CHARS:
         return False
-    if _common_prefix_ratio(current, following) > ADJACENT_LINE_PREFIX_RATIO:
+    pair: TextPair = TextPair(current, following)
+    if pair.prefix_ratio > ADJACENT_LINE_PREFIX_RATIO:
         return True
-    current_tokens: list[str] = [token.lower() for token in SEMANTIC_TOKEN_PATTERN.findall(current)]
-    following_tokens: list[str] = [token.lower() for token in SEMANTIC_TOKEN_PATTERN.findall(following)]
+    current_tokens: list[str] = WordRule.SEMANTIC.words(current)
+    following_tokens: list[str] = WordRule.SEMANTIC.words(following)
     if len(current_tokens) < ADJACENT_LINE_MIN_TOKENS or len(following_tokens) < ADJACENT_LINE_MIN_TOKENS:
         return False
-    similarity: float | None = _jaccard(set(current_tokens), set(following_tokens))
+    similarity: float | None = pair.jaccard
     return similarity is not None and similarity >= ADJACENT_LINE_JACCARD

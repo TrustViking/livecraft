@@ -1,7 +1,7 @@
 """Слот эфира — единственный объект, пересекающий границу контуров (CLAUDE.md §4).
 
 `SlotKey` — чем слот отличается от другого: момент старта в зоне программы и язык; отсюда `slot_id`
-`{DD-MM-YYYY}_{HHMM}_{язык}` (restreamer `planned_video_slot_key`) и порядок слотов (`language_sort_key`).
+`{DD-MM-YYYY}_{HHMM}_{язык}` — правило самого ключа — и порядок слотов (`sort_key`).
 `StreamSlot` несёт ровно поля схемы §4 плюс происхождение текстов и сам строит свою запись схемы
 (restreamer `_build_package_slot`), которую читает planers `_ManifestParser._slot`.
 """
@@ -13,8 +13,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar, Final
 from zoneinfo import ZoneInfo
 
-from app.core.dates import ISO_TIMESPEC, build_slot_id, format_date, format_time
-from app.core.sheet_text import extract_youtube_video_id
+from app.core.dates import ISO_TIMESPEC, SLOT_TIME_FORMAT, format_date, format_time
+from app.core.youtube_video import YouTubeVideoId
 from app.slots.texts import TEXT_ENCODING, SlotTextOrigin, SlotTexts
 from app.ui import messages_ru as msg
 
@@ -22,7 +22,7 @@ if TYPE_CHECKING:      # только для аннотаций: слот бер
     from app.sources.preview import Preview
     from app.sources.video import SourceVideo
 
-YOUTUBE_WATCH_URL_TEMPLATE: Final[str] = "https://www.youtube.com/watch?v={video_id}"
+SLOT_ID_TEMPLATE: Final[str] = "{date}_{time}_{language}"
 
 
 @dataclass(frozen=True)
@@ -56,7 +56,10 @@ class SlotKey:
 
     @property
     def slot_id(self) -> str:
-        return build_slot_id(self.date_text, self.time_text, self.language)
+        """`{DD-MM-YYYY}_{HHMM}_{язык}` по местному времени старта (§4)."""
+        return SLOT_ID_TEMPLATE.format(
+            date=self.date_text, time=self.start.strftime(SLOT_TIME_FORMAT), language=self.language
+        )
 
     @property
     def sort_key(self) -> tuple[datetime, int, str]:
@@ -77,7 +80,7 @@ class StreamSlot:
     title: str                          # ≤100 символов после safe_trim
     description: str                    # ≤5000 байт после safe_trim
     previews: tuple[Preview, ...]       # обложки источников в порядке рядов; может быть пусто
-    sources: tuple[str, ...]            # ссылки https://www.youtube.com/watch?v=<id> в порядке рядов
+    sources: tuple[str, ...]            # ссылки watch?v=<id> в порядке рядов; ссылка без id — как есть
     text_origin: SlotTextOrigin
 
     @classmethod
@@ -93,15 +96,9 @@ class StreamSlot:
             title=texts.title,
             description=texts.description,
             previews=tuple(video.preview for video in ordered if video.preview is not None),
-            sources=tuple(cls._source_url(video.link) for video in ordered),
+            sources=tuple(YouTubeVideoId.watch_url_of(video.link) or video.link for video in ordered),
             text_origin=texts.origin,
         )
-
-    @staticmethod
-    def _source_url(link: str) -> str:
-        """Ссылка источника в записи слота: по id видео, если он извлекается; иначе как есть (донор)."""
-        video_id: str | None = extract_youtube_video_id(link)
-        return YOUTUBE_WATCH_URL_TEMPLATE.format(video_id=video_id) if video_id else link
 
     @property
     def problem(self) -> str | None:

@@ -173,7 +173,7 @@ def test_fragments_followed_by_keep_the_earlier_first_and_drop_repeats() -> None
         cta_lines=("join us", "Share"),
         hashtag_lines=("#ai #Ukraine",),
         hashtags_split_from_cta=True,
-        source_urls=(" https://example.org", "https://example.com"),
+        source_urls=("https://example.org", "https://example.com"),   # ссылки хвоста уже почищены SourceLink
         url_change_count=3,
         malformed_urls_dropped=4,
     )

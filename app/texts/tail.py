@@ -16,15 +16,14 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Final
 
+from app.core.sequence import unique_in_order
 from app.core.text_format import PARAGRAPH_BREAK, SPACE
-from app.core.url_text import LINK_EDGE_CHARS, LINK_TRAILING_PUNCTUATION, SourceUrl, dedupe_nonempty
-from app.observability.log_event import LogArea, get_logger
-from app.texts.description_marks import ALLOWED_BULLET_MARKERS, URL_LINE_PATTERN, CtaLexicon
-from app.texts.paragraphs import split_paragraphs
+from app.core.web_link import URL_LINE_PATTERN, WebLink
+from app.texts.description_marks import ALLOWED_BULLET_MARKERS, CtaLexicon
+from app.texts.hashtags import HASHTAG_TAIL_PATTERN, HASHTAG_WORD_PATTERN, is_hashtags_line
+from app.texts.paragraphs import SENTENCE_BREAK_PATTERN, collapse_spaces, split_paragraphs
+from app.texts.source_link import SourceLink
 
-LOGGER = get_logger(LogArea.TEXTS)
-
-HASHTAG_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"^#[^\s#]+$")
 _MARKER_ALTERNATIVES: Final[str] = "|".join(re.escape(marker) for marker in ALLOWED_BULLET_MARKERS)
 # Два и больше маркера пункта подряд в начале строки («🔹 🔹 текст», «🔹 📌 текст») — остаётся первый.
 DOUBLE_BULLET_PATTERN: Final[re.Pattern[str]] = re.compile(
@@ -32,9 +31,6 @@ DOUBLE_BULLET_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 # Ссылки в конце абзаца: после начала, пробела или открывающей скобки — одна или несколько через пробел.
 URL_TAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?is)(?:^|[\s\(\[])(https?://\S+(?:\s+https?://\S+)*)\s*$")
-HASHTAG_TAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?is)(#[^\s#]+(?:\s+#[^\s#]+)*)\s*$")
-SENTENCE_BREAK_PATTERN: Final[re.Pattern[str]] = re.compile(r"(?<=[.!?…])\s+")
-WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 HASHTAG_PREFIX_TRIM: Final[str] = " ,;"
 CTA_LINE_LEAD_CHARS: Final[str] = "-*•> "
 # Строка-призыв без подсказки в начале — не длиннее 200 знаков (длинный абзац со словом «комментарий» — не призыв).
@@ -43,14 +39,7 @@ STANDALONE_CTA_MAX_CHARS: Final[int] = 200
 
 def is_source_url_line(line: str) -> bool:
     """Строка — одна ссылка http(s) (обрамление скобками и знаки препинания в конце не мешают)."""
-    candidate: str = str(line or "").strip().strip(LINK_EDGE_CHARS).rstrip(LINK_TRAILING_PUNCTUATION)
-    return bool(candidate and URL_LINE_PATTERN.fullmatch(candidate))
-
-
-def is_hashtags_line(line: str) -> bool:
-    """Строка — только хештеги через пробел."""
-    tokens: list[str] = [item for item in str(line or "").split() if item]
-    return bool(tokens) and all(HASHTAG_TOKEN_PATTERN.fullmatch(item) for item in tokens)
+    return URL_LINE_PATTERN.fullmatch(WebLink.of(line).unwrapped.text) is not None
 
 
 def merge_hashtag_lines(lines: Iterable[str]) -> str:
@@ -58,9 +47,9 @@ def merge_hashtag_lines(lines: Iterable[str]) -> str:
     tokens: list[str] = []
     seen: set[str] = set()
     for line in lines:
-        for token in str(line or "").split():
+        for token in (line or "").split():
             cleaned: str = token.strip()
-            if not cleaned or not HASHTAG_TOKEN_PATTERN.fullmatch(cleaned) or cleaned.lower() in seen:
+            if not cleaned or not HASHTAG_WORD_PATTERN.fullmatch(cleaned) or cleaned.lower() in seen:
                 continue
             seen.add(cleaned.lower())
             tokens.append(cleaned)
@@ -72,7 +61,7 @@ def dedupe_cta_lines(lines: Iterable[str]) -> tuple[str, ...]:
     kept: list[str] = []
     seen: set[str] = set()
     for line in lines:
-        cleaned: str = WHITESPACE_RUN_PATTERN.sub(" ", str(line or "")).strip()
+        cleaned: str = collapse_spaces(line)
         if not cleaned or cleaned.lower() in seen:
             continue
         seen.add(cleaned.lower())
@@ -104,7 +93,7 @@ class TailFragments:
             cta_lines=dedupe_cta_lines((*self.cta_lines, *later.cta_lines)),
             hashtag_lines=(*self.hashtag_lines, *later.hashtag_lines),
             hashtags_split_from_cta=self.hashtags_split_from_cta or later.hashtags_split_from_cta,
-            source_urls=dedupe_nonempty((*self.source_urls, *later.source_urls)),
+            source_urls=unique_in_order((*self.source_urls, *later.source_urls)),
             url_change_count=self.url_change_count + later.url_change_count,
             malformed_urls_dropped=self.malformed_urls_dropped + later.malformed_urls_dropped,
         )
@@ -141,7 +130,7 @@ class TailReader:
 
     def is_standalone_cta_line(self, line: str) -> bool:
         """Строка-призыв: начинается с подсказки (после «-», «*», «•», «>») или короткая строка с подсказкой."""
-        normalized_line: str = WHITESPACE_RUN_PATTERN.sub(" ", str(line or "")).strip().lower()
+        normalized_line: str = collapse_spaces(line).lower()
         if not normalized_line:
             return False
         cleaned_line: str = normalized_line.lstrip(CTA_LINE_LEAD_CHARS)
@@ -161,21 +150,13 @@ class TailReader:
         changes: int = 0
         malformed: int = 0
         for raw_url in (item for item in match.group(1).split() if item):
-            cleaned: SourceUrl = self.source_url(raw_url)
+            cleaned: SourceLink = SourceLink.of(raw_url)
             if cleaned.url is None:
                 malformed += 1
                 continue
             changes += int(cleaned.url != raw_url)
             urls.append(cleaned.url)
-        return UrlTail(normalized[: match.start(1)].rstrip(), dedupe_nonempty(urls), changes, malformed)
-
-    @staticmethod
-    def source_url(raw: str) -> SourceUrl:
-        """Чистка ссылки хвоста; ссылка YouTube без id — строка лога донора."""
-        cleaned: SourceUrl = SourceUrl.of(raw)
-        if cleaned.youtube_dropped:
-            LOGGER.info("%s", cleaned.log_line)
-        return cleaned
+        return UrlTail(normalized[: match.start(1)].rstrip(), unique_in_order(urls), changes, malformed)
 
     def hashtag_tail(self, paragraph: str) -> TextTail:
         """Хештеги в конце абзаца; текст до них — без пробелов, запятых и `;` в конце."""
@@ -232,7 +213,7 @@ class TailScan:
             self.end -= 1
             if not candidate:
                 continue
-            cleaned: SourceUrl = self.reader.source_url(candidate)
+            cleaned: SourceLink = SourceLink.of(candidate)
             if cleaned.url is None:
                 self.malformed += 1
                 continue
@@ -328,7 +309,7 @@ class EmbeddedTail:
             cta_lines=tuple(cta_lines),
             hashtag_lines=tuple(hashtag_lines),
             hashtags_split_from_cta=split_hashtags,
-            source_urls=dedupe_nonempty(urls),
+            source_urls=unique_in_order(urls),
             url_change_count=changes,
             malformed_urls_dropped=malformed,
         )

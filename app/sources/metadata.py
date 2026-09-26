@@ -10,12 +10,11 @@
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Final
 
-from app.core.sheet_text import YOUTUBE_ID_CHARS, YOUTUBE_ID_LENGTH, extract_youtube_video_id
+from app.core.youtube_video import YouTubeVideoId
 from app.observability.log_event import LogArea, get_logger
 from app.texts.source_title import sanitize_source_video_title
 from app.ui import messages_ru as msg
@@ -23,7 +22,6 @@ from app.ui import messages_ru as msg
 LOGGER = get_logger(LogArea.SOURCES)
 
 FALLBACK_THUMBNAIL_TEMPLATE: Final[str] = "https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
-VIDEO_ID_PATTERN: Final[re.Pattern[str]] = re.compile(f"{YOUTUBE_ID_CHARS}{{{YOUTUBE_ID_LENGTH}}}")
 
 
 class AudioCodec(str, Enum):
@@ -86,10 +84,8 @@ class SourceMetadata:
     @staticmethod
     def _fallback_thumbnail(url: str, video_id: str) -> str:
         """Запасная обложка по id видео: сначала id из ответа, затем из ссылки; id нет — пусто."""
-        if VIDEO_ID_PATTERN.fullmatch(video_id):
-            return FALLBACK_THUMBNAIL_TEMPLATE.format(video_id=video_id)
-        fallback_id: str | None = extract_youtube_video_id(url)
-        return FALLBACK_THUMBNAIL_TEMPLATE.format(video_id=fallback_id) if fallback_id else ""
+        video: YouTubeVideoId | None = YouTubeVideoId.of(video_id) or YouTubeVideoId.of(url)
+        return FALLBACK_THUMBNAIL_TEMPLATE.format(video_id=video.value) if video is not None else ""
 
     @staticmethod
     def _duration(value: Any) -> int | None:

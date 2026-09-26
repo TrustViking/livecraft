@@ -1,25 +1,29 @@
-"""Абзацы текста: чистые преобразования строки (CLAUDE.md §0 — свободные функции без предметных объектов).
+"""Абзацы и строки текста: чистые преобразования строки (CLAUDE.md §0 — свободные функции без предметных объектов).
 
-Перенесены из restreamer как есть (`app\\core\\text_utils.py`: `normalize_newlines`, `normalize_multiline_text`,
-`split_paragraphs`, `starts_with_any_prefix`, `has_duplicate_paragraphs`). Абзацы разделяет пустая строка
-(в том числе строка из одних пробелов); перевод строки `\\r\\n` и одиночный `\\r` приводятся к `\\n`.
+Абзацы разделяет пустая строка (в том числе строка из одних пробелов); перевод строки `\\r\\n` и одиночный `\\r`
+приводятся к `\\n`. Фразы абзаца делит пробел после знака конца предложения — того же, по которому режет
+`safe_trim_right`. Повтор абзацев — одинаковые или почти одинаковые (по доле общих слов) абзацы не короче шести слов.
 """
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 from typing import Final
 
-PARAGRAPH_BREAK_PATTERN: Final[re.Pattern[str]] = re.compile(r"\n\s*\n")
-WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
-# Порог повтора абзацев донора: доля общих слов (Жаккар) и минимум слов, при котором абзац сравнивается.
+from app.core.safe_trim import SENTENCE_END_CHARS
+from app.core.text_format import NEWLINE, PARAGRAPH_BREAK_PATTERN, SPACE, WHITESPACE_RUN_PATTERN
+from app.texts.similarity import TextPair, WordRule
+
+WINDOWS_NEWLINE: Final[str] = "\r\n"
+OLD_MAC_NEWLINE: Final[str] = "\r"
+SENTENCE_BREAK_PATTERN: Final[re.Pattern[str]] = re.compile(rf"(?<=[{re.escape(SENTENCE_END_CHARS)}])\s+")
+# Повтор абзацев: доля общих слов не меньше 0.72 у абзацев не короче шести слов.
 DUPLICATE_JACCARD_THRESHOLD: Final[float] = 0.72
 DUPLICATE_MIN_TOKENS: Final[int] = 6
 
 
 def normalize_newlines(text: str) -> str:
-    """Все переводы строки — `\\n`."""
-    return str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    """Все переводы строки — `\\n`; None — пустой текст."""
+    return (text or "").replace(WINDOWS_NEWLINE, NEWLINE).replace(OLD_MAC_NEWLINE, NEWLINE)
 
 
 def normalize_multiline_text(text: str) -> str:
@@ -30,58 +34,30 @@ def normalize_multiline_text(text: str) -> str:
 def split_paragraphs(text: str) -> list[str]:
     """Непустые абзацы текста без краевых пробелов, по порядку."""
     normalized_text: str = normalize_multiline_text(text)
-    if not normalized_text:
-        return []
     return [part.strip() for part in PARAGRAPH_BREAK_PATTERN.split(normalized_text) if part.strip()]
 
 
-def starts_with_any_prefix(
-    text: str,
-    prefixes: Sequence[str],
-    *,
-    use_casefold: bool = False,
-    collapse_whitespace: bool = False,
-) -> bool:
-    """Начинается ли текст (без краёв, без учёта регистра) с одного из непустых префиксов."""
-    normalized_text: str = str(text or "").strip()
-    if collapse_whitespace:
-        normalized_text = WHITESPACE_RUN_PATTERN.sub(" ", normalized_text)
-    if not normalized_text:
-        return False
-    comparable_text: str = normalized_text.casefold() if use_casefold else normalized_text.lower()
-    for raw_prefix in prefixes:
-        normalized_prefix: str = str(raw_prefix or "").strip()
-        if not normalized_prefix:
-            continue
-        comparable_prefix: str = normalized_prefix.casefold() if use_casefold else normalized_prefix.lower()
-        if comparable_text.startswith(comparable_prefix):
-            return True
-    return False
+def nonempty_lines(text: str) -> list[str]:
+    """Непустые строки текста (по `
+`) без краевых пробелов, по порядку."""
+    return [line.strip() for line in (text or "").split(NEWLINE) if line.strip()]
 
 
-def has_duplicate_paragraphs(
-    text: str,
-    *,
-    jaccard_threshold: float = DUPLICATE_JACCARD_THRESHOLD,
-    min_tokens: int = DUPLICATE_MIN_TOKENS,
-) -> bool:
-    """Есть ли среди абзацев не короче `min_tokens` слов одинаковые или почти одинаковые (по Жаккару)."""
-    seen_normalized: set[str] = set()
-    token_sets: list[set[str]] = []
+def collapse_spaces(text: str) -> str:
+    """Любые пробелы подряд — один пробел, края — без пробелов."""
+    return WHITESPACE_RUN_PATTERN.sub(SPACE, text or "").strip()
+
+
+def has_duplicate_paragraphs(text: str) -> bool:
+    """Есть ли среди абзацев не короче шести слов одинаковые или почти одинаковые (по доле общих слов)."""
+    seen: list[str] = []
     for paragraph in split_paragraphs(text):
-        normalized: str = WHITESPACE_RUN_PATTERN.sub(" ", paragraph.strip().lower())
-        token_list: list[str] = [token for token in normalized.split(" ") if token]
-        if len(token_list) < min_tokens:
+        normalized: str = collapse_spaces(paragraph).lower()
+        if len(WordRule.SPACED.words(normalized)) < DUPLICATE_MIN_TOKENS:
             continue
-        if normalized in seen_normalized:
-            return True
-        seen_normalized.add(normalized)
-        current_set: set[str] = set(token_list)
-        for previous_set in token_sets:
-            union_size: int = len(current_set | previous_set)
-            if union_size == 0:
-                continue
-            if len(current_set & previous_set) / union_size >= jaccard_threshold:
+        for previous in seen:
+            similarity: float | None = TextPair(normalized, previous, WordRule.SPACED).jaccard
+            if normalized == previous or (similarity is not None and similarity >= DUPLICATE_JACCARD_THRESHOLD):
                 return True
-        token_sets.append(current_set)
+        seen.append(normalized)
     return False

@@ -21,13 +21,13 @@
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
 
+from app.core.sequence import unique_in_order
 from app.core.text_format import NEWLINE, PARAGRAPH_BREAK
-from app.core.url_text import dedupe_nonempty, is_youtube_url, sanitize_urls_in_text
+from app.core.web_link import WebLink
 from app.llm.merges.description import MergedDescription
 from app.llm.merges.hook import BadHookLexicon
 from app.llm.merges.links import AuthoritativeLinks
@@ -35,9 +35,10 @@ from app.llm.merges.quality import QualityRequest
 from app.observability.log_event import LogArea, LogValue, get_logger
 from app.slots.texts import SlotTextOrigin, SlotTexts
 from app.texts.composer import LAYOUT_EMPTY, DescriptionParts
-from app.texts.description_marks import ALLOWED_BULLET_MARKERS, PLAIN_BULLET_PATTERN, CtaLexicon
+from app.texts.description_marks import BulletLine, CtaLexicon
 from app.texts.official_links import OfficialLinksBlocks
-from app.texts.paragraphs import has_duplicate_paragraphs, normalize_multiline_text
+from app.texts.paragraphs import collapse_spaces, has_duplicate_paragraphs, normalize_multiline_text, split_paragraphs
+from app.texts.source_link import LinkedText
 from app.texts.tail import EmbeddedTail, TailFragments, TrailingTail, clean_double_bullet_markers
 
 if TYPE_CHECKING:
@@ -48,8 +49,6 @@ LOGGER: logging.Logger = get_logger(LogArea.LLM)
 
 # Метка успешного merge в строках санации (`merge_orchestrator.py::_PRIMARY_PUBLISH_SOURCE` донора).
 PRIMARY_SOURCE_LABEL: Final[str] = "primary_success"
-PARAGRAPH_SPLIT_PATTERN: Final[re.Pattern[str]] = re.compile(r"\n\s*\n")
-WHITESPACE_RUN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s+")
 BLOCK_EMITTED: Final[str] = "emitted"
 BLOCK_SUPPRESSED: Final[str] = "suppressed"
 BLOCK_ABSENT: Final[str] = "absent"
@@ -88,11 +87,12 @@ class SanitizedDescription:
         lines: list[str] = normalized.split(NEWLINE)
         trailing: TrailingTail = TrailingTail.of(lines, cta)
         embedded: EmbeddedTail = EmbeddedTail.of(NEWLINE.join(lines[: trailing.body_end_index]).strip(), cta)
-        body, body_changes = sanitize_urls_in_text(embedded.body_text)
-        body = cls._without_final_cta(clean_double_bullet_markers(body), cta, language, source_label)
+        linked_body: LinkedText = LinkedText.of(embedded.body_text)
+        body: str = cls._without_final_cta(clean_double_bullet_markers(linked_body.text), cta, language, source_label)
         fragments: TailFragments = embedded.fragments.followed_by(trailing.fragments)
-        cta_text, cta_changes = sanitize_urls_in_text(NEWLINE.join(fragments.cta_lines).strip())
-        sanitized: SanitizedDescription = cls._assembled(body, cta_text, fragments, body_changes + cta_changes)
+        linked_cta: LinkedText = LinkedText.of(NEWLINE.join(fragments.cta_lines).strip())
+        text_changes: int = linked_body.change_count + linked_cta.change_count
+        sanitized: SanitizedDescription = cls._assembled(body, linked_cta.text, fragments, text_changes)
         for line in sanitized.tail_lines(language, source_label):
             LOGGER.info("%s", line)
         sanitized.drop_cta(language, source_label)
@@ -106,8 +106,8 @@ class SanitizedDescription:
         parts: DescriptionParts = DescriptionParts(
             body=body,
             hashtags_line=fragments.hashtags_line,
-            recommended_urls=tuple(url for url in urls if is_youtube_url(url)),
-            official_urls=tuple(url for url in urls if not is_youtube_url(url)),
+            recommended_urls=tuple(url for url in urls if WebLink.of(url).unwrapped.is_youtube),
+            official_urls=tuple(url for url in urls if not WebLink.of(url).unwrapped.is_youtube),
             cta=cta_text,
         )
         return cls(
@@ -129,24 +129,20 @@ class SanitizedDescription:
         if not normalized:
             LOGGER.debug("removed_final_body_cta=no lang=%s source=%s reason=empty", language, source_label)
             return body
-        paragraphs: list[str] = [part.strip() for part in PARAGRAPH_SPLIT_PATTERN.split(normalized) if part.strip()]
+        paragraphs: list[str] = split_paragraphs(normalized)
         if len(paragraphs) < 2:
             LOGGER.debug("removed_final_body_cta=no lang=%s source=%s reason=single_paragraph", language, source_label)
             return body
         last: str = paragraphs[-1]
         last_lines: list[str] = [line.strip() for line in last.splitlines() if line.strip()]
         is_cta: bool = cta.looks_like_cta_paragraph(last)
-        if not is_cta and len(last_lines) == 1 and not SanitizedDescription._is_bullet(last_lines[0]):
+        if not is_cta and len(last_lines) == 1 and not BulletLine.of(last_lines[0]).is_bullet:
             is_cta = cta.looks_like_cta_line(last)
         if not is_cta:
             LOGGER.debug("removed_final_body_cta=no lang=%s source=%s reason=not_cta", language, source_label)
             return body
         LOGGER.info("removed_final_body_cta=yes lang=%s source=%s removed_chars=%d", language, source_label, len(last))
         return PARAGRAPH_BREAK.join(paragraphs[:-1])
-
-    @staticmethod
-    def _is_bullet(line: str) -> bool:
-        return bool(PLAIN_BULLET_PATTERN.match(line)) or any(line.startswith(f"{marker} ") for marker in ALLOWED_BULLET_MARKERS)
 
     def drop_cta(self, language: str, source_label: str) -> None:
         """Призыв не публикуется никогда (`_apply_publish_cta_gate` донора): только строка лога, если он был."""
@@ -196,7 +192,7 @@ class PublishGate:
 
     def has_opener_cta(self, text: str) -> bool:
         """Первая непустая строка или весь первый абзац — негодный тезис, или первая строка начинается с призыва."""
-        paragraphs: list[str] = [part.strip() for part in PARAGRAPH_SPLIT_PATTERN.split(str(text or "").strip()) if part.strip()]
+        paragraphs: list[str] = split_paragraphs(text)
         if not paragraphs:
             return False
         first_paragraph: str = paragraphs[0]
@@ -205,10 +201,7 @@ class PublishGate:
             return False
         if self.bad_hooks.matches(first_line) or self.bad_hooks.matches(first_paragraph):
             return True
-        lowered: str = first_line.lower()
-        return any(
-            prefix.strip().lower() and lowered.startswith(prefix.strip().lower()) for prefix in self.cta.prefixes
-        )
+        return self.cta.starts_with_prefix(first_line)
 
 
 @dataclass(frozen=True)
@@ -237,7 +230,7 @@ class MergePublication:
         cta: CtaLexicon = rules.check.quality.cta
         blocks: OfficialLinksBlocks = OfficialLinksBlocks.of(description.strip())
         sanitized: SanitizedDescription = SanitizedDescription.of(blocks.cleaned_text, language, PRIMARY_SOURCE_LABEL, cta)
-        text_urls: tuple[str, ...] = dedupe_nonempty((*blocks.source_urls, *sanitized.source_urls))
+        text_urls: tuple[str, ...] = unique_in_order((*blocks.source_urls, *sanitized.source_urls))
         links: AuthoritativeLinks = AuthoritativeLinks.of(
             language, sources, text_urls, sanitized.malformed_source_urls_dropped
         )
@@ -250,7 +243,7 @@ class MergePublication:
         gate: PublishGate = PublishGate(bad_hooks=rules.check.bad_hooks, cta=cta)
         publication: MergePublication = cls(
             language=language,
-            title=WHITESPACE_RUN_PATTERN.sub(" ", title.strip()).strip(),
+            title=collapse_spaces(title),
             description=final,
             has_duplicate=gate.has_duplicate_paragraphs(final),
             has_opener_cta=gate.has_opener_cta(final),
@@ -300,7 +293,7 @@ class MergePublication:
         """Строка `publish_sanitation_applied=yes` — ключи и порядок донора; рекомендуемых видео до 3.14b нет."""
         sanitized: SanitizedDescription = self.sanitized
         links: AuthoritativeLinks = self.links
-        text_youtube: int = sum(1 for url in self.text_urls if is_youtube_url(url))
+        text_youtube: int = sum(1 for url in self.text_urls if WebLink.of(url).unwrapped.is_youtube)
         return (
             f"publish_sanitation_applied=yes lang={self.language} source={PRIMARY_SOURCE_LABEL} "
             f"cta_found={_flag(sanitized.cta_found)} hashtags_found={_flag(sanitized.hashtags_found)} "

@@ -19,13 +19,14 @@ from typing import Final
 import pycountry
 
 from app.config.loader import SettingProblem
+from app.core.alphabet import YO_FOLD
+from app.core.sequence import unique_in_order
 from app.setup.fields.channel_draft import LANGUAGES_SEPARATOR
 from app.ui import messages_ru as msg
 
 TRANSLATION_DOMAIN: Final[str] = "iso639-3"
 TRANSLATION_LOCALE: Final[str] = "ru"
 ALPHA_2: Final[str] = "alpha_2"
-SORT_REPLACEMENTS: Final[dict[str, str]] = {"ё": "е"}     # «ё» в кодовой таблице стоит после «я»
 LANGUAGES_KEY: Final[str] = "languages"     # поле черновика канала: по нему окно подписывает проблему
 
 
@@ -47,9 +48,7 @@ class LanguageOption:
     @property
     def sort_key(self) -> tuple[bool, str]:
         """Порядок языков не из формы: сначала с русским названием по алфавиту, затем с английским."""
-        name: str = self.name.casefold()
-        for source, target in SORT_REPLACEMENTS.items():
-            name = name.replace(source, target)
+        name: str = self.name.casefold().translate(YO_FOLD)      # «ё» в кодовой таблице стоит после «я»
         return (not self.is_translated, name)
 
     def matches(self, text: str) -> bool:
@@ -80,7 +79,7 @@ class LanguageCatalog:
                 code=code, name=name, in_form=False, is_translated=name != language.name
             )
         form: list[LanguageOption] = []
-        for code in dict.fromkeys(form_codes):
+        for code in unique_in_order(form_codes):
             option: LanguageOption = known.pop(code, None) or cls._unknown(code)
             form.append(replace(option, in_form=True))
         rest: list[LanguageOption] = sorted(known.values(), key=lambda item: item.sort_key)
@@ -100,7 +99,7 @@ class LanguageCatalog:
         """Каталог, в котором есть и эти коды: незнакомый код канала добавляется в конец, выбор не теряется."""
         present: set[str] = {option.code for option in self.options}
         extra: tuple[LanguageOption, ...] = tuple(
-            self._unknown(code) for code in dict.fromkeys(codes) if code not in present
+            self._unknown(code) for code in unique_in_order(codes) if code not in present
         )
         return self if not extra else LanguageCatalog(options=(*self.options, *extra))
 
@@ -162,7 +161,7 @@ class LanguageSelection:
     @classmethod
     def from_text(cls, text: str) -> LanguageSelection:
         """Языки из текста черновика канала («uk, ru»): тот же разделитель, что у черновика."""
-        return cls(codes=tuple(dict.fromkeys(code for code in LANGUAGES_SEPARATOR.split(text) if code)))
+        return cls(codes=unique_in_order(code for code in LANGUAGES_SEPARATOR.split(text) if code))
 
     @property
     def first(self) -> str | None:
