@@ -574,8 +574,8 @@ tmp\                      временные файлы задачи; удаля
 
 Каждая задача: модули своей области и их тесты — ноль долгов по всем 21 правилу; строки лога области — через `LogEvent`; общие объекты тестов — в `app\tests\fixtures\` (создаёт первая задача, которой они нужны). Правила, названные «целиком», — ноль во всём `app`. Поведение меняется только пунктами «▸», каждый — тест с входом и итогом.
 
-**R3. Общие объекты I — логи, ошибки, константы, время, повторы.** Область: `app\observability\`, `app\core\dates.py`, `retry.py`, новые `clock.py`, `errors.py`, `app\paths.py`, `app\version.py`, `app\resources\loader.py`, `app\runtime\`, `app\tools\code_standard\`, их тесты, `app\tests\fixtures\log.py`.
-- `LogArea(str, Enum)` — области логгеров (имена прежние) и `get_logger(area)`; один словарь значений лога (`yes_no`, одно написание «пусто», разделитель списка); `LogEvent` (`of(name, **fields)`, `extended`, `emit(logger, level)`; одно правило записи значения: bool, пусто, Enum, последовательность) и перечисления событий; пачка строк — одним методом; `LogCapture` для тестов.
+**R3. Общие объекты I — логи, ошибки, константы, время, повторы.** Область: `app\core\dates.py`, `retry.py`, новые `clock.py`, `errors.py`, модули лога в `app\observability\`, `app\version.py`, `app\resources\loader.py`, `app\runtime\`, `app\tools\code_standard\`, их тесты, `app\tests\fixtures\` (`paths.py`, `logging_setup.py` — в R5).
+- `LogArea(str, Enum)` — области логгеров (имена прежние) и `get_logger(area)`; один словарь значений лога (`yes_no`, одно написание «пусто», разделитель списка); `LogEvent` (`of(name, **fields)`, `extended`, `emit(logger, level)`; одно правило записи значения: bool, пусто, Enum, последовательность) и перечисления событий; `LogCapture` для тестов.
 - Контракт ошибок (§11): `os_error_reason(error)` вместо четырёх `strerror or type(error).__name__`; `AnotherInstanceRunning` — по контракту, русский текст отказа замка — у ошибки, а не в `main`.
 - Общий словарь констант — копии N8: `COST_FORMAT`, `STAGE_PRIMARY`, `LAYOUT_EMPTY`, `DETAIL_MAX_CHARS`, `ISO_TIMESPEC`, `"unknown"`, `READONLY`, копии `ExitCode` в пробниках; `TEXT_ENCODING` (`paths.py`), `APP_NAME` (`version.py`), `LIST_JOINER`, `ITEM_JOINER`, `NONE_TEXT` (`messages_ru`), единицы времени (`dates.py`); код языка ISO 639-1 — одно значение в `app\core` для конфига и текстов (N18); `AtomicFile` (временный файл рядом + `os.replace`) для `write_text_atomically` и записи пакета; `TextResource.body` вместо ручного `read_text`.
 - `RetryLoop(policy, rng, sleep).run(attempt, should_retry, on_retry)` → `RetryRun`, `AttemptFailure` (`reason`, `status`, `is_retryable`, `log_line`), `RETRYABLE_HTTP_STATUSES` из `http.HTTPStatus`: таблица, превью и OpenAI — один цикл.
@@ -694,7 +694,7 @@ tmp\                      временные файлы задачи; удаля
 - Нейросеть и merge — код есть, в запуск не подключён (3.15): `LlmBackend`, `MergeJob` → `SlotTexts` (`merged`), санация `MergePublication`; пробник `python -m app.tools.llm_probe`.
 - Флаги `--announce`, `--broadcast`, `--from-package`, `--no-llm`, `--setup` разбираются; части MERGE, ANNOUNCE, BROADCAST, PACKAGES_IN показываются несделанными (`app\setup\run_mode.py::NOT_BUILT_PARTS`).
 
-**Этап R.** Приняты R1.1a, R1.1a-2, R1.1b (дефекты D1–D7, D9), R1.2a, R1.2b (мёртвый код), R1.3 (`pytest.ini`, `--capture=sys`), R2.1a, R2.1b (замок). Отменены R2.2 и R2.3. **Следующая — R3**, дальше R4 … R10 (§13).
+**Этап R.** Приняты R1.1a, R1.1a-2, R1.1b (дефекты D1–D7, D9), R1.2a, R1.2b (мёртвый код), R1.3, R2.1a, R2.1b (замок). Отменены R2.2 и R2.3. **R3 — промт выдан 26-09-2026**, дальше R4 … R10 (§13).
 
 **Продукт.** После R10 — 3.14b, 3.15, затем этапы 4–8 (§13).
 
