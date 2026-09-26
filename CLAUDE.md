@@ -209,30 +209,32 @@ sources           кортеж ссылок источников
 
 ```
 app\
-  main.py                 run_cli(argv) → Launch (R5); код выхода решает app\run
+  main.py                 run_cli(argv) и Launch — шаги запуска; код выхода решает app\run
   version.py              APP_VERSION — единственный номер версии (patch поднимает сборка); APP_NAME
   paths.py                LivecraftPaths (корень рядом с exe или репо, DataDir), AtomicFile, write_text_atomically
   core\                   чистые значения и примитивы: dates.py, clock.py (Clock — единственное «сейчас»), retry.py (RetryPolicy, RetryLoop),
                           errors.py, text_format.py, language_code.py, system.py, safe_trim.py, sheet_text.py, alphabet.py, web_link.py
                           (WebLink; url_text.py — фасад), youtube_video.py, counts.py
-  observability\          logging_setup.py — LogArea, get_logger, LogEvent, RunLog; маскирование секретов и ключей потока
+  observability\          log_event.py (LogArea, get_logger, LogEvent), logging_setup.py (RunLog, mask_stream_key)
   resources\              loader.py (TextResource); text\ — тексты промтов, пороги-данные, лексиконы, поставочный шаблон livecraft.json
   ui\                     messages_ru.py — ВСЕ тексты для людей; console.py (Console)
-  run\                    словарь запуска: ExitCode, RunMode, RunPart, RunRequest, CliFlag (R5)
+  run\                    словарь запуска: exit_code.py (ExitCode, RunOutcome), mode.py (RunMode, RunPart, ModeStep, PartReadiness,
+                          ModeReadiness), flag.py (CliFlag), request.py (RunRequest)
   runtime\                single_instance.py (InstanceLock); ytdlp_updater.py, deno_updater.py, cookies_updater.py
-  secretsafe\             value.py (SecretValue), vault.py (Vault), store.py (VaultStore), crypto.py (AES-GCM + HKDF), dpapi.py (ctypes), token.py (§14 решение 16)
+  secretsafe\             value.py (SecretValue), vault.py (Vault), store.py (VaultStore), crypto.py (AES-GCM + HKDF), dpapi.py (ctypes), log_filter.py (SecretScrubber), token.py (§14 решение 16)
   config\                 loader.py (фасад) → json_node.py, settings.py, channel.py, files.py (R7)
   google\                 auth.py — OAuth: скоупы и токены (§9); клиенты Docs и Drive — этап 4
-  slots\                  шов §4: slot.py (SlotKey, StreamSlot), texts.py (SlotTexts), preview.py (значение Preview)
+  slots\                  шов §4: slot.py (SlotKey, StreamSlot), texts.py (SourceText, SlotTexts), preview.py (значение Preview)
   packages\               пакет plan_*.bcast: запись (режим А) и карта слотов из bcast\ (режим Б), §14 решения 13, 18
   texts\                  текстовые примитивы (paragraphs, hashtags, similarity, description_marks), language_detector.py,
                           санация после LLM, композиция описания, safe-обрезка
-  sheets\                 client.py (Sheets API), plan.py (SheetPlan, SheetRow), rows.py (AdmittedRow, SkippedRow, PlannedRows)
+  sheets\                 client.py (Sheets API), plan.py (SheetColumns, SheetPlan), rows.py (SheetRow, AdmittedRow, SkippedRow, PlannedRows)
   sources\                fetcher.py (MetadataFetcher, Protocol), ytdlp.py (YtDlpFetcher), preview.py (загрузка превью), metadata.py,
-                          language.py (LanguageResolver — язык источника, §14 решение 12), video.py (SourceVideo, SourceCatalog)
+                          language.py (LanguageResolver — язык источника, §14 решение 12), video.py (SourceVideo, SourceFacts, SourceCatalog,
+                          PreparedSources)
   llm\                    разъём (§14 решение 22): backend.py (LlmBackend, LlmRequest, LlmResponse), errors.py, usage.py, selection.py,
                           json_text.py; backends\openai*.py; merges\ — функция merge
-  intake\                 оркестратор контура A: PlanIntake, IntakeResult, SlotBuilder, SlotGroup (R5; сейчас app\slots\intake.py, builder.py)
+  intake\                 оркестратор контура A: intake.py (PlanIntake, IntakeResult), builder.py (SlotGroup, SlotBuild, SlotBuilder)
   publish\                объявления: Telegram (Bot API через requests) и Google Docs, §14 решения 14, 19 — этап 4
   platforms\, form\, records\, pipeline\, output\   контур B из planers (§2) — этап 5
   setup\                  графический настройщик (§8): app.py, tabs\, panels\, fields\, validators.py, migration.py;
@@ -444,7 +446,7 @@ tmp\                      временные файлы задачи; удаля
 - `--debug` — подробный лог в терминал; `--version` — `Livecraft <APP_VERSION>`, код 0, ничего не читает.
 - `--export-slots` отменён (решение 13): выгрузка слотов — это пакет.
 
-Коды выхода (решает одно место — `app\run\` (задача R5); контур B приносит туда факты через `runner.decide_exit` → `RunExit`): `0` — сделано всё, что можно; `1` — есть ошибки (в том числе неподтверждённая отправка ключа, который должен был уйти, и недопущенные объекты); `2` — ошибка конфигурации, сейфа или авторизации, ничего не делалось; `3` — нет будущих слотов: в таблице (режим А) или в пакетах `bcast\` (режим Б); к каналам не обращались.
+Коды выхода (решает одно место — `app\run\exit_code.py`: части запуска отдают `RunOutcome`; контур B приносит туда факты через `runner.decide_exit` → `RunExit`): `0` — сделано всё, что можно; `1` — есть ошибки (в том числе неподтверждённая отправка ключа, который должен был уйти, и недопущенные объекты); `2` — ошибка конфигурации, сейфа или авторизации, ничего не делалось; `3` — нет будущих слотов: в таблице (режим А) или в пакетах `bcast\` (режим Б); к каналам не обращались.
 
 ---
 
@@ -605,17 +607,17 @@ tmp\                      временные файлы задачи; удаля
 - Целиком: рёбра E16 между пакетами.
 - ▸ Пробники возвращают коды по правилу запуска (§10): сбой входа в Google — 2 (`SheetsReadReason.is_configuration` — одно правило с прогоном). Страховка «повтор ссылки в слоте» (`SlotGroup`) уходит: повтор снимают ряды. Недостижимые `ValueError` уходят (`SlotKey.of`, `StreamSlot.to_record`, `SlotTexts.from_sources`). Строка `intake_finished` пишет `outcome` вместо `exit_code`. Лишний `import shutil` в `test_main.py` уходит.
 
-**R6. Контур A.** Область: `app\sheets\`, `app\sources\`, `app\slots\`, `app\packages\`, `app\intake\`, новый `app\core\counts.py`; их тесты; фикстуры источника, таблицы и слота.
-- `AdmittedRow(row, start, video: YouTubeVideoId)`, `SkippedRow(row, reason, start, duplicate_of)`, `PlannedRows` (`admitted`, `skipped`, `counts`, `log_line`, `console_line`), `HeaderAliases` из ресурса; кольцо `sheets\plan` ↔ `rows`.
-- `SourceFacts` (получение, язык, превью) с одним кешем вместо трёх; `PreparedSources` (видео, счётчики, `has_errors`, `console_line`); свойства `SourceVideo` (`text` — с R5, `metadata_url`) — единственная проверка метаданных; разрезка `LanguageProfile` и `SourceMetadata`; `ytdlp.py::PRIVATE_MARKERS`, `UNAVAILABLE_MARKERS` — ресурсы; `SourceProbe` — через `SourceCatalog` (`SourceFacts`).
-- `Counts` — один подсчёт итогов стадии вместо трёх; `IntakeResult` хранит объекты стадий и только опрашивает их; `StreamSlot(… texts: SlotTexts …)` — `title`, `description` свойствами, правило пустого названия одно; причины — перечисления, а не готовый русский текст; `PackagePeriod`.
-- ▸ Страховка «повтор `slot_id` в пакете» (`SlotPackage`) уходит: на боевом пути недостижима — `slot_id` уникален по сборке; тест — вход с повтором отсеян на рядах.
+**R6. Контур A.** Область: `app\sheets\`, `app\sources\`, `app\slots\`, `app\packages\`, `app\intake\`, новый `app\core\counts.py`, пробники `sheets_probe.py`, `source_probe.py`; их тесты; фикстуры источника, таблицы и слота. Точечно: данные видео в `app\llm\merges\` (`check.py`, `job.py`, `links.py`, `source.py`) — только через `SourceVideo`.
+- Ряды: `SheetRow` — в `rows.py` (кольцо `plan` ↔ `rows` уходит); `SheetRow.plan` → `AdmittedRow(row, start, video: YouTubeVideoId)` или `SkippedRow(row, reason, start, duplicate_of)`; `PlannedRows` (`admitted`, `skipped`, `counts`, строки лога и консоли) вместо `PlanRow` и `RowTally`; `PlanProblem` вместо русской строки `SheetPlan.problem`.
+- Источники: `SourceFacts` (получение, язык, обложка) — один кеш `SourceCatalog` вместо трёх, им же пользуется `SourceProbe`; `PreparedSources` (видео, счётчики, `has_errors`, строки) вместо `SourceTally`; `SourceVideo(row: AdmittedRow, …)`, `text` и `metadata_url` — единственная проверка данных видео; разрезка `LanguageProfile` (E18) и `SourceMetadata` (разбор ответа yt-dlp — отдельный объект); `PRIVATE_MARKERS`, `UNAVAILABLE_MARKERS` — ресурсы.
+- `Counts` — один подсчёт итогов стадии вместо трёх; `IntakeResult` хранит объекты стадий и только опрашивает их; `StreamSlot(key, texts, previews, sources)` — поля схемы свойствами, правило пустого названия одно (`SlotTexts`); причины — перечисления с `human`, а не готовый русский текст; `PackagePeriod`.
+- ▸ Страховки `SlotPackage.of` уходят: слот с проблемой и повтор `slot_id` на боевом пути недостижимы (в пакет идут только `SlotBuild.slots`, `slot_id` уникален по сборке). `RunRequest.is_service_run` (обёртка без пользователей в коде) уходит.
 - После приёмки — контрольный прогон режима А (Артур): пакет и консоль как до задачи.
 
 **R7. Конфиг, готовность, сейф.** Область: `app\config\`, `app\setup\readiness.py`, `migration.py`, `app\secretsafe\`, `app\google\`; их тесты; фикстура сейфа.
 - `KeyPath`, `JsonNode` вместо `_ConfigParser`: каждый объект строит себя сам (`from_node`) в пару к `to_data`; `SettingKey`, `ChannelKey` (значение — путь JSON; кортежи ключей и `to_data` выводятся из них); `ChannelHandle` (хозяин правила ника, им же пользуется контур B), `ChannelConfig.problem`, `ConfiguredChannels` (`problem` — повтор ника, `served_languages`, `by_handle`); разрезка `loader.py` на `json_node.py`, `settings.py`, `channel.py`, `files.py` (`loader.py` — фасад).
 - `SettingsFile`, `ChannelsFile` (`load`, `parse`, `render`, `save`, `install_shipped`), `ConfigRead[T]` (значение или ошибка); поставочный шаблон `livecraft.json` — ресурс, а не текст в `messages_ru`.
-- `Need` (SHEETS_VAULT, OPENAI_VAULT, SETTINGS, FORM, CHANNELS, CLIENT_SECRET), `RunPart.needs`, `Readiness.gap(need)` — единственное место текста нужды; `PartState` (READY / BLOCKED / NOT_BUILT); `Readiness.window_line`.
+- `Need` (SHEETS_VAULT, OPENAI_VAULT, SETTINGS, FORM, CHANNELS, CLIENT_SECRET), `RunPart.needs`, `Readiness.gap(need)` — единственное место текста нужды; `PartState` (READY / BLOCKED / NOT_BUILT); `Readiness.window_line`; готовая таблица плана отдаёт прогону настройки и сейф сама — `Launch._mode` не проверяет их на None.
 - Сейф: `Vault.overlaid_by`, `only(origin)`, `entry` (клон `get` / `origin_of`), `missing_of`; один `VaultOrigin` вместо `VaultSource` и `VaultOrigin` — в модуле ниже `crypto`; `FieldSpec`, `Base64Field`, `VaultFile.new`; кольцо `crypto` ↔ `value`. Ошибки конфига, сейфа и входа — по контракту ошибок.
 - ▸ Каждая нужда называется одной строкой (ненастроенная форма — одна строка вместо двух); строка готовности в окне настройщика не советует открыть окно (N19); `VAULT_LOCAL_UNREADABLE` называет поля нынешними названиями; правило «языки каналов» одно (`ConfiguredChannels.served_languages` вместо повтора в `Readiness._channels_line`).
 
@@ -691,15 +693,15 @@ tmp\                      временные файлы задачи; удаля
 
 История до 26-09-2026 — `git show 3e399ba:CLAUDE.md`.
 
-**Где мы (26-09-2026).** Ветка `feature/livecraft`; последний принятый код — `24c8af4` (R4). Baseline тестов — **2714**. Реестр замка — **477**: E1 49, E2 49, E3 7, E4 7, E5 225, E6 0, E7 22, E8 0, E9 0, E10 0, E11 4, E12 3, E13 13, E14 20, E15 29, E16 13, E17 0, E18 11, E19 1, E20 24, E21 0; исключений 9 (E1 4, E8 3, E13 2). planers — `9903b2e` (21-09-2026), перед этапом 5 перечитать по текущему HEAD.
+**Где мы (26-09-2026).** Ветка `feature/livecraft`; последний принятый код — `cbee396` (R5). Baseline тестов — **2761**. Реестр замка — **403**: E1 34, E2 44, E3 6, E4 7, E5 190, E6 0, E7 19, E8 0, E9 0, E10 0, E11 4, E12 3, E13 13, E14 19, E15 27, E16 5 (только кольца), E17 0, E18 10, E19 1, E20 21, E21 0; исключений 9 (E1 4, E8 3, E13 2). planers — `9903b2e` (21-09-2026), перед этапом 5 перечитать по текущему HEAD.
 
 **Что работает.**
 - Этапы 0–2 закрыты (2.4 — в этапе 6): замок одного экземпляра, сейф (`reveal()` — `SheetsReader._request`, `OpenAiClient._api`, `KeysPanel.own_value`, временная `FormUrlMigration`), конфиги, готовность по частям режима, настройщик на трёх вкладках.
 - Режим А без нейросети: таблица → ряды → источники (yt-dlp, язык, превью) → слоты → пакет `bcast\plan_*.bcast`. Боевой прогон 24-09-2026: 10 рядов → 4 слота (uk 1, en 2, ru 1), пакет без замечаний читает `planers\app\package\reader.py::read_package`.
 - Нейросеть и merge — код есть, в запуск не подключён (3.15): `LlmBackend`, `MergeJob` → `SlotTexts` (`merged`), санация `MergePublication`; пробник `python -m app.tools.llm_probe`.
-- Флаги `--announce`, `--broadcast`, `--from-package`, `--no-llm`, `--setup` разбираются; части MERGE, ANNOUNCE, BROADCAST, PACKAGES_IN показываются несделанными (`app\setup\run_mode.py::NOT_BUILT_PARTS`).
+- Флаги `--announce`, `--broadcast`, `--from-package`, `--no-llm`, `--setup` разбираются; части MERGE, ANNOUNCE, BROADCAST, PACKAGES_IN показываются несделанными (`app\run\mode.py::NOT_BUILT_PARTS`).
 
-**Этап R.** Приняты R1.1a, R1.1a-2, R1.1b (дефекты D1–D7, D9), R1.2a, R1.2b (мёртвый код), R1.3, R2.1a, R2.1b (замок), R3 (`766cf25`), R4 (`24c8af4`). R2.2, R2.3 отменены. **R5 — промт выдан 26-09-2026**, дальше R6 … R10 (§13).
+**Этап R.** Приняты R1.1a, R1.1a-2, R1.1b (дефекты D1–D7, D9), R1.2a, R1.2b (мёртвый код), R1.3, R2.1a, R2.1b (замок), R3 (`766cf25`), R4 (`24c8af4`), R5 (`cbee396`). R2.2, R2.3 отменены. **R6 — промт выдан 26-09-2026**, дальше R7 … R10 (§13).
 
 **Продукт.** После R10 — 3.14b, 3.15, затем этапы 4–8 (§13).
 
@@ -710,6 +712,7 @@ tmp\                      временные файлы задачи; удаля
 - Запуск: все видео отказали — код 1, не 3.
 - Таблица: нужны только ссылка, дата и время (`C:E`); колонки `L` и `Chips` не читаются (решение 12); шапка узнаёт и «посилання», «відео».
 - Конфиг: `youtube_pause_seconds` в поставке 0.5; `save_channels_file` копирует прежний файл, только если он есть.
+- Запуск (R5): `run_cli` → `Launch`; части запуска отдают `RunOutcome`, код — `ExitCode.combined`; что делает режим — `ModeReadiness.step` (`app\run\mode.py`: в `readiness.py` не влезал по E18); консоль — только `Console`; лог — `RunLog` (чужие обработчики не снимает); фильтр секретов строит сейф (`Vault.log_filter`); пробники — `ProbeLauncher`, `ProbeSession`, `ProbeConsole`; фасады перенесённых модулей не оставлены.
 - Общие объекты R3: лог — `observability\log_event.py` (`LogArea`, `LogValue`, «пусто» = `-`, `LogEvent`); время — `Clock`, до чтения настроек — `ShippedSettings.clock`; повторы — `RetryLoop`; `TEXT_ENCODING` и знаки текста — `core\text_format.py`.
 - Живые данные у Артура (в git не входят): `secrets\client_secret.json`, `secrets\cookies.txt`, `tools\yt-dlp.exe`, `tools\deno.exe`; `secrets\channels.json` — 6 каналов из planers; ключ OpenAI и ссылка формы введены в настройщике.
 - Тесты: серии тестов с буфером обмена параллельно не запускать; `httpx2` в `conftest.py` — зависимость SDK `openai`, не новая.
