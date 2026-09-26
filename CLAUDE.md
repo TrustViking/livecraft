@@ -221,8 +221,11 @@ app\
   run\                    словарь запуска: exit_code.py (ExitCode, RunOutcome), mode.py (RunMode, RunPart, ModeStep, PartReadiness,
                           ModeReadiness), flag.py (CliFlag), request.py (RunRequest)
   runtime\                single_instance.py (InstanceLock); ytdlp_updater.py, deno_updater.py, cookies_updater.py
-  secretsafe\             value.py (SecretValue), vault.py (Vault), store.py (VaultStore), crypto.py (AES-GCM + HKDF), dpapi.py (ctypes), log_filter.py (SecretScrubber), token.py (§14 решение 16)
-  config\                 loader.py (фасад) → json_node.py, settings.py, channel.py, files.py (R7)
+  secretsafe\             field.py (SecretField, VaultOrigin), value.py (SecretValue), vault.py (Vault), store.py (VaultStore, VaultLoad, VaultRead),
+                          crypto.py (AES-GCM + HKDF), dpapi.py (ctypes), log_filter.py (SecretScrubber), supplied_key.py (ProgramKey — до этапа 7),
+                          token.py (§14 решение 16)
+  config\                 json_node.py (KeyPath, JsonNode, ConfigError), settings.py (SettingKey, LivecraftSettings), channel.py (ChannelHandle,
+                          ChannelConfig, ConfiguredChannels), files.py (SettingsFile, ChannelsFile, ConfigRead, ShippedSettings); loader.py — фасад
   google\                 auth.py — OAuth: скоупы и токены (§9); клиенты Docs и Drive — этап 4
   slots\                  шов §4: slot.py (SlotKey, StreamSlot), texts.py (SourceText, SlotTexts), preview.py (значение Preview)
   packages\               пакет plan_*.bcast: запись (режим А) и карта слотов из bcast\ (режим Б), §14 решения 13, 18
@@ -342,7 +345,7 @@ tmp\                      временные файлы задачи; удаля
 
 **`AccessToken`** (`token.py`) — пара файлов «токен + ключ» (§14 решение 16): `*.lctoken` — магия, версия, id пары, срок, nonce, AES-GCM-шифротекст значений; `*.lckey` — магия, версия, тот же id пары, 32 случайных байта ключа. Оба двоичные, в блокноте нечитаемы; пароля человек не вводит. Время создания и «действует до» берутся из заголовка `Date` ответа сервера Google по HTTPS, при загрузке — так же; нет сети — загрузка не выполняется. В токен попадают только значения с происхождением «своё», плюс открытые настройки (ссылка формы, папка Docs, чаты Telegram); каналы и токены входа Google — никогда.
 
-**В коде пока старая схема (задачи 1.3, 2.1):** `ProgramKey` (`program_key.py`, `secrets\program.key`) и поставочный `vault.dat`. Они убираются задачей этапа «Токен доступа» (§13); до неё приоритет «личное перекрывает поставочное» продолжает работать как есть.
+**В коде пока старая схема (задачи 1.3, 2.1):** `ProgramKey` (`secretsafe\supplied_key.py`; ключ — собранный модуль `program_key.py` или `secrets\program.key`) и поставочный `vault.dat`. Они убираются задачей этапа «Токен доступа» (§13); до неё приоритет «личное перекрывает поставочное» продолжает работать как есть.
 
 **`Dpapi`** (`dpapi.py`) — `CryptProtectData` / `CryptUnprotectData` из `crypt32.dll` через `ctypes` (stdlib, ноль зависимостей), флаг `CRYPTPROTECT_LOCAL_MACHINE` **не** ставится — привязка к пользователю, а не к машине. Описание (`szDataDescr`) — `"Livecraft local vault"`. Не Windows или DPAPI недоступен — сейф не создаётся, настройщик говорит об этом прямо.
 
@@ -621,9 +624,9 @@ tmp\                      временные файлы задачи; удаля
 - Сейф: `Vault.overlaid_by`, `only(origin)`, `entry` (клон `get` / `origin_of`), `missing_of`; один `VaultOrigin` вместо `VaultSource` и `VaultOrigin` — в модуле ниже `crypto`; `FieldSpec`, `Base64Field`, `VaultFile.new`; кольцо `crypto` ↔ `value`. Ошибки конфига, сейфа и входа — по контракту ошибок.
 - ▸ Каждая нужда называется одной строкой (ненастроенная форма — одна строка вместо двух); строка готовности в окне настройщика не советует открыть окно (N19); `VAULT_LOCAL_UNREADABLE` называет поля нынешними названиями; правило «языки каналов» одно (`ConfiguredChannels.served_languages` вместо повтора в `Readiness._channels_line`).
 
-**R8. Merge I — правила, ответ, описание, качество.** Область: `app\llm\merges\` — `rules.py`, новый `merge_rules.py`, `reject.py`, `answer.py`, `layout.py`, `description.py` и новые модули его забот, `hook.py`, `agenda.py`, `blocks.py`, `service_lines.py`, `quality.py`, новый `script_mix.py`, `contract.py`, `retry.py`, `prompt.py`, `prompt_texts.py`; их тесты; фикстуры merge.
+**R8. Merge I — правила, ответ, описание, качество.** Область: `app\llm\merges\` — `rules.py`, новый `merge_rules.py`, `reject.py`, `answer.py`, `layout.py`, `description.py` и новые модули его забот, `hook.py`, `agenda.py`, `blocks.py`, `service_lines.py`, `quality.py`, новый `script_mix.py`, `contract.py`, `retry.py`, `prompt.py`, `prompt_texts.py`; их тесты; фикстуры merge. Точечно: `attempt.py`, `check.py`, `job.py`, `publication.py` — переход на `MergeRules`, `MergeAnswer.SCHEMA`, `MergeContract.min_bullets`.
 - Порядок модулей снизу вверх: `rules.py` (все пороги) → `MergeRules` (плоский: `lexicons`, `texts`, `headings`, `gate`) и `MergeLexicons` (загружаются один раз) → промт / проверка / санация → попытка → исход → запуск → слот; импортов под `TYPE_CHECKING` внутри пакета нет; `detector` не протаскивается через уровни.
-- `MergeRejectCode` с одной таблицей признаков `RejectTraits(stage, is_description_validation, is_recoverable)` вместо разрозненных наборов; `RetrySignal` — по `MergeRejectCode`; `MergeAnswer.SCHEMA` — схема ответа из одного места с пределами разбора; `MergeContract.min_bullets(n)`; `MergeSkipReason` / `MergeStopReason` без повтора.
+- `MergeRejectCode` с одной таблицей признаков `RejectTraits(stage, is_description_validation, is_recoverable)` вместо разрозненных наборов; `RetrySignal` — по `MergeRejectCode`; `MergeAnswer.SCHEMA` — схема ответа из одного места с пределами разбора; `MergeContract.min_bullets(n)` (сейчас формула дважды — `attempt.py` и `check.py`).
 - `MergedDescription` по заботам: `HookEcho`, `DescriptionOpening`, `EmojiUsage`; `script_mix.py` (`ScriptMixProbe`, `HomoglyphMap`, `HomoglyphRepair`), `QualityNormalization`, `QualityDiagnostics`; кортежи — значениями (`EmojiCleanup`, `HookSplit`, `TailSplit`, `BodyRecovery`, `FormattedDraft`); пересылки уходят.
 - Одно правило в нескольких местах — одно; разные правила — имена и докстроки говорят, чем они разные (в том числе три поиска имён собственных: `contract.py::capitalized_runs`, `NAMED_ENTITY_PATTERN`, `PROPER_NAME_PATTERN`).
 - ▸ Тезис, язык которого не определился (`unknown`), больше не жёсткий отказ качества: правило «язык явно не тот» одно для тезиса и служебных строк (сейчас `quality.py::_core_language_mismatch` считает `unknown` несовпадением, `ServiceLanguage.is_wrong` — нет).
@@ -632,6 +635,7 @@ tmp\                      временные файлы задачи; удаля
 - `LinkCandidate.score` одной формулой и `RankedLinks` для обоих отборов; `SourceDescriptionLines` — один обход описаний источников; правило ссылок блока — в `OfficialLinksBlocks`; `AUTHORITATIVE_CONTEXT_HINTS`, куски текста промта в коде (`source.py`, `backend.py::PROBE_PROMPT`) и тарифы OpenAI — ресурсы.
 - `PublicationBody`, `GateVerdict`, `MergePublication(title, description, body, verdict, layout)`; `TailCollector` вместо двух накопителей; правила «строка — призыв» и «хвост-призыв» — у `CtaLexicon`, `TailReader` уходит.
 - Разъём: `LlmFailure` (значение) и `LlmRequestError(failure)`, разбор `temperature` ответа — в `backends\`; `TokenCounts`; `LlmResponse(text, structured, model)`; `ModelPair`; `openai_request.py`; один цикл flex; `ResponseSchema`; `ParsedJson`; кольцо модулей `openai*`.
+- `MergeSkipReason` / `MergeStopReason` без повтора.
 - Попытка: `MergeRun.request(prompt_text, label)`, `MergeAttempt(prompt, label, sources, run)`, `MergeAttemptResult.outcome: AcceptedMerge | RejectedMerge | LlmFailure`, `MergeOutcome` поверх `AttemptHistory`; один код вместо клона `MergeCheck.run` / `run_with_recovery`; `MergeDiagnostics`; тест проверки идёт через программу, а не повторяет её шаг (`normalized_check`).
 - ▸ Уходят метод без действия `SanitizedDescription.drop_cta`, двойная строка `publish_cta_gate_dropped` и недостижимые проверки (второй отказ `CTA_AS_FIRST_PARAGRAPH` в `check.py`, `MergePromptRefusal`, запасные ссылки «метаданных» и «ячейки таблицы» в `AuthoritativeLinks._video_url` — первой всегда идёт ссылка ряда YouTube; вслед за ними — `SourceVideo.metadata_url`, `SourceVideo.table_link`); `YouTubeVideoId.watch_url_of` без пользователей уходит.
 
@@ -693,7 +697,7 @@ tmp\                      временные файлы задачи; удаля
 
 История до 26-09-2026 — `git show 3e399ba:CLAUDE.md`.
 
-**Где мы (26-09-2026).** Ветка `feature/livecraft`; последний принятый код — `beb0406` (R6). Baseline тестов — **2779**. Реестр замка — **352**: E1 32, E2 36, E3 6, E4 7, E5 157, E6 0, E7 19, E8 0, E9 0, E10 0, E11 4, E12 3, E13 13, E14 17, E15 26, E16 4 (кольца), E17 0, E18 9, E19 1, E20 18, E21 0; исключений 9 (E1 4, E8 3, E13 2). planers — `9903b2e` (21-09-2026), перед этапом 5 перечитать по текущему HEAD.
+**Где мы (26-09-2026).** Ветка `feature/livecraft`; последний принятый код — `eaf1488` (R7). Baseline тестов — **2826**. Реестр замка — **263**: E1 18, E2 32, E3 6, E4 7, E5 112, E6 0, E7 0, E8 0, E9 0, E10 0, E11 3, E12 3, E13 13, E14 17, E15 26, E16 3 (кольца), E17 0, E18 6, E19 1, E20 16, E21 0; исключений 9 (E1 4, E8 3, E13 2). planers — `9903b2e` (21-09-2026), перед этапом 5 перечитать по текущему HEAD.
 
 **Что работает.**
 - Этапы 0–2 закрыты (2.4 — в этапе 6): замок одного экземпляра, сейф (`reveal()` — `SheetsReader._request`, `OpenAiClient._api`, `KeysPanel.own_value`, временная `FormUrlMigration`), конфиги, готовность по частям режима, настройщик на трёх вкладках.
@@ -701,7 +705,7 @@ tmp\                      временные файлы задачи; удаля
 - Нейросеть и merge — код есть, в запуск не подключён (3.15): `LlmBackend`, `MergeJob` → `SlotTexts` (`merged`), санация `MergePublication`; пробник `python -m app.tools.llm_probe`.
 - Флаги `--announce`, `--broadcast`, `--from-package`, `--no-llm`, `--setup` разбираются; части MERGE, ANNOUNCE, BROADCAST, PACKAGES_IN показываются несделанными (`app\run\mode.py::NOT_BUILT_PARTS`).
 
-**Этап R.** Приняты R1.1a, R1.1a-2, R1.1b (дефекты D1–D7, D9), R1.2a, R1.2b (мёртвый код), R1.3, R2.1a, R2.1b (замок), R3 (`766cf25`), R4 (`24c8af4`), R5 (`cbee396`), R6 (`beb0406`). R2.2, R2.3 отменены. Контрольный прогон режима А после R5–R6 — за Артуром. **R7 — промт выдан 26-09-2026**, дальше R8 … R10 (§13).
+**Этап R.** Приняты R1.1a, R1.1a-2, R1.1b (дефекты D1–D7, D9), R1.2a, R1.2b (мёртвый код), R1.3, R2.1a, R2.1b (замок), R3 (`766cf25`), R4 (`24c8af4`), R5 (`cbee396`), R6 (`beb0406`), R7 (`eaf1488`). R2.2, R2.3 отменены. Контрольный прогон режима А после R5–R7 — за Артуром. **R8 — промт выдан 26-09-2026**, дальше R9, R10 (§13).
 
 **Продукт.** После R10 — 3.14b, 3.15, затем этапы 4–8 (§13).
 
@@ -714,6 +718,7 @@ tmp\                      временные файлы задачи; удаля
 - Конфиг: `youtube_pause_seconds` в поставке 0.5; `save_channels_file` копирует прежний файл, только если он есть.
 - Запуск (R5): `run_cli` → `Launch`; части запуска отдают `RunOutcome`, код — `ExitCode.combined`; что делает режим — `ModeReadiness.step` (`app\run\mode.py`: в `readiness.py` не влезал по E18); консоль — только `Console`; лог — `RunLog` (чужие обработчики не снимает); фильтр секретов строит сейф (`Vault.log_filter`); пробники — `ProbeLauncher`, `ProbeSession`, `ProbeConsole`; фасады перенесённых модулей не оставлены.
 - Контур A (R6): ряд — `AdmittedRow` или `SkippedRow`, итог — `PlannedRows`; факты о видео — `SourceFacts` (один кеш `SourceCatalog`, им же пользуется пробник); `SourceVideo(row, facts)` — единственное чтение данных видео, в том числе в merge; счётчики стадий — `app\core\counts.py::Counts`; `StreamSlot(key, texts, previews, sources)`; в пакет идут только `SlotBuild.slots`; `SourceFailureReason` — в `sources\metadata.py`.
+- Конфиг и готовность (R7): поля читает `JsonNode`, объекты строят себя `from_node` в пару к `to_data`; файлы — `SettingsFile`, `ChannelsFile` (`ConfigRead` — значение или ошибка); поставочный livecraft.json — ресурс `settings_shipped.json`; готовность — по нуждам (`Need`, `Readiness.gap` — единственный текст нужды, строка режима — одна на нужду с перечнем частей); прогон таблицы получает `PlanBasis`; вид происхождения значения сейфа один — `VaultOrigin`; ошибки конфига, сейфа и входа — по контракту (E7 — ноль во всём `app`).
 - Общие объекты R3: лог — `observability\log_event.py` (`LogArea`, `LogValue`, «пусто» = `-`, `LogEvent`); время — `Clock`, до чтения настроек — `ShippedSettings.clock`; повторы — `RetryLoop`; `TEXT_ENCODING` и знаки текста — `core\text_format.py`.
 - Живые данные у Артура (в git не входят): `secrets\client_secret.json`, `secrets\cookies.txt`, `tools\yt-dlp.exe`, `tools\deno.exe`; `secrets\channels.json` — 6 каналов из planers; ключ OpenAI и ссылка формы введены в настройщике.
 - Тесты: серии тестов с буфером обмена параллельно не запускать; `httpx2` в `conftest.py` — зависимость SDK `openai`, не новая.
