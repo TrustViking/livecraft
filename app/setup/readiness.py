@@ -70,10 +70,12 @@ class ReadinessVoice(str, Enum):
 
 @dataclass(frozen=True)
 class PlanBasis:
-    """С чем идёт прогон таблицы плана: прочитанные настройки и сейф — одним значением."""
+    """С чем идёт прогон таблицы плана: прочитанные настройки и сейф — одним значением; `with_merge` — часть
+    «нейросеть» в режиме и готова (нет --no-llm, ключ OpenAI в сейфе)."""
 
     settings: LivecraftSettings
     vault: Vault
+    with_merge: bool
 
 
 @dataclass(frozen=True)
@@ -163,13 +165,14 @@ class Readiness:
     def plan_basis(self, mode: ModeReadiness) -> PlanBasis | None:
         """Настройки и сейф для прогона таблицы плана — когда режим её прогоняет (`ModeStep.RUN_PLAN`); иначе None.
 
-        Готовая таблица плана значит прочитанные настройки и сейф: прогону они приходят одним значением.
+        Готовая таблица плана значит прочитанные настройки и сейф: прогону они приходят одним значением, вместе с
+        готовностью нейросети.
         """
         settings: LivecraftSettings | None = self.settings.value
         vault: Vault | None = self.vault.vault
         if mode.step is not ModeStep.RUN_PLAN or settings is None or vault is None:
             return None
-        return PlanBasis(settings=settings, vault=vault)
+        return PlanBasis(settings=settings, vault=vault, with_merge=mode.is_part_ready(RunPart.MERGE))
 
     def gap(self, need: Need) -> str | None:
         """Чего не хватает нужде — одна строка «что задать и где»; нужда удовлетворена — None.

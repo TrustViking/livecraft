@@ -21,13 +21,14 @@ from app.intake.intake import IntakeRequest, IntakeResult, IntakeStage, PlanInta
 from app.main import run_cli
 from app.paths import ROOT_ENV_VAR, LivecraftPaths
 from app.run.exit_code import ExitCode
-from app.run.mode import RunPart
+from app.run.mode import Need, RunPart
 from app.runtime.single_instance import InstanceLock, LockEvent, LockOwner
 from app.secretsafe.crypto import VaultFileKey
 from app.secretsafe.store import VaultStore
 from app.secretsafe.field import SecretField, VaultOrigin
 from app.secretsafe.value import SecretValue
 from app.secretsafe.vault import Vault
+from app.setup.readiness import Readiness
 from app.packages.package import PackageResult
 from app.sheets.plan import SheetPlan
 from app.sheets.rows import AdmittedRow, PlannedRows
@@ -656,13 +657,14 @@ def test_a_fully_configured_root_runs_every_built_part(
     capsys: pytest.CaptureFixture[str],
     intake: _IntakeStub,
 ) -> None:
-    """Всё настроено: режим «всё» печатает сводку, одну строку «нейросети пока нет», строки «появится позже»
-    и строки прогона; код — код прогона."""
+    """Всё настроено: режим «всё» печатает сводку, строки «появится позже» и строки прогона; нейросеть готова —
+    о ней строки готовности нет, прогон идёт с merge; код — код прогона."""
     assert run_cli([]) == int(ExitCode.OK)
     out: str = capsys.readouterr().out
     lines: list[str] = out.splitlines()
     assert msg.READINESS_SUMMARY_TITLE in out
-    assert lines.count(RunPart.MERGE.not_built_line) == 1
+    assert RunPart.MERGE.human_label not in out
+    assert [request.with_merge for request in intake.requests] == [True]
     assert RunPart.ANNOUNCE.not_built_line in out and RunPart.BROADCAST.not_built_line in out
     for line in intake.result.console_lines:
         assert line in lines
@@ -722,16 +724,30 @@ def test_the_run_request_carries_an_aware_now_in_the_program_zone_and_a_new_pack
 def test_without_the_openai_key_the_run_goes_on_with_the_video_texts(
     ready_root: LivecraftPaths,
     capsys: pytest.CaptureFixture[str],
+    intake: _IntakeStub,
 ) -> None:
-    """Нейросети в этой версии нет: ключ OpenAI не нужен ни с --no-llm, ни без него; без флага — одна строка
-    «нейросети пока нет», с флагом — ни одной."""
+    """Без ключа OpenAI прогон идёт без merge, на текстах видео. С --no-llm нейросети в режиме нет — код 0 и ни
+    строки о ней; без флага — строка «Не готово — название и описание эфиров нейросетью: …» и код 1."""
     write_supplied_vault(ready_root, {k: v for k, v in SUPPLIED_VALUES.items() if k is not SecretField.OPENAI_API_KEY})
     assert run_cli(["--no-llm"]) == int(ExitCode.OK)
-    assert RunPart.MERGE.not_built_line not in capsys.readouterr().out
-    assert run_cli([]) == int(ExitCode.OK)
+    assert RunPart.MERGE.human_label not in capsys.readouterr().out
+    assert run_cli([]) == int(ExitCode.ERRORS)
     out: str = capsys.readouterr().out
-    assert out.splitlines().count(RunPart.MERGE.not_built_line) == 1
-    assert "Не готово" not in out
+    gap: str | None = Readiness.check(ready_root).gap(Need.OPENAI_VAULT)
+    assert gap is not None and SecretField.OPENAI_API_KEY.human_label in gap
+    [merge_line] = [line for line in out.splitlines() if RunPart.MERGE.human_label in line]
+    assert merge_line == msg.RUN_NEED_BLOCKED.format(parts=RunPart.MERGE.human_label, gap=gap)
+    assert [request.with_merge for request in intake.requests] == [False, False]
+
+
+def test_the_run_request_goes_with_merge_only_when_the_merge_part_is_ready(
+    ready_root: LivecraftPaths,
+    intake: _IntakeStub,
+) -> None:
+    """Ключ OpenAI в сейфе: без --no-llm прогон идёт с merge, с --no-llm — без него."""
+    assert run_cli([]) == int(ExitCode.OK)
+    assert run_cli(["--no-llm"]) == int(ExitCode.OK)
+    assert [request.with_merge for request in intake.requests] == [True, False]
 
 
 def test_without_the_table_nothing_is_ready_and_the_window_opens(
@@ -753,7 +769,7 @@ def test_the_mode_readiness_lands_in_the_log(ready_root: LivecraftPaths) -> None
     assert run_cli([]) == int(ExitCode.OK)
     [log_file] = list(ready_root.logs_dir.glob(LOG_GLOB))
     text: str = log_file.read_text(encoding="utf-8")
-    assert "mode_readiness mode=all ready=plan,package blocked=- not_built=merge,announce,broadcast" in text
+    assert "mode_readiness mode=all ready=plan,merge,package blocked=- not_built=announce,broadcast" in text
     assert "run_started version=" in text and "mode=all " in text
 
 

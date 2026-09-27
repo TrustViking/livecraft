@@ -65,8 +65,9 @@ def test_every_mode_but_all_has_its_flag() -> None:
     }
 
 
-def test_merge_announce_broadcast_and_package_reading_are_not_built_yet() -> None:
-    assert NOT_BUILT_PARTS == {RunPart.MERGE, RunPart.ANNOUNCE, RunPart.BROADCAST, RunPart.PACKAGES_IN}
+def test_announce_broadcast_and_package_reading_are_not_built_yet_and_merge_is() -> None:
+    assert NOT_BUILT_PARTS == {RunPart.ANNOUNCE, RunPart.BROADCAST, RunPart.PACKAGES_IN}
+    assert RunPart.MERGE.is_built
     for part in RunPart:
         assert part.is_built is (part not in NOT_BUILT_PARTS)
 
@@ -75,14 +76,8 @@ def test_every_part_has_a_label_and_every_missing_part_a_stage() -> None:
     for part in RunPart:
         assert part.human_label == msg.RUN_PART_LABELS[part.value]
     for part in NOT_BUILT_PARTS:
-        template: str = msg.RUN_PART_NOT_BUILT_TEXTS.get(part.value, msg.RUN_PART_NOT_BUILT)
-        assert part.not_built_line == template.format(part=part.human_label, stage=msg.RUN_PART_STAGES[part.value])
-
-
-def test_the_merge_line_says_the_texts_come_from_the_videos() -> None:
-    """Без нейросети запуск идёт на текстах видео — строка говорит именно это, а не «не выполняется»."""
-    line: str = RunPart.MERGE.not_built_line
-    assert "из видео" in line and msg.RUN_PART_STAGES["merge"] in line
+        expected: str = msg.RUN_PART_NOT_BUILT.format(part=part.human_label, stage=msg.RUN_PART_STAGES[part.value])
+        assert part.not_built_line == expected
 
 
 def test_every_part_names_what_it_needs() -> None:
@@ -122,8 +117,8 @@ def not_built(part: RunPart) -> PartReadiness:
 def test_the_state_of_a_part_follows_from_its_gaps() -> None:
     assert ready(RunPart.PLAN).state is PartState.READY
     assert blocked(RunPart.PLAN).state is PartState.BLOCKED
-    assert not_built(RunPart.MERGE).state is PartState.NOT_BUILT
-    assert PartReadiness(part=RunPart.MERGE, unmet=(SETTINGS_GAP,)).state is PartState.NOT_BUILT
+    assert not_built(RunPart.ANNOUNCE).state is PartState.NOT_BUILT
+    assert PartReadiness(part=RunPart.ANNOUNCE, unmet=(SETTINGS_GAP,)).state is PartState.NOT_BUILT
 
 
 def mode_of(*parts: PartReadiness, fixable: bool = True) -> ModeReadiness:
@@ -148,12 +143,34 @@ def test_a_mode_without_the_table_only_reports() -> None:
 def test_a_blocked_part_makes_the_outcome_a_failure() -> None:
     """Не настроенная реализованная часть — ошибка (код 1); нереализованная — «появится позже», не ошибка."""
     assert mode_of(ready(RunPart.PLAN), blocked(RunPart.PACKAGE)).outcome is RunOutcome.FAILED
-    assert mode_of(ready(RunPart.PLAN), not_built(RunPart.MERGE)).outcome is RunOutcome.DONE
+    assert mode_of(ready(RunPart.PLAN), not_built(RunPart.ANNOUNCE)).outcome is RunOutcome.DONE
 
 
 def test_the_event_names_the_parts_by_state() -> None:
-    mode: ModeReadiness = mode_of(ready(RunPart.PLAN), not_built(RunPart.MERGE), blocked(RunPart.PACKAGE))
-    assert mode.event.text == "mode_readiness mode=all ready=plan blocked=package not_built=merge"
+    mode: ModeReadiness = mode_of(
+        ready(RunPart.PLAN), ready(RunPart.MERGE), blocked(RunPart.PACKAGE), not_built(RunPart.ANNOUNCE)
+    )
+    assert mode.event.text == "mode_readiness mode=all ready=plan,merge blocked=package not_built=announce"
+
+
+# --- нейросеть: часть реализована, без ключа она не готова
+
+
+OPENAI_GAP: NeedGap = NeedGap(need=Need.OPENAI_VAULT, text="ключ OpenAI — вкладка «Ключи и ссылки»")
+
+
+def test_merge_without_the_key_is_blocked_the_table_runs_and_the_outcome_is_a_failure() -> None:
+    """Нет ключа OpenAI: строка «Не готово — нейросеть: …», таблица всё равно прогоняется, исход — ошибка (код 1);
+    merge в прогоне нет."""
+    mode: ModeReadiness = mode_of(ready(RunPart.PLAN), blocked(RunPart.MERGE, OPENAI_GAP), ready(RunPart.PACKAGE))
+    assert mode.step is ModeStep.RUN_PLAN and mode.outcome is RunOutcome.FAILED
+    assert mode.lines == (msg.RUN_NEED_BLOCKED.format(parts=RunPart.MERGE.human_label, gap=OPENAI_GAP.text),)
+    assert not mode.is_part_ready(RunPart.MERGE)
+
+
+def test_merge_with_the_key_is_ready() -> None:
+    mode: ModeReadiness = mode_of(ready(RunPart.PLAN), ready(RunPart.MERGE), ready(RunPart.PACKAGE))
+    assert mode.is_part_ready(RunPart.MERGE) and mode.outcome is RunOutcome.DONE and mode.lines == ()
 
 
 # --- одна строка на нужду с перечнем частей
@@ -171,11 +188,11 @@ def test_one_need_of_several_parts_is_one_line_naming_them_all() -> None:
 
 def test_needs_are_said_in_work_order_and_not_built_parts_stay_in_place() -> None:
     mode: ModeReadiness = mode_of(
-        ready(RunPart.PLAN), not_built(RunPart.MERGE), blocked(RunPart.PACKAGE, SETTINGS_GAP, FORM_GAP)
+        ready(RunPart.PLAN), not_built(RunPart.ANNOUNCE), blocked(RunPart.PACKAGE, SETTINGS_GAP, FORM_GAP)
     )
     package: str = RunPart.PACKAGE.human_label
     assert mode.lines == (
-        RunPart.MERGE.not_built_line,
+        RunPart.ANNOUNCE.not_built_line,
         msg.RUN_NEED_BLOCKED.format(parts=package, gap=SETTINGS_GAP.text),
         msg.RUN_NEED_BLOCKED.format(parts=package, gap=FORM_GAP.text),
     )
@@ -194,9 +211,8 @@ def test_one_text_of_different_needs_is_one_line_naming_all_their_parts() -> Non
     assert mode.lines == (msg.RUN_NEED_BLOCKED.format(parts=parts, gap=VAULT_BROKEN),)
 
 
-def test_a_broken_vault_for_the_plan_and_the_merge_is_one_line(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Когда нейросеть появится в запуске: сломанный сейф не даёт ни таблицы, ни ключа OpenAI — одна строка."""
-    monkeypatch.setattr("app.run.mode.NOT_BUILT_PARTS", NOT_BUILT_PARTS - {RunPart.MERGE})
+def test_a_broken_vault_for_the_plan_and_the_merge_is_one_line() -> None:
+    """Сломанный сейф не даёт ни таблицы, ни ключа OpenAI — одна строка."""
     mode: ModeReadiness = mode_of(
         blocked(RunPart.PLAN, NeedGap(need=Need.SHEETS_VAULT, text=VAULT_BROKEN)),
         blocked(RunPart.MERGE, NeedGap(need=Need.OPENAI_VAULT, text=VAULT_BROKEN)),

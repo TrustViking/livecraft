@@ -5,7 +5,8 @@
 
 Остановка: квота нейросети исчерпана или виновата настройка модели — merge не делается до конца запуска, оставшиеся
 слоты получают тексты источников, запуск идёт дальше (инвариант 9). Почему merge не делается — одно перечисление
-`MergeStopReason`: для одного слота (мало описаний) или до конца запуска. Модель выбирает не этот объект: он получает
+`MergeStopReason`: для одного слота (мало описаний) или до конца запуска; отказ нейросети, который остановил merge,
+остаётся полем `stop_failure` — его причину запуск называет оператору. Модель выбирает не этот объект: он получает
 имя уже выбранной (`ModelChoice.chosen`) и из неё строит запрос каждой попытки (`MergeRun.request`).
 """
 from __future__ import annotations
@@ -16,6 +17,7 @@ from enum import Enum
 
 from app.config.settings import LlmSettings
 from app.llm.backend import LlmBackend, LlmRequest
+from app.llm.errors import LlmFailure
 from app.llm.merges.answer import MergeAnswer
 from app.llm.merges.merge_rules import MergeRules
 from app.observability.log_event import LogArea, LogEvent, get_logger
@@ -158,7 +160,7 @@ class MergeTally:
 @dataclass
 class MergeRun:
     """Merge одного запуска: нейросеть, выбранная модель, настройки `llm`, правила, видео запуска (один кеш данных
-    и языка на источники и рекомендуемые видео), счётчики и причина остановки."""
+    и языка на источники и рекомендуемые видео), счётчики, причина остановки и отказ, который её вызвал."""
 
     backend: LlmBackend = field(repr=False)
     model: str
@@ -167,16 +169,18 @@ class MergeRun:
     catalog: SourceCatalog = field(repr=False)
     tally: MergeTally = field(default_factory=MergeTally)
     stop_reason: MergeStopReason | None = None
+    stop_failure: LlmFailure | None = None
 
     def request(self, prompt_text: str, label: str) -> LlmRequest:
         """Запрос попытки: промт, выбранная модель, предел ответа и ожидание из настроек, схема ответа merge."""
         return LlmRequest.from_settings(self.settings, self.model, prompt_text, label).with_schema(MergeAnswer.SCHEMA)
 
-    def stop(self, reason: MergeStopReason) -> None:
-        """Остановить merge до конца запуска; первая причина остаётся."""
+    def stop(self, reason: MergeStopReason, failure: LlmFailure) -> None:
+        """Остановить merge до конца запуска отказом `failure`; первая причина и первый отказ остаются."""
         if self.stop_reason is not None:
             return
         self.stop_reason = reason
+        self.stop_failure = failure
         stopped: LogEvent = LogEvent.of(RunEvent.STOPPED, provider=self.backend.name, model=self.model, reason=reason)
         stopped.emit(LOGGER, logging.ERROR)
 

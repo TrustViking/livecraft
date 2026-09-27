@@ -8,7 +8,7 @@ from datetime import timedelta
 import pytest
 
 from app.llm.backend import LlmRequest
-from app.llm.errors import LlmErrorKind
+from app.llm.errors import LlmErrorKind, LlmFailure
 from app.llm.merges.answer import MergeAnswer
 from app.llm.merges.outcome import MergeOutcome
 from app.llm.merges.run import MergeArtifactStatus, MergeDayBlocks, MergeStopReason, MergeTally, SlotCount
@@ -113,12 +113,15 @@ def test_the_summary_line_names_every_counter_in_order() -> None:
 # --- остановка
 
 
-def test_the_first_stop_reason_stays(llm_log: LogCapture) -> None:
+def test_the_first_stop_reason_and_its_failure_stay(llm_log: LogCapture) -> None:
+    """Первая остановка остаётся вместе с отказом, который её вызвал: его причину запуск называет оператору."""
     merge_run, _ = run_with()
-    assert merge_run.stop_reason is None and merge_run.event.text.endswith(" stop_reason=-")
-    merge_run.stop(MergeStopReason.QUOTA)
-    merge_run.stop(MergeStopReason.MODEL)
-    assert merge_run.stop_reason is MergeStopReason.QUOTA
+    assert merge_run.stop_reason is None and merge_run.stop_failure is None
+    assert merge_run.event.text.endswith(" stop_reason=-")
+    quota: LlmFailure = error(LlmErrorKind.QUOTA).failure
+    merge_run.stop(MergeStopReason.QUOTA, quota)
+    merge_run.stop(MergeStopReason.MODEL, error(LlmErrorKind.AUTH).failure)
+    assert merge_run.stop_reason is MergeStopReason.QUOTA and merge_run.stop_failure is quota
     assert merge_run.event.text.endswith(" stop_reason=quota_exhausted")
     stopped: list[str] = [line for line in llm_log.messages() if line.startswith("merge_run_stopped ")]
     assert stopped == ["merge_run_stopped provider=fake model=gpt-x reason=quota_exhausted"]

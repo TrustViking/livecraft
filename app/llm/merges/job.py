@@ -1,7 +1,8 @@
 """Merge одного слота: попытки с повторами, итог — тексты слота (CLAUDE.md §3 шаг 5, §14 решение 23).
 
-- merge — только при двух и больше непустых описаниях источников, иначе тексты источников (`merge_input_summary`,
-  пропуск); merge запуска уже остановлен — слот без запроса (`merge_branch_aborted_quota_exhausted`);
+- merge — только при двух и больше непустых описаниях источников (`MergeSources.needs_merge` — то же правило
+  спрашивает запуск до выбора модели), иначе тексты источников (`merge_input_summary`, пропуск); merge запуска уже
+  остановлен — слот без запроса (`merge_branch_aborted_quota_exhausted`);
 - две попытки, три — если хоть одна отвергнута по повторяемой причине (`AttemptHistory`); профиль повтора выбирает
   итог отвергнутой попытки; квота или настройка модели — стоп слота и merge запуска; прочий отказ нейросети —
   `unexpected_error` и обычный повтор;
@@ -21,6 +22,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
 
+from app.llm.errors import LlmFailure
 from app.llm.merges.attempt import STAGE_PRIMARY, AcceptedMerge, MergeAttempt, MergeAttemptResult
 from app.llm.merges.check import MergeAttemptLabel
 from app.llm.merges.description import MergedDescription
@@ -127,6 +129,29 @@ class ParagraphEnforcement:
 
 
 @dataclass(frozen=True)
+class MergeSources:
+    """Источники слота в порядке рядов и правило «слоту нужен merge»: непустых описаний не меньше
+    `MIN_DESCRIBED_SOURCES`. Сводить одно описание не с чем — модель не спрашивается, а если merge не нужен ни одному
+    слоту запуска, модель не выбирается вовсе."""
+
+    videos: tuple[SourceVideo, ...]
+
+    @property
+    def descriptions(self) -> tuple[str, ...]:
+        """Описания источников без краёв; видео без данных — пустое."""
+        return tuple(video.text.description.strip() for video in self.videos)
+
+    @property
+    def described(self) -> int:
+        """Сколько источников с непустым описанием."""
+        return sum(1 for description in self.descriptions if description)
+
+    @property
+    def needs_merge(self) -> bool:
+        return self.described >= MIN_DESCRIBED_SOURCES
+
+
+@dataclass(frozen=True)
 class MergeJob:
     """Merge одного слота: ключ слота, его источники в порядке рядов и merge запуска (нейросеть, модель, настройки,
     правила, счётчики)."""
@@ -140,18 +165,13 @@ class MergeJob:
         return LogEvent.of(name, slot=self.key.slot_id, language=self.key.language)
 
     @property
-    def descriptions(self) -> tuple[str, ...]:
-        """Описания источников без краёв; видео без данных — пустое."""
-        return tuple(video.text.description.strip() for video in self.videos)
-
-    @property
-    def described_sources(self) -> int:
-        return sum(1 for description in self.descriptions if description)
+    def sources(self) -> MergeSources:
+        return MergeSources(self.videos)
 
     @property
     def skip_reason(self) -> MergeStopReason | None:
         """Почему модель не спрашивается: мало описаний (раньше), merge запуска остановлен."""
-        if self.described_sources < MIN_DESCRIBED_SOURCES:
+        if not self.sources.needs_merge:
             return MergeStopReason.INSUFFICIENT_DESCRIPTIONS
         return self.merge_run.stop_reason
 
@@ -208,16 +228,17 @@ class MergeJob:
         )
 
     def _note_failure(self, result: MergeAttemptResult) -> None:
-        """Неудачная попытка: строка лога; квота или настройка модели останавливают merge запуска."""
+        """Неудачная попытка: строка лога; квота или настройка модели останавливают merge запуска своим отказом."""
         run: MergeRun = self.merge_run
-        if result.is_model_configuration and result.failure is not None:
+        failure: LlmFailure | None = result.failure
+        if result.is_model_configuration and failure is not None:
             fatal: LogEvent = result.label.event(JobEvent.FATAL_MODEL_ERROR).extended(provider=run.backend.name)
-            result.failure.extend(fatal).emit(LOGGER, logging.ERROR)
-            run.stop(MergeStopReason.MODEL)
+            failure.extend(fatal).emit(LOGGER, logging.ERROR)
+            run.stop(MergeStopReason.MODEL, failure)
             return
         result.invalid_event(run.backend.name).emit(LOGGER)
-        if result.is_quota:
-            run.stop(MergeStopReason.QUOTA)
+        if result.is_quota and failure is not None:
+            run.stop(MergeStopReason.QUOTA, failure)
 
     def _merged(self, history: AttemptHistory, accepted: AcceptedMerge) -> MergeOutcome:
         """Ответ принят: выравнивание абзацев слота из нескольких источников, санация и проверка перед публикацией;
@@ -273,7 +294,7 @@ class MergeJob:
         if reason.stops_the_run:
             self.event(ABORTED_EVENTS[reason]).emit(LOGGER, logging.ERROR)
         else:
-            skipped: LogEvent = self.event(JobEvent.SKIPPED).extended(non_empty_descriptions=self.described_sources)
+            skipped: LogEvent = self.event(JobEvent.SKIPPED).extended(non_empty_descriptions=self.sources.described)
             skipped.extended(reason=reason).emit(LOGGER)
         return MergeOutcome(self.key, len(self.videos), self._source_texts, skipped_reason=reason)
 
@@ -292,11 +313,12 @@ class MergeJob:
     @property
     def input_event(self) -> LogEvent:
         """Строка `merge_input_summary` — счётчики источников, без текста."""
-        descriptions: tuple[str, ...] = self.descriptions
-        expected: bool = self.described_sources >= MIN_DESCRIBED_SOURCES
+        merge_sources: MergeSources = self.sources
+        descriptions: tuple[str, ...] = merge_sources.descriptions
+        expected: bool = merge_sources.needs_merge
         sources: LogEvent = self.event(JobEvent.INPUT_SUMMARY).extended(
             source_count=len(self.videos),
-            non_empty_descriptions=self.described_sources,
+            non_empty_descriptions=merge_sources.described,
             titles_non_empty=sum(1 for video in self.videos if video.text.title.strip()),
             source_desc_chars_total=sum(len(text) for text in descriptions),
             source_desc_chars_passed_to_llm=sum(len(normalize_multiline_text(text)) for text in descriptions),

@@ -420,20 +420,23 @@ def test_without_channels_the_table_and_package_are_ready(ready_paths: Livecraft
     assert all(msg.READINESS_GAP_CHANNELS_MISSING not in line for line in mode.lines)
 
 
-def test_the_all_mode_without_the_openai_key_blocks_nothing(ready_paths: LivecraftPaths) -> None:
-    """Нейросети в этой версии нет: режим «всё» без --no-llm ключа OpenAI не требует и «эфиры» готовыми не
-    показывает; с --no-llm строки о нейросети нет вовсе."""
+def test_the_all_mode_without_the_openai_key_blocks_only_the_merge(ready_paths: LivecraftPaths) -> None:
+    """Без ключа OpenAI режим «всё» без --no-llm: нейросеть не готова — одна строка «Не готово», исход — ошибка,
+    таблица прогоняется без merge; с --no-llm нейросети в режиме нет — ни строки, ни ошибки."""
     set_form_url(ready_paths, FORM_URL)
     write_supplied_vault(ready_paths, {k: v for k, v in SUPPLIED_VALUES.items() if k is not SecretField.OPENAI_API_KEY})
     readiness: Readiness = Readiness.check(ready_paths)
-    assert readiness.part(RunPart.MERGE).state is PartState.NOT_BUILT
-    assert readiness.gap(Need.OPENAI_VAULT) is not None
+    gap: str | None = readiness.gap(Need.OPENAI_VAULT)
+    assert gap is not None and readiness.part(RunPart.MERGE).state is PartState.BLOCKED
     with_llm: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=False)
-    assert with_llm.in_state(PartState.BLOCKED) == ()
-    assert RunPart.BROADCAST not in [part.part for part in with_llm.in_state(PartState.READY)]
-    assert with_llm.lines.count(RunPart.MERGE.not_built_line) == 1
+    assert [part.part for part in with_llm.in_state(PartState.BLOCKED)] == [RunPart.MERGE]
+    assert with_llm.lines[0] == msg.RUN_NEED_BLOCKED.format(parts=RunPart.MERGE.human_label, gap=gap)
+    assert with_llm.step is ModeStep.RUN_PLAN and with_llm.outcome is RunOutcome.FAILED
+    basis: PlanBasis | None = readiness.plan_basis(with_llm)
+    assert basis is not None and not basis.with_merge
     without_llm: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=True)
-    assert without_llm.in_state(PartState.BLOCKED) == () and RunPart.MERGE.not_built_line not in without_llm.lines
+    assert without_llm.in_state(PartState.BLOCKED) == () and without_llm.outcome is RunOutcome.DONE
+    assert all(RunPart.MERGE.human_label not in line for line in without_llm.lines)
 
 
 def test_without_the_form_the_package_waits(ready_paths: LivecraftPaths) -> None:
@@ -487,19 +490,20 @@ def test_a_broken_settings_file_is_one_line_for_the_table_and_the_package(ready_
 def test_parts_not_built_are_not_blocked(ready_paths: LivecraftPaths) -> None:
     """Частей, которых нет в этой версии, настройкой не починить: строка «появится позже», а не «не готово»."""
     readiness: Readiness = Readiness.check(ready_paths)
-    for part in (RunPart.MERGE, RunPart.ANNOUNCE, RunPart.BROADCAST, RunPart.PACKAGES_IN):
+    for part in (RunPart.ANNOUNCE, RunPart.BROADCAST, RunPart.PACKAGES_IN):
         assert readiness.part(part).state is PartState.NOT_BUILT
+    assert readiness.part(RunPart.MERGE).state is PartState.READY
 
 
 def test_the_announce_mode_with_everything_set_blocks_nothing(ready_paths: LivecraftPaths) -> None:
     mode: ModeReadiness = _configured(ready_paths).for_mode(RunMode.ANNOUNCE, no_llm=False)
-    assert [part.part for part in mode.in_state(PartState.READY)] == [RunPart.PLAN, RunPart.PACKAGE]
+    assert [part.part for part in mode.in_state(PartState.READY)] == [RunPart.PLAN, RunPart.MERGE, RunPart.PACKAGE]
     assert mode.in_state(PartState.BLOCKED) == ()
-    assert [part.part for part in mode.in_state(PartState.NOT_BUILT)] == [RunPart.MERGE, RunPart.ANNOUNCE]
-    assert mode.lines == (RunPart.MERGE.not_built_line, RunPart.ANNOUNCE.not_built_line)
+    assert [part.part for part in mode.in_state(PartState.NOT_BUILT)] == [RunPart.ANNOUNCE]
+    assert mode.lines == (RunPart.ANNOUNCE.not_built_line,)
     assert not mode.is_nothing_ready
-    assert mode.is_part_ready(RunPart.PLAN) and not mode.is_part_ready(RunPart.MERGE)
-    assert mode.event.text == "mode_readiness mode=announce ready=plan,package blocked=- not_built=merge,announce"
+    assert mode.is_part_ready(RunPart.PLAN) and mode.is_part_ready(RunPart.MERGE)
+    assert mode.event.text == "mode_readiness mode=announce ready=plan,merge,package blocked=- not_built=announce"
 
 
 def test_the_from_package_mode_needs_no_table_and_no_key(ready_paths: LivecraftPaths) -> None:
@@ -525,7 +529,6 @@ def test_the_mode_lines_follow_the_work_order(ready_paths: LivecraftPaths) -> No
     readiness: Readiness = Readiness.check(ready_paths)
     mode: ModeReadiness = readiness.for_mode(RunMode.ALL, no_llm=False)
     assert mode.lines == (
-        RunPart.MERGE.not_built_line,
         msg.RUN_NEED_BLOCKED.format(parts=RunPart.PACKAGE.human_label, gap=readiness.gap(Need.FORM)),
         RunPart.ANNOUNCE.not_built_line,
         RunPart.BROADCAST.not_built_line,
@@ -614,9 +617,15 @@ def test_the_package_mode_only_reports(ready_paths: LivecraftPaths) -> None:
 
 
 def test_a_ready_table_gives_the_run_its_settings_and_vault_at_once(ready_paths: LivecraftPaths) -> None:
+    """Прогону — настройки, сейф и готовность нейросети: с ключом и без --no-llm merge идёт, с --no-llm — нет."""
     readiness: Readiness = Readiness.check(ready_paths)
     basis: PlanBasis | None = readiness.plan_basis(readiness.for_mode(RunMode.ALL, no_llm=True))
-    assert basis == PlanBasis(settings=readiness.settings.value, vault=readiness.vault.vault)   # type: ignore[arg-type]
+    expected: PlanBasis = PlanBasis(
+        settings=readiness.settings.value, vault=readiness.vault.vault, with_merge=False   # type: ignore[arg-type]
+    )
+    assert basis == expected
+    with_llm: PlanBasis | None = readiness.plan_basis(readiness.for_mode(RunMode.ALL, no_llm=False))
+    assert with_llm is not None and with_llm.with_merge
 
 
 def test_a_mode_without_the_table_gets_no_plan_run(ready_paths: LivecraftPaths) -> None:

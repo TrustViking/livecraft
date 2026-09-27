@@ -61,7 +61,6 @@ RUN_PART_LABELS: Final[dict[str, str]] = {
 }
 # На каком этапе появится часть, которой в этой версии нет (§13).
 RUN_PART_STAGES: Final[dict[str, str]] = {
-    "merge": "Перенос нейросети",
     "announce": "Публикация",
     "broadcast": "Эфиры",
     "packages_in": "Эфиры",
@@ -70,10 +69,6 @@ RUN_PART_STAGES: Final[dict[str, str]] = {
 # {gap} — что задать и где (Readiness.gap).
 RUN_NEED_BLOCKED: Final[str] = "Не готово — {parts}: {gap}."
 RUN_PART_NOT_BUILT: Final[str] = "Пока нет — {part}: будет на этапе «{stage}», в этой версии не выполняется."
-# Свои строки нереализованных частей, где общей мало: без нейросети запуск идёт дальше на текстах видео.
-RUN_PART_NOT_BUILT_TEXTS: Final[dict[str, str]] = {
-    "merge": "Нейросети пока нет — тексты эфиров из видео как есть; нейросеть будет на этапе «{stage}».",
-}
 # Что задать и где: {what} — чего не хватает, {tab} — вкладка настройщика (SETUP_TAB_*).
 READINESS_GAP_IN_SETUP: Final[str] = "{what} — «Livecraft — настройка», вкладка «{tab}»"
 READINESS_GAP_SETTINGS: Final[str] = "настройки запуска ({key} — {problem})"
@@ -542,6 +537,24 @@ INTAKE_SLOTS_LINE: Final[str] = "Слоты эфиров: {count}{languages}{ref
 INTAKE_SLOTS_LANGUAGES: Final[str] = " ({items})"
 INTAKE_SLOTS_REFUSED: Final[str] = ", отказано: {count} — причины в логе"
 INTAKE_NO_SLOTS: Final[str] = "Годных слотов нет — пакет не записан."
+# Стадия нейросети (app\intake\merge_stage.py): модель — строкой LLM_CHOICE_*, затем итог по слотам, расход и
+# остановка. Ключи INTAKE_MERGE_VIDEO_REASONS — значения VideoTextReason. Ни названий, ни описаний, ни ключа.
+INTAKE_MERGE_LINE: Final[str] = "Нейросеть: слотов {total}, тексты модели {merged}, тексты видео {video}{reasons}."
+INTAKE_MERGE_REASONS: Final[str] = " — {items}"
+INTAKE_MERGE_VIDEO_REASONS: Final[dict[str, str]] = {
+    "few_descriptions": "меньше двух описаний у видео",
+    "not_accepted": "ответ модели не принят",
+    "publish_blocked": "не прошли проверку перед публикацией",
+    "stopped": "нейросеть остановлена",
+    "no_model": "модель не выбрана",
+}
+INTAKE_MERGE_COST: Final[str] = "Расход нейросети: запросов {requests}, ${cost}."
+INTAKE_MERGE_COST_UNKNOWN: Final[str] = (
+    "Расход нейросети: запросов {requests}, не меньше ${cost} — цена части ответов неизвестна."
+)
+INTAKE_MERGE_STOPPED: Final[str] = (
+    "Нейросеть остановлена до конца запуска — остальные слоты с текстами видео. {failure}"
+)
 
 # --- пробник источников (app\tools\source_probe.py): {…} — данные видео, их можно показывать
 SOURCE_PROBE_TITLE: Final[str] = "Проверка источников через yt-dlp"

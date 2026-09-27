@@ -1,5 +1,6 @@
 """Общие объекты тестов merge: годные источники без сети, образцовые ответы модели, нейросеть за разъёмом с очередью
-ответов, слот и merge запуска, тексты промта с заменёнными шаблонами (CLAUDE.md §11)."""
+ответов и заданным исходом пробы, слот и merge запуска, ответ, который не проходит проверку перед публикацией, тексты
+промта с заменёнными шаблонами (CLAUDE.md §11)."""
 from __future__ import annotations
 
 import json
@@ -120,12 +121,18 @@ def error(kind: LlmErrorKind) -> LlmRequestError:
 
 @dataclass
 class QueueBackend:
-    """Нейросеть за разъёмом: сохранённые ответы по очереди; отказ — `LlmRequestError` в очереди."""
+    """Нейросеть за разъёмом: сохранённые ответы по очереди; отказ — `LlmRequestError` в очереди.
+
+    Проба модели — отказ вида `probe_kind` (по умолчанию FAILED: модель остаётся «не проверена»); None — модель
+    ответила на пробу. Пробы запоминаются в `probes`.
+    """
 
     replies: list[str | LlmRequestError] = field(default_factory=list)
     structured: bool = False
     requests: list[LlmRequest] = field(default_factory=list)
     run_usage: RunUsage = field(default_factory=RunUsage)
+    probe_kind: LlmErrorKind | None = LlmErrorKind.FAILED
+    probes: list[str] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -145,7 +152,10 @@ class QueueBackend:
         )
 
     def probe(self, model_name: str) -> LlmResponse | LlmFailure:
-        return error(LlmErrorKind.FAILED).failure
+        self.probes.append(model_name)
+        if self.probe_kind is None:
+            return LlmResponse(text=answer(STRONG_ANSWER), structured=None, model=model_name)
+        return error(self.probe_kind).failure
 
     @property
     def prompts(self) -> list[str]:
@@ -158,6 +168,33 @@ def group_of(pairs: tuple[tuple[str, str], ...] = EXPANDED_SOURCES, start: datet
         merge_video(index + 2, title, body) for index, (title, body) in enumerate(pairs)
     )
     return SlotGroup(SlotKey(start=start, language="en"), videos)
+
+
+# Ответ, который проходит проверку, но не проверку перед публикацией (повтор абзацев), — у слота на украинском.
+BLOCKED_TITLE: str = "Прямий ефір з NASA"
+BLOCKED_ANSWER: str = (
+    "Сьогодні говоримо про 🌐🌐 🔔 нові санкції, їхні 📌📌 терміни 🌐🌐 та 🚨 реакцію партнерів у Брюсселі. "
+    "#подія 💥💥 ☀ 🔹🔹 ☀ 🚨🚨\n\nУ цьому стрімі ви побачите:\n⚖ міксований текст у пункті\n"
+    "🔹 Віталій Орлов коментує реакцію громади\n🔹 бюджетні правки та голосування\n🎤 проверка через google docs\n"
+    "🔹 бюджетні правки та голосування\n🌐 перевірка домену news.bbc.co.uk\n\n"
+    "Напишіть у коментарях свою думку #расследование"
+)
+BLOCKED_SOURCES: tuple[tuple[str, str], ...] = (
+    EXPANDED_SOURCES[0],
+    ("Lviv grid repair logistics", ""),
+    ("Geneva relief corridor desk", "From Geneva, Marta Leone outlines the aid corridor timetable, WHO cargo counts, "
+     "and donor pledges."),
+    ("Brussels sanctions vote briefing", "Офіційний сайт: <https://example.org/contact> ;\r\n"
+     "From Geneva, Marta Leone outlines the aid corridor timetable, WHO cargo counts, and donor pledges."),
+)
+
+
+def uk_group(pairs: tuple[tuple[str, str], ...], start: datetime = SLOT_START) -> SlotGroup:
+    """Группа слота на украинском: источники с второго ряда."""
+    videos: tuple[SourceVideo, ...] = tuple(
+        merge_video(index + 2, title, body, "uk") for index, (title, body) in enumerate(pairs)
+    )
+    return SlotGroup(SlotKey(start=start, language="uk"), videos)
 
 
 def job_of(group: SlotGroup, merge_run: MergeRun) -> MergeJob:

@@ -12,7 +12,8 @@
 
 Режим задаёт ярлык (§10, §14 решения 17, 18). Что делает запуск режима, решает его готовность
 (`ModeReadiness.step`): не готово ничего — окно настройки и код 2 (§8.2); готова таблица плана — прогон контура A
-(app\\intake): таблица → источники → слоты → пакет в bcast\\. --setup открывает окно при любом состоянии;
+(app\\intake): таблица → источники → merge → слоты → пакет в bcast\\; merge — когда его часть готова (нет --no-llm,
+ключ OpenAI в сейфе), иначе тексты слотов — из видео. --setup открывает окно при любом состоянии;
 --check, --auth и --status пока требуют полной настройки. Код запуска — самый важный из исходов частей (app\\run).
 --dry-run прогон не меняет: контур A ничего снаружи не создаёт, пакет пишется всегда (§10).
 """
@@ -142,7 +143,12 @@ class Launch:
         """
         now: datetime = Clock(basis.settings.zone).now()
         request: IntakeRequest = IntakeRequest(
-            paths=self.paths, settings=basis.settings, vault=basis.vault, now=now, package_id=uuid4().hex
+            paths=self.paths,
+            settings=basis.settings,
+            vault=basis.vault,
+            now=now,
+            package_id=uuid4().hex,
+            with_merge=basis.with_merge,
         )
         return PlanIntake.of(request, on_login=lambda: self.console.say(msg.SHEETS_LOGIN_BROWSER)).run()
 

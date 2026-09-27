@@ -61,15 +61,11 @@ class RunPart(str, Enum):
     @property
     def not_built_line(self) -> str:
         """Одна строка о части, которой в этой версии нет: когда появится."""
-        template: str = msg.RUN_PART_NOT_BUILT_TEXTS.get(self.value, msg.RUN_PART_NOT_BUILT)
-        return template.format(part=self.human_label, stage=msg.RUN_PART_STAGES[self.value])
+        return msg.RUN_PART_NOT_BUILT.format(part=self.human_label, stage=msg.RUN_PART_STAGES[self.value])
 
 
 # Части, которых в этой версии ещё нет: их неготовность — не ошибка настройки, а «появится позже».
-# Без нейросети режим А идёт как с --no-llm: тексты слотов — из видео (SlotTexts.from_sources).
-NOT_BUILT_PARTS: Final[frozenset[RunPart]] = frozenset(
-    {RunPart.MERGE, RunPart.ANNOUNCE, RunPart.BROADCAST, RunPart.PACKAGES_IN}
-)
+NOT_BUILT_PARTS: Final[frozenset[RunPart]] = frozenset({RunPart.ANNOUNCE, RunPart.BROADCAST, RunPart.PACKAGES_IN})
 # Что нужно каждой части (§7.5, §9): таблице — сейф таблицы, настройки и вход в Google; нейросети — ключ OpenAI;
 # пакету — настройки и форма; эфирам — каналы, настройки и форма. Объявлениям и чтению пакетов — появится с ними.
 PART_NEEDS: Final[dict[RunPart, tuple[Need, ...]]] = {

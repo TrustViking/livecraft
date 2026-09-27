@@ -9,7 +9,7 @@ import pytest
 
 from app.llm.errors import LlmErrorKind
 from app.llm.merges.description import MergedDescription
-from app.llm.merges.job import JobEvent, ParagraphEnforcement
+from app.llm.merges.job import JobEvent, MergeSources, ParagraphEnforcement
 from app.llm.merges.merge_rules import MergeRules
 from app.llm.merges.outcome import MergeOutcome
 from app.llm.merges.prompt import MergePrompt
@@ -17,12 +17,14 @@ from app.llm.merges.retry import RetryFacts, RetryProfile, RetrySignal
 from app.llm.merges.run import MergeStopReason, MergeTally
 from app.observability.log_event import LogArea, LogEvent
 from app.intake.builder import SlotGroup
-from app.slots.slot import SlotKey
 from app.slots.texts import SlotTextOrigin, SlotTexts
-from app.sources.video import SourceCatalog, SourceVideo
+from app.sources.video import SourceCatalog
 from app.tests.fixtures.logs import LogCapture
 from app.tests.fixtures.merges import (
     ADJACENT_ANSWER,
+    BLOCKED_ANSWER,
+    BLOCKED_SOURCES,
+    BLOCKED_TITLE,
     CTA_FIRST_ANSWER,
     EXPANDED_SOURCES,
     MODEL,
@@ -42,8 +44,8 @@ from app.tests.fixtures.merges import (
     error,
     group_of,
     job_of,
-    merge_video,
     run_with,
+    uk_group,
 )
 from app.tests.fixtures.sources import stub_calls, stub_catalog, video_metadata
 
@@ -208,6 +210,7 @@ def test_quota_stops_the_slot_and_every_later_slot_goes_without_a_request(llm_lo
     later_group: SlotGroup = group_of(start=SLOT_START + timedelta(hours=1))
     later: MergeOutcome = job_of(later_group, merge_run).run()
     assert merge_run.stop_reason is MergeStopReason.QUOTA and len(backend.requests) == 1
+    assert merge_run.stop_failure is not None and merge_run.stop_failure.kind is LlmErrorKind.QUOTA
     assert first.attempts == 1 and first.reject_codes == ("quota_exhausted",) and first.is_final_failure
     assert later.attempts == 0 and later.skipped_reason is MergeStopReason.QUOTA
     assert later.reject_codes == ("quota_exhausted",) and not later.is_final_failure
@@ -226,6 +229,7 @@ def test_a_model_configuration_error_stops_merge_until_the_end_of_the_run(llm_lo
     first: MergeOutcome = job_of(group_of(), merge_run).run()
     later: MergeOutcome = job_of(group_of(start=SLOT_START + timedelta(hours=1)), merge_run).run()
     assert merge_run.stop_reason is MergeStopReason.MODEL and len(backend.requests) == 1
+    assert merge_run.stop_failure is not None and merge_run.stop_failure.kind is LlmErrorKind.AUTH
     assert first.reject_codes == ("authentication_failed",) and first.texts.origin is SlotTextOrigin.SOURCE_COMPOSED
     assert later.skipped_reason is MergeStopReason.MODEL and later.attempts == 0
     assert len(lines_starting(llm_log, "merge_llm_fatal_model_error")) == 1
@@ -238,12 +242,30 @@ def test_another_error_is_unexpected_and_retried_without_an_instruction(llm_log:
     outcome: MergeOutcome = job_of(group_of(), merge_run).run()
     assert outcome.merged and outcome.attempts == 2 and outcome.rejected_attempts == 0
     assert backend.prompts[1] == backend.prompts[0] and merge_run.stop_reason is None
+    assert merge_run.stop_failure is None
     assert "code=unexpected_error raw_response_received=no" in lines_starting(llm_log, "merge_llm_response_invalid")[0]
     retry: str = lines_starting(llm_log, "merge_llm_retry")[0]
     assert "retry_mode=standard retry_reason_codes=unexpected_error retry_focus=-" in retry
 
 
 # --- пропуск
+
+
+@pytest.mark.parametrize(
+    ("pairs", "described", "needs_merge"),
+    [
+        (EXPANDED_SOURCES, 3, True),
+        (EXPANDED_SOURCES[:2], 2, True),
+        ((EXPANDED_SOURCES[0], ("Kharkiv rail and drone update", "  ")), 1, False),
+        (EXPANDED_SOURCES[:1], 1, False),
+    ],
+)
+def test_a_slot_needs_merge_from_two_non_empty_descriptions(
+    pairs: tuple[tuple[str, str], ...], described: int, needs_merge: bool
+) -> None:
+    """Одно правило «слоту нужен merge»: непустых описаний (без краёв) не меньше двух; его же спрашивает запуск."""
+    sources: MergeSources = MergeSources(group_of(pairs).videos)
+    assert (sources.described, sources.needs_merge) == (described, needs_merge)
 
 
 def test_fewer_than_two_described_sources_skip_the_model(llm_log: LogCapture) -> None:
@@ -322,31 +344,6 @@ def test_no_model_answer_or_source_text_reaches_the_log(llm_log: LogCapture) -> 
 
 
 # Принятый ответ из сверки 3.13 (слот uk из четырёх источников): после санации тезис повторяется — блок не публикуется.
-BLOCKED_TITLE: str = "Прямий ефір з NASA"
-BLOCKED_ANSWER: str = (
-    "Сьогодні говоримо про 🌐🌐 🔔 нові санкції, їхні 📌📌 терміни 🌐🌐 та 🚨 реакцію партнерів у Брюсселі. "
-    "#подія 💥💥 ☀ 🔹🔹 ☀ 🚨🚨\n\nУ цьому стрімі ви побачите:\n⚖ міксований текст у пункті\n"
-    "🔹 Віталій Орлов коментує реакцію громади\n🔹 бюджетні правки та голосування\n🎤 проверка через google docs\n"
-    "🔹 бюджетні правки та голосування\n🌐 перевірка домену news.bbc.co.uk\n\n"
-    "Напишіть у коментарях свою думку #расследование"
-)
-BLOCKED_SOURCES: tuple[tuple[str, str], ...] = (
-    EXPANDED_SOURCES[0],
-    ("Lviv grid repair logistics", ""),
-    ("Geneva relief corridor desk", "From Geneva, Marta Leone outlines the aid corridor timetable, WHO cargo counts, "
-     "and donor pledges."),
-    ("Brussels sanctions vote briefing", "Офіційний сайт: <https://example.org/contact> ;\r\n"
-     "From Geneva, Marta Leone outlines the aid corridor timetable, WHO cargo counts, and donor pledges."),
-)
-
-
-def uk_group(pairs: tuple[tuple[str, str], ...]) -> SlotGroup:
-    videos: tuple[SourceVideo, ...] = tuple(
-        merge_video(index + 2, title, body, "uk") for index, (title, body) in enumerate(pairs)
-    )
-    return SlotGroup(SlotKey(start=SLOT_START, language="uk"), videos)
-
-
 def test_an_accepted_answer_is_sanitized_before_it_becomes_the_slot_texts(llm_log: LogCapture) -> None:
     merge_run, _ = run_with(answer(STRONG_ANSWER))
     outcome: MergeOutcome = job_of(group_of(), merge_run).run()

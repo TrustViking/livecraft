@@ -1,7 +1,7 @@
-"""Прогон контура A (app\\intake\\intake.py): таблица → ряды → источники → слоты → пакет, исход по §10.
+"""Прогон контура A (app\\intake\\intake.py): таблица → ряды → источники → merge → слоты → пакет, исход по §10.
 
 Сеть подменена целиком: читатель таблицы отдаёт `SheetPlan.from_values` из фиксированных значений, yt-dlp —
-сохранённый ответ, загрузчик обложек — картинку из памяти; «сейчас» фиксировано.
+сохранённый ответ, загрузчик обложек — картинку из памяти, нейросеть — `QueueBackend`; «сейчас» фиксировано.
 """
 from __future__ import annotations
 
@@ -24,14 +24,19 @@ from app.config.settings import LivecraftSettings
 from app.core.retry import RetryPolicy
 from app.intake.builder import SlotBuilder
 from app.intake.intake import IntakeRequest, IntakeResult, IntakeStage, PlanIntake
+from app.intake.merge_stage import VideoTextReason
+from app.llm.backends.openai import OpenAiClient
+from app.llm.errors import LlmErrorKind
 from app.observability.log_event import LogArea
 from app.paths import LivecraftPaths
 from app.run.exit_code import RunOutcome
+from app.secretsafe.field import SecretField, VaultOrigin
+from app.secretsafe.value import SecretValue
 from app.secretsafe.vault import Vault
 from app.sheets.client import SheetsReadError, SheetsReadReason
 from app.sheets.plan import PlanProblem, SheetPlan
 from app.sheets.rows import RowSkipReason
-from app.slots.texts import SlotProblem
+from app.slots.texts import SlotProblem, SlotTextOrigin
 from app.sources.fetcher import SourceFetch
 from app.sources.language import LanguageResolver
 from app.sources.metadata import SourceFailureReason, SourceMetadata
@@ -39,7 +44,9 @@ from app.sources.preview import PreviewDownloader
 from app.sources.video import SourceCatalog
 from app.tests.conftest import FORM_URL
 from app.tests.fixtures.logs import LogCapture
+from app.tests.fixtures.merges import EXPANDED_SOURCES, STRONG_ANSWER, TITLE, QueueBackend, answer, error
 from app.tests.fixtures.settings import set_form_url
+from app.tests.fixtures.sources import StubFetcher, video_metadata
 from app.ui import messages_ru as msg
 
 DATA_DIR: Path = Path(__file__).resolve().parent / "data" / "ytdlp"
@@ -122,12 +129,19 @@ def _settings(paths: LivecraftPaths, form_url: str | None = FORM_URL) -> Livecra
 def _intake(
     paths: LivecraftPaths,
     reader: _Reader,
-    fetcher: _Fetcher | None = None,
+    fetcher: _Fetcher | StubFetcher | None = None,
     form_url: str | None = FORM_URL,
+    backend: QueueBackend | None = None,
 ) -> PlanIntake:
+    """Прогон на подменённой сети; `backend` — нейросеть прогона (None — merge нет, как с --no-llm)."""
     settings: LivecraftSettings = _settings(paths, form_url)
     request: IntakeRequest = IntakeRequest(
-        paths=paths, settings=settings, vault=Vault.empty(), now=NOW, package_id=PACKAGE_ID
+        paths=paths,
+        settings=settings,
+        vault=Vault.empty(),
+        now=NOW,
+        package_id=PACKAGE_ID,
+        with_merge=backend is not None,
     )
     get: Callable[[str, float], _Response] = lambda url, timeout: _Response(200, _png())
     catalog: SourceCatalog = SourceCatalog(
@@ -140,6 +154,7 @@ def _intake(
         reader_factory=lambda: reader,       # type: ignore[arg-type, return-value]
         catalog=catalog,
         builder=SlotBuilder(settings.zone),
+        merge_backend=backend,
     )
 
 
@@ -319,6 +334,7 @@ def test_the_request_needs_an_aware_now(livecraft_paths: LivecraftPaths) -> None
             vault=Vault.empty(),
             now=datetime(2026, 10, 1, 12, 0),
             package_id=PACKAGE_ID,
+            with_merge=False,
         )
 
 
@@ -326,12 +342,29 @@ def test_of_wires_the_battle_dependencies_without_touching_google(livecraft_path
     """Боевые зависимости собираются без входа в Google: читатель открывается только в run."""
     settings: LivecraftSettings = _settings(livecraft_paths)
     request: IntakeRequest = IntakeRequest(
-        paths=livecraft_paths, settings=settings, vault=Vault.empty(), now=NOW, package_id=PACKAGE_ID
+        paths=livecraft_paths, settings=settings, vault=Vault.empty(), now=NOW, package_id=PACKAGE_ID, with_merge=False
     )
     intake: PlanIntake = PlanIntake.of(request)
     assert intake.request is request
     assert intake.builder.zone == settings.zone
+    assert intake.merge_backend is None                 # merge не идёт — нейросети у прогона нет
     assert not livecraft_paths.sheets_token_file.exists()
+
+
+def test_of_gives_the_run_openai_when_merge_goes(livecraft_paths: LivecraftPaths) -> None:
+    """Merge идёт (ключ в сейфе) — у прогона клиент OpenAI; к OpenAI он не обращается, пока его не спросят."""
+    key: SecretValue = SecretValue(field=SecretField.OPENAI_API_KEY, value="sk-test-key-for-intake")
+    vault: Vault = Vault.empty().with_field(SecretField.OPENAI_API_KEY, key, VaultOrigin.OWN)
+    request: IntakeRequest = IntakeRequest(
+        paths=livecraft_paths,
+        settings=_settings(livecraft_paths),
+        vault=vault,
+        now=NOW,
+        package_id=PACKAGE_ID,
+        with_merge=True,
+    )
+    backend: object = PlanIntake.of(request).merge_backend
+    assert isinstance(backend, OpenAiClient) and backend.run_usage.requests == 0
 
 
 # --- строки лога и повтор ссылки
@@ -344,7 +377,7 @@ def test_the_finished_line_names_the_outcome_instead_of_a_code(livecraft_paths: 
     [finished] = [line for line in intake_log.messages(logging.INFO) if line.startswith("intake_finished ")]
     assert finished == (
         f"intake_finished package_id={PACKAGE_ID} stopped_at=table sheets_error=- plan_problem=- rows=1 admitted=0 "
-        "sources=- ready=- slots=- refused=- package=- outcome=nothing_planned"
+        "sources=- ready=- merged=- slots=- refused=- package=- outcome=nothing_planned"
     )
 
 
@@ -368,3 +401,120 @@ def test_the_same_link_at_the_same_moment_twice_is_one_source_of_the_slot(livecr
     assert result.build is not None
     (slot,) = result.build.slots
     assert slot.sources == ("https://www.youtube.com/watch?v=dQw4w9WgXcQ",)
+
+
+# --- merge в прогоне (нейросеть — QueueBackend, видео — yt-dlp без сети)
+
+MERGE_LINKS: tuple[str, ...] = tuple(f"https://youtu.be/mergeSrc00{index}" for index in (1, 2, 3))
+SINGLE_LINK: str = "https://youtu.be/singleSrc01"
+SINGLE_TITLE: str = "Single evening stream about the grid"
+MERGE_ROWS: list[list[str]] = [HEADER, *([link, "16.10.2026", "19:00"] for link in MERGE_LINKS)]
+SINGLE_ROW: list[str] = [SINGLE_LINK, "17.10.2026", "20:00"]
+
+
+def _merge_fetcher() -> StubFetcher:
+    """Три видео одного вечера с разными описаниями и одно видео другого вечера — все на английском."""
+    videos: list[tuple[str, str, str]] = [
+        (link, title, body) for link, (title, body) in zip(MERGE_LINKS, EXPANDED_SOURCES)
+    ]
+    videos.append((SINGLE_LINK, SINGLE_TITLE, "One source only: the grid repair schedule."))
+    return StubFetcher({link: video_metadata(link, title, body, "en") for link, title, body in videos})
+
+
+def _manifest_slots(paths: LivecraftPaths) -> list[dict[str, Any]]:
+    [package] = _packages(paths)
+    with zipfile.ZipFile(package) as archive:
+        manifest: dict[str, Any] = json.loads(archive.read("manifest.json").decode("utf-8"))
+    slots: list[dict[str, Any]] = manifest["slots"]
+    return slots
+
+
+def test_a_merge_run_puts_the_model_texts_into_the_package(livecraft_paths: LivecraftPaths) -> None:
+    """Слот из трёх источников получает тексты модели, слот из одного — тексты видео без обращения к нейросети;
+    пакет несёт тексты, которые получили слоты."""
+    backend: QueueBackend = QueueBackend(replies=[answer(STRONG_ANSWER)], probe_kind=None)
+    reader: _Reader = _Reader(values=[*MERGE_ROWS, SINGLE_ROW])
+    result: IntakeResult = _intake(livecraft_paths, reader, _merge_fetcher(), backend=backend).run()
+    assert result.outcome is RunOutcome.DONE and len(backend.requests) == 1
+    assert result.merge is not None and result.merge.merged == 1
+    assert result.build is not None
+    merged, single = result.build.slots
+    assert (merged.slot_id, single.slot_id) == ("16-10-2026_1900_en", "17-10-2026_2000_en")
+    assert merged.texts.origin is SlotTextOrigin.MERGED and merged.title == TITLE
+    assert single.texts.origin is SlotTextOrigin.SOURCE_SINGLE and single.title == SINGLE_TITLE
+    slots: list[dict[str, Any]] = _manifest_slots(livecraft_paths)
+    assert [(slot["title"], slot["description"]) for slot in slots] == [
+        (merged.title, merged.description),
+        (single.title, single.description),
+    ]
+
+
+def test_the_merge_lines_stand_between_the_videos_and_the_slots(livecraft_paths: LivecraftPaths) -> None:
+    """Порядок строк: таблица, видео, модель, итог merge, расход, слоты, пакет; ни названий, ни описаний видео."""
+    backend: QueueBackend = QueueBackend(replies=[answer(STRONG_ANSWER)], probe_kind=None)
+    reader: _Reader = _Reader(values=[*MERGE_ROWS, SINGLE_ROW])
+    result: IntakeResult = _intake(livecraft_paths, reader, _merge_fetcher(), backend=backend).run()
+    assert result.sources is not None and result.merge is not None
+    assert result.build is not None and result.package is not None
+    lines: tuple[str, ...] = result.console_lines
+    assert lines[1] == result.sources.console_line
+    assert lines[2:5] == result.merge.console_lines and len(result.merge.console_lines) == 3
+    assert lines[5:] == (result.build.console_line, result.package.console_line)
+    text: str = "\n".join(lines)
+    for title, body in EXPANDED_SOURCES:
+        assert title not in text and body[:40] not in text
+    assert SINGLE_TITLE not in text and TITLE not in text and FORM_URL not in text
+
+
+def test_without_a_chosen_model_the_package_is_written_with_the_video_texts_and_the_code_is_1(
+    livecraft_paths: LivecraftPaths,
+) -> None:
+    backend: QueueBackend = QueueBackend(replies=[answer(STRONG_ANSWER)], probe_kind=LlmErrorKind.AUTH)
+    reader: _Reader = _Reader(values=MERGE_ROWS)
+    result: IntakeResult = _intake(livecraft_paths, reader, _merge_fetcher(), backend=backend).run()
+    assert result.outcome is RunOutcome.FAILED and backend.requests == []
+    assert result.package is not None and result.package.is_written
+    assert result.build is not None and result.build.slots[0].texts.origin is SlotTextOrigin.SOURCE_COMPOSED
+    assert result.merge is not None and result.merge.choice is not None
+    assert result.merge.choice.human in result.console_lines
+
+
+def test_quota_on_the_first_slot_leaves_the_next_slot_without_requests(livecraft_paths: LivecraftPaths) -> None:
+    """Квота на первом слоте — merge остановлен: следующий слот без обращений, пакет записан, код 1."""
+    backend: QueueBackend = QueueBackend(replies=[error(LlmErrorKind.QUOTA), answer(STRONG_ANSWER)], probe_kind=None)
+    second: list[list[str]] = [[link, "17.10.2026", "20:00"] for link in (MERGE_LINKS[0], SINGLE_LINK)]
+    reader: _Reader = _Reader(values=[*MERGE_ROWS, *second])
+    result: IntakeResult = _intake(livecraft_paths, reader, _merge_fetcher(), backend=backend).run()
+    assert result.outcome is RunOutcome.FAILED and len(backend.requests) == 1
+    assert result.merge is not None
+    assert [slot.video_reason for slot in result.merge.slots] == [VideoTextReason.STOPPED, VideoTextReason.STOPPED]
+    assert result.package is not None and result.package.is_written and result.package.slots == 2
+    stopped: str = msg.INTAKE_MERGE_STOPPED.format(failure=error(LlmErrorKind.QUOTA).failure.human)
+    assert stopped in result.console_lines
+
+
+def test_a_run_of_single_source_slots_asks_the_model_nothing(livecraft_paths: LivecraftPaths) -> None:
+    backend: QueueBackend = QueueBackend(replies=[answer(STRONG_ANSWER)], probe_kind=None)
+    reader: _Reader = _Reader(values=[HEADER, SINGLE_ROW])
+    result: IntakeResult = _intake(livecraft_paths, reader, _merge_fetcher(), backend=backend).run()
+    assert result.outcome is RunOutcome.DONE
+    assert backend.probes == [] and backend.requests == []
+    assert result.merge is not None and result.merge.choice is None
+    assert result.console_lines[2] == result.merge.console_lines[0]
+
+
+def test_without_merge_there_is_no_merge_stage(livecraft_paths: LivecraftPaths) -> None:
+    """--no-llm или нет ключа: стадии merge нет, тексты слотов — из видео, строк нейросети нет."""
+    result: IntakeResult = _intake(livecraft_paths, _Reader(values=MERGE_ROWS), _merge_fetcher()).run()
+    assert result.outcome is RunOutcome.DONE and result.merge is None
+    assert result.build is not None and result.build.slots[0].texts.origin is SlotTextOrigin.SOURCE_COMPOSED
+    assert len(result.console_lines) == 4
+
+
+def test_the_finished_line_counts_the_slots_with_model_texts(livecraft_paths: LivecraftPaths) -> None:
+    backend: QueueBackend = QueueBackend(replies=[answer(STRONG_ANSWER)], probe_kind=None)
+    with LogCapture.on(LogArea.INTAKE) as intake_log:
+        reader: _Reader = _Reader(values=[*MERGE_ROWS, SINGLE_ROW])
+        _intake(livecraft_paths, reader, _merge_fetcher(), backend=backend).run()
+    [finished] = [line for line in intake_log.messages(logging.INFO) if line.startswith("intake_finished ")]
+    assert " sources=4 ready=4 merged=1 slots=2 " in finished
