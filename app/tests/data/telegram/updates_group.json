@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "result": [
+    {
+      "update_id": 2,
+      "message": {
+        "message_id": 11,
+        "from": {
+          "id": 111000111,
+          "is_bot": false,
+          "first_name": "Test"
+        },
+        "chat": {
+          "id": -4000000001,
+          "title": "Livecraft group",
+          "type": "group"
+        },
+        "date": 1790000001,
+        "text": "hi"
+      }
+    }
+  ]
+}

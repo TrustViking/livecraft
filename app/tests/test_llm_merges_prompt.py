@@ -1,0 +1,471 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from collections.abc import Iterator
+
+import pytest
+
+from app.llm.merges.contract import MergeContractMode
+from app.llm.merges.prompt import MergePrompt
+from app.llm.merges.prompt_texts import MergePromptTexts
+from app.llm.merges.retry import RetryFacts, RetryProfile, RetrySignal
+from app.observability.log_event import LogArea
+from app.resources.loader import TextResource
+from app.sources.video import SourceVideo
+from app.tests.fixtures.logs import LogCapture
+from app.tests.fixtures.merges import merge_video, texts_with
+
+TEXTS: MergePromptTexts = MergePromptTexts.load()
+
+# sha256 значений текстов промта, как их читает программа; словари — JSON с `sort_keys=True, ensure_ascii=False`.
+# Стартовые данные меняются только задачей продукта (CLAUDE.md §14 решение 23): хеш ловит случайную правку.
+TEXT_VALUE_SHA256: dict[str, str] = {
+    "title_description": "d0c2cd30174929146a4ff8dc67e00b0b9dd92550b8e3e93874a0bcc8112e8b73",
+    "structural_rules": "e77ac9aeb885c592723abecf7033311b4b25ae886bc597f3d250a84412bafd03",
+    "no_description": "d632e251e13956f762ef83e9b96e22b2704e3efdee30fb1990574c8b412803af",
+    "contracts": "1ebe77e6305069cffbb3f3bedb0b720b09e1e5704f15ca9a47216558bb02ef5e",
+    "retry_reinforcements": "1649a58a3447d1449ab4c00f63343b2d6af0e73c0101b91e7754c90f721daaf8",
+}
+RESOURCE_SHA256: dict[str, str] = {
+    "merge_policy_cross_domain.txt": "49dfbb0110fa1cd8d20b297b02f57efb791806506f278e43d4f689ca97ee34d0",
+    "merge_policy_link.txt": "a22fb3c1eac602dd7a4e576dc9be42d4d258ff06a2ad13969f4772754725564a",
+    "merge_prompt_contracts.json": "4910a616a7d419600ba3d7ce44350635d77988e49a3b6628dc055bb8e97542ee",
+    "merge_prompt_no_description.txt": "aa27232ee5fc76a719beacc74fb70c8b467dda535154826a95e81fb157a945a1",
+    "merge_prompt_speaker_anchor.txt": "12665dd348d8e4bfd2a82ae01bdaa67dde308ab5fe8522a324cbd34930c22af9",
+    "merge_prompt_structural_rules.txt": "87467b78582d47299b8e74c9e03b5c9606f7143e8b2783287b55864cbd77718b",
+    "merge_prompt_title_description.txt": "4dd9552cb82cce599a21d8cfd194dc099a3316d393d03ce55c10905dd60ec3fe",
+    "merge_retry_fallback_lines.json": "8aa359ed73775cc21cdacf432f3d16fc16880949d1670d0dd8ccecdab7e898c2",
+    "merge_retry_reinforcements.json": "5517b210aa7b6c5ccd269f4b35d5fb45cbf156c0a7b0e17ec39ef9b66e45ec6d",
+}
+
+# Короткие шаблоны промта для тестов: по ним видно, какой кусок промта собран из какого правила.
+SAMPLE_PROMPT: str = """
+Write a YouTube stream title and description in {language_name}.
+Generate a new final title, not a copy of any single source title.
+Mentally extract key points from each source, preserve all non-trivial source-specific points,
+combine overlaps, compress repetition, and produce one coherent final description.
+Write a strong native YouTube title no longer than 99 characters.
+Do not enumerate sources as 1) 2) 3).
+Do not output generic slogans or abstract editorial phrasing.
+Do not use emoji in the title.
+{merge_contract_block}
+Avoid asserting strong person titles or role labels unless they are clearly necessary and well-supported by the sources.
+Optional official links block is allowed before the hashtags line with 1 to 3 non-YouTube links from sources.
+Always end the description with a final hashtags line.
+Return strict JSON with title and description only.
+
+{youtube_candidates_block}
+
+{sources_block}
+""".strip()
+SAMPLE_RULES: str = (
+    "MERGE STRUCTURAL RULES\n"
+    "RULE 1: Start with a standalone hook paragraph before any bullets.\n"
+    "RULE 2: Keep visual paragraph boundaries explicit with one blank line between structural blocks.\n"
+    "RULE 3: Keep hashtags only in the final tail position; never write a CTA paragraph anywhere.\n"
+    "RULE 4: Do not repeat or paraphrase the hook thesis in the next adjacent line or paragraph.\n"
+    "EXAMPLE A (bad): CTA line opens the description and the real hook starts later.\n"
+    "EXAMPLE A (good): Hook opens first; no CTA paragraph anywhere.\n"
+    "EXAMPLE B (bad): Two adjacent lines restate the same thesis with minor wording changes.\n"
+    "EXAMPLE B (good): The second line introduces new facts instead of repeating the opener."
+)
+SAMPLE_COMPACT: str = (
+    "Use the compact merge contract for 1 to 2 source items.\n"
+    "Write one cohesive stream description in 2 to 3 compact paragraphs.\n"
+    "Paragraph 1 (hook): write 1 to 2 sentences grounded in the main tension, risk, or key conflict.\n"
+    "Keep the hook editorial and readable, but never clickbait.\n"
+    "Paragraph 2 (theses block): open with one short editorial statement that names the central tension, key question, "
+    "or main conflict — not a lead-in phrase like 'In this stream you will see'.\n"
+    "Then write {compact_bullet_min} to {compact_bullet_max} short thesis bullet lines (target range {compact_bullet_range}).\n"
+    "Each bullet line must start with 🔹 — the only bullet marker. Never start a bullet with any other emoji: "
+    "every bullet of the description looks the same.\n"
+    "Do not write headings inside the description body.\n"
+    "Keep marker usage controlled and readable; do not use dash-only bullets as the sole style.\n"
+    "Do not present the agenda as SOURCE 1 / SOURCE 2.\n"
+    "Keep agenda points specific and factual, not generic placeholders.\n"
+    "The description must still cover all merged source items and preserve key concrete facts from each source."
+)
+SAMPLE_EXPANDED: str = (
+    "Use the expanded merge contract for 3 or more source items.\n"
+    "Write {expanded_bullet_min} to {expanded_bullet_max} short bullet lines total.\n"
+    "You may organize the bullets into 2 to 3 thematic micro-blocks when that improves clarity.\n"
+    "Do not combine science or medicine, climate or environment, disasters or catastrophic hazards, psychology or "
+    "cognition or behavior, and broad social or moral conclusions into one bullet or one cause-and-effect chain unless "
+    "the sources explicitly require that connection.\n"
+    "Thematic grouping is encouraged when useful: research, hazards, human behavior, practical risk, public meaning, or "
+    "response can be separated into different bullets or micro-blocks.\n"
+    "{speaker_anchor_line}"
+)
+SAMPLE_NARRATIVE: str = (
+    "This stream covers a single unified event or case. Write the description as connected prose, not a bullet list. "
+    "Hook paragraph first, then 2-3 prose paragraphs. No bullets."
+)
+
+
+def sample_texts(
+    prompt: str = SAMPLE_PROMPT,
+    rules: str = SAMPLE_RULES,
+    compact: str = SAMPLE_COMPACT,
+    expanded: str = SAMPLE_EXPANDED,
+    narrative: str = SAMPLE_NARRATIVE,
+) -> MergePromptTexts:
+    return texts_with(
+        contracts={
+            MergeContractMode.COMPACT: compact,
+            MergeContractMode.EXPANDED: expanded,
+            MergeContractMode.NARRATIVE: narrative,
+        },
+        reinforcements={},
+        title_description=prompt,
+        structural_rules=rules,
+        no_description="no description",
+    )
+
+
+def two_videos() -> tuple[SourceVideo, ...]:
+    return (
+        merge_video(2, "Title 1", "Paragraph one.\n\nParagraph two."),
+        merge_video(3, "Title 2", "Paragraph three.\n\nParagraph four."),
+    )
+
+
+def three_videos() -> tuple[SourceVideo, ...]:
+    return (*two_videos(), merge_video(4, "Title 3", "Paragraph five.\n\nParagraph six."))
+
+
+def build(language: str, videos: tuple[SourceVideo, ...], texts: MergePromptTexts, retry: RetryProfile | None = None) -> MergePrompt:
+    return MergePrompt.of(language, videos, texts, retry)
+
+
+@pytest.fixture
+def llm_log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.LLM, logging.DEBUG) as capture:
+        yield capture
+
+
+# --- ресурсы
+
+
+@pytest.mark.parametrize(("name", "digest"), sorted(RESOURCE_SHA256.items()))
+def test_resource_file_is_the_transferred_one(name: str, digest: str) -> None:
+    assert hashlib.sha256(TextResource(name).path.read_bytes()).hexdigest() == digest
+
+
+def test_template_values_are_the_starting_values() -> None:
+    def sha(value: object) -> str:
+        text: str = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    contracts: dict[str, str] = {mode.value: text for mode, text in TEXTS.contracts.items()}
+    reinforcements: dict[str, list[str]] = {signal: list(lines) for signal, lines in TEXTS.retry_reinforcements.items()}
+    assert {
+        "title_description": sha(TEXTS.title_description),
+        "structural_rules": sha(TEXTS.structural_rules),
+        "no_description": sha(TEXTS.no_description),
+        "contracts": sha(contracts),
+        "retry_reinforcements": sha(reinforcements),
+    } == TEXT_VALUE_SHA256
+
+
+@pytest.mark.parametrize("mode", [MergeContractMode.COMPACT, MergeContractMode.EXPANDED])
+def test_the_contract_names_only_the_bullet_marker(mode: MergeContractMode) -> None:
+    """Пункт — только 🔹 (§14 решение 34): прежние акцентные маркеры промт не называет."""
+    contract: str = TEXTS.contracts[mode]
+    assert "Each bullet line must start with 🔹 — the only bullet marker." in contract
+    assert "Do not write headings inside the description body." in contract
+    assert "do not use dash-only bullets as the sole style" in contract
+    assert not any(marker in contract for marker in ("📌", "🎤", "🎥", "⚖", "✅"))
+    assert "accent" not in contract.lower()
+
+
+def test_retry_lines_and_structural_rules_name_only_the_bullet_marker() -> None:
+    lines: list[str] = [
+        TEXTS.structural_rules,
+        *(line for group in TEXTS.retry_reinforcements.values() for line in group),
+        *(line for group in TEXTS.retry_fallbacks.values() for line in group),
+    ]
+    assert not any(marker in line for line in lines for marker in ("📌", "🎤", "🎥", "⚖", "✅", "🌐"))
+    assert "It must start with the bullet\nmarker 🔹 and a NEW fact." in TEXTS.structural_rules
+
+
+def test_texts_cover_every_contract_and_every_retry_signal() -> None:
+    assert set(TEXTS.contracts) == set(MergeContractMode)
+    assert set(TEXTS.retry_reinforcements) == {signal.value for signal in RetrySignal}
+    assert set(TEXTS.retry_fallbacks) == {signal.value for signal in RetrySignal}
+    assert TEXTS.link_policy.startswith("SYSTEM LINK POLICY\n")
+    assert TEXTS.cross_domain_policy.startswith("CROSS-DOMAIN SENTENCE POLICY\n")
+    assert not TEXTS.title_description.startswith("#")
+
+
+# --- промт: цель, источники, контракт и повтор
+
+
+def test_prompt_targets_youtube_title_and_description_only() -> None:
+    text: str = build("en", two_videos(), sample_texts()).text
+    for fragment in (
+        "YouTube stream title and description",
+        "99 characters",
+        "title and description only",
+        "must still cover all merged source items and preserve key concrete facts from each source",
+        "Do not output generic slogans",
+        "Use the compact merge contract for 1 to 2 source items.",
+        "2 to 3 compact paragraphs",
+        "Then write 4 to 7 short thesis bullet lines",
+        "must start with 🔹 — the only bullet marker",
+        "Do not write headings inside the description body.",
+        "Avoid asserting strong person titles",
+        "If the sources touch different semantic domains, do not compress them into one sentence.",
+        "These topics may stay in one final description, but present them as separate lines of discussion in separate sentences.",
+        "Do not build one long cause-and-effect chain across all of those domains in a single sentence.",
+        "Do not include any URLs in the output.",
+        "Link blocks will be assembled later by the system.",
+        "Do not use emoji in the title.",
+        "Paragraph one.\n\nParagraph two.",
+    ):
+        assert fragment in text
+    assert "always end the description with a final hashtags line" in text.lower()
+    assert "never write a cta paragraph anywhere" in text.lower()
+    assert "URL:" not in text
+
+
+def test_prompt_uses_expanded_contract_for_three_or_more_sources(llm_log: LogCapture) -> None:
+    text: str = build("en", three_videos(), sample_texts()).text
+    assert "Use the expanded merge contract for 3 or more source items." in text
+    assert "Write 4 to 6 short bullet lines total." in text
+    assert "2 to 3 thematic micro-blocks" in text
+    assert "Do not combine science or medicine, climate or environment, disasters or catastrophic hazards, psychology or cognition or behavior, and broad social or moral conclusions into one bullet" in text
+    assert "Thematic grouping is encouraged when useful" in text
+    assert (
+        "merge_prompt_contract_selected language=en source_count=3 contract_mode=expanded expected_bullet_range=4-6 "
+        "expanded_structure_enabled=yes"
+    ) in "\n".join(llm_log.messages(logging.INFO))
+
+
+def test_compact_contract_is_read_from_templates_and_exposes_4_7_range() -> None:
+    texts: MergePromptTexts = sample_texts(
+        compact="TEMPLATE COMPACT CONTRACT\nUse compact bullet range {compact_bullet_range} for compact mode.",
+        expanded="Expanded template {expanded_bullet_min}-{expanded_bullet_max}",
+        narrative="Narrative template",
+    )
+    text: str = build("en", two_videos(), texts).text
+    assert "TEMPLATE COMPACT CONTRACT" in text
+    assert "compact bullet range 4-7" in text
+
+
+def test_compact_prompt_keeps_the_compact_contract_under_a_targeted_retry() -> None:
+    facts: RetryFacts = RetryFacts(source_count=2, actual_paragraphs=6, max_paragraphs=4)
+    retry: RetryProfile = RetryProfile.targeted(RetrySignal.PARAGRAPH_OVERFLOW, facts, TEXTS)
+    text: str = build("en", two_videos(), sample_texts(), retry).text
+    assert retry.enabled and text.endswith(retry.instruction_block)
+    assert "Use the expanded merge contract" not in text
+    assert "Use the compact merge contract for 1 to 2 source items." in text
+
+
+def test_merge_prompt_uses_clean_full_source_text_without_urls_hashtags_or_truncation(llm_log: LogCapture) -> None:
+    videos: tuple[SourceVideo, ...] = (
+        merge_video(
+            1,
+            "Source 1",
+            "Hook paragraph with concrete facts and named people. " + "A" * 2600 + "\n\n"
+            "Main stream link https://youtu.be/aaaaaaaaaaa\n"
+            "Official links:\nhttps://example.org/details\n\n"
+            "Join and follow updates. #topic #update",
+        ),
+        merge_video(2, "Source 2", "Second source keeps the semantic context intact without extra links."),
+    )
+    text: str = build("en", videos, sample_texts()).text
+    for absent in ("https://youtu.be/aaaaaaaaaaa", "https://example.org/details", "#topic", "Official links:",
+                   "Join and follow updates.", "YOUTUBE CANDIDATES"):
+        assert absent not in text
+    assert "Hook paragraph with concrete facts and named people." in text
+    assert "Second source keeps the semantic context intact without extra links." in text
+    assert "Do not add a recommended materials block" in text
+    assert "A" * 2400 in text
+    logs: str = "\n".join(llm_log.messages(logging.INFO))
+    assert "hard_truncation=disabled" in logs
+    assert "merge_source_text_prepared language=en source_index=1" in logs
+    assert "urls_removed=" in logs
+    assert "hashtags_removed=" in logs
+
+
+# --- правила структуры описания в промте каждого контракта
+
+
+STRUCTURAL_RULES: str = (
+    "STRUCTURAL RULES — APPLY TO EVERY MERGE OUTPUT\n\n"
+    "RULE 1 — NO CTA AS OPENER:\nThe first paragraph MUST be the editorial hook.\n\n"
+    "RULE 2 — HOOK UNIQUENESS:\nThe hook paragraph appears exactly ONCE — as the first paragraph.\n\n"
+    "RULE 3 — BULLET COUNT DISCIPLINE:\nThe number of bullets must stay within the range specified by the contract.\n\n"
+    "RULE 4 — PARAGRAPH 2 STARTS WITH A BULLET:\nImmediately after the hook, the next content must be the bullet block.\n\n"
+    "EXAMPLE — CORRECT structure (uk):\nHook paragraph here.\n\n"
+    "EXAMPLE — WRONG structure (3 violations):\nCTA as first paragraph."
+)
+
+
+def structural_texts() -> MergePromptTexts:
+    return sample_texts(
+        prompt="Write in {language_name}.\n{merge_contract_block}\n\n{youtube_candidates_block}\n\n{sources_block}",
+        rules=STRUCTURAL_RULES,
+        compact="COMPACT CONTRACT {compact_bullet_range}",
+        expanded="EXPANDED CONTRACT {expanded_bullet_min}-{expanded_bullet_max}",
+        narrative="NARRATIVE CONTRACT",
+    )
+
+
+def assert_structural_rules_present(text: str) -> None:
+    for fragment in (
+        "STRUCTURAL RULES", "RULE 1 — NO CTA AS OPENER", "RULE 2 — HOOK UNIQUENESS", "RULE 3 — BULLET COUNT DISCIPLINE",
+        "RULE 4 — PARAGRAPH 2 STARTS WITH A BULLET", "EXAMPLE — CORRECT structure", "EXAMPLE — WRONG structure",
+    ):
+        assert fragment in text
+
+
+def test_structural_rules_are_appended_for_compact_mode() -> None:
+    videos = (merge_video(2, "One", "low overlap lowercase text one"), merge_video(3, "Two", "low overlap lowercase text two"))
+    text: str = build("en", videos, structural_texts()).text
+    assert "COMPACT CONTRACT 4-7" in text
+    assert_structural_rules_present(text)
+
+
+def test_structural_rules_are_appended_for_expanded_mode() -> None:
+    videos = tuple(merge_video(row, title, f"source text {title.lower()}") for row, title in ((2, "One"), (3, "Two"), (4, "Three")))
+    text: str = build("en", videos, structural_texts()).text
+    assert "EXPANDED CONTRACT 4-6" in text
+    assert_structural_rules_present(text)
+
+
+def test_structural_rules_are_appended_for_narrative_mode() -> None:
+    """«Одно событие» узнаётся по самим описаниям: пять общих цепочек имён."""
+    description: str = "John Smith met Mary Jones while Alex Brown and Nina White and Oleg Ivanov reported from the same event."
+    videos = (merge_video(2, "One", description), merge_video(3, "Two", description))
+    prompt: MergePrompt = build("en", videos, structural_texts())
+    assert prompt.contract.mode is MergeContractMode.NARRATIVE
+    assert "NARRATIVE CONTRACT" in prompt.text
+    assert_structural_rules_present(prompt.text)
+
+
+def test_structural_rules_come_before_the_contract() -> None:
+    block: str = build("en", two_videos(), structural_texts()).contract_block
+    assert block == f"{STRUCTURAL_RULES}\n\nCOMPACT CONTRACT 4-7"
+
+
+def repo_videos(count: int) -> tuple[SourceVideo, ...]:
+    return tuple(
+        merge_video(
+            index + 1,
+            f"Title {index}",
+            f"Source {index} paragraph one with concrete facts and names.\n\nSource {index} paragraph two with extra details and timing.",
+        )
+        for index in range(1, count + 1)
+    )
+
+
+def test_prompt_contains_hook_sharpness_examples() -> None:
+    text: str = build("uk", repo_videos(3), TEXTS).text
+    assert "HOOK SHARPNESS" in text
+    assert "STRONG" in text
+    assert "WEAK" in text
+
+
+def test_prompt_contains_multilingual_hook_sharpness_examples() -> None:
+    text: str = build("ru", repo_videos(3), TEXTS).text
+    for fragment in ("MEDIUM (ru)", "WEAK (ru)", "MEDIUM (en)", "WEAK (en)"):
+        assert fragment in text
+
+
+# --- боевой промт и повтор
+
+
+def test_production_prompt_writes_language_contract_and_policies_in_order() -> None:
+    prompt: MergePrompt = build("uk", repo_videos(2), TEXTS)
+    text: str = prompt.text
+    assert "Write output only in Ukrainian." in text
+    assert "{" not in text
+    assert text.index(TEXTS.structural_rules) < text.index("Use the compact merge contract") < text.index("SOURCE 1\nTITLE: Title 1")
+    assert text.endswith(f"{TEXTS.cross_domain_policy}\n\n{TEXTS.link_policy}")
+
+
+def test_retry_instruction_goes_last_and_keeps_the_prefix() -> None:
+    first: MergePrompt = build("en", three_videos(), TEXTS)
+    retry: RetryProfile = RetryProfile.targeted(
+        RetrySignal.INSUFFICIENT_BULLET_COVERAGE, RetryFacts(source_count=3, actual_bullets=2, required_bullets=5), TEXTS
+    )
+    again: str = first.with_retry(retry).text
+    assert again == f"{first.text}\n\n{retry.instruction_block}"
+    assert "RETRY INSTRUCTION:" not in first.text
+    assert again.endswith("Spread bullets across all 3 sources. Do not collapse multiple sources into one generic lane.")
+    assert build("en", three_videos(), TEXTS, retry).text == again
+
+
+def test_disabled_retry_changes_nothing() -> None:
+    prompt: MergePrompt = build("en", two_videos(), TEXTS)
+    assert prompt.with_retry(RetryProfile.standard(("paragraph_underflow",))).text == prompt.text
+
+
+def test_contract_block_with_retry_appends_the_instruction() -> None:
+    prompt: MergePrompt = build("en", two_videos(), TEXTS)
+    retry: RetryProfile = RetryProfile.targeted(RetrySignal.PARAGRAPH_UNDERFLOW, RetryFacts(), TEXTS)
+    assert prompt.contract_block_with(retry) == f"{prompt.contract_block}\n\n{retry.instruction_block}"
+    assert prompt.contract_block_with(None) == prompt.contract_block
+
+
+def test_template_without_contract_placeholder_gets_the_block_appended() -> None:
+    texts: MergePromptTexts = sample_texts(prompt="Head in {language_name}.\n{sources_block}", rules="RULES")
+    text: str = build("en", two_videos(), texts).text
+    assert text.startswith("Head in English.\nSOURCE 1\n")
+    assert "Paragraph four.\n\nRULES\n\nUse the compact merge contract" in text
+
+
+def test_braces_in_source_text_do_not_break_the_template() -> None:
+    videos = (merge_video(2, "A {title}", "Body {language_name} {0}"), merge_video(3, "B", "Other body"))
+    text: str = build("en", videos, TEXTS).text
+    assert "TITLE: A {title}\nDESCRIPTION: Body {language_name} {0}" in text
+
+
+def test_contract_is_chosen_by_the_prompt_descriptions() -> None:
+    """Пустое после чистки описание идёт в выбор контракта текстом «нет описания», а не пустой строкой."""
+    prompt: MergePrompt = build("en", (merge_video(2, "A", ""), merge_video(3, "B", "")), TEXTS)
+    assert prompt.contract.mode is MergeContractMode.COMPACT
+    assert prompt.contract.max_body_paragraphs == 4
+
+
+# --- лог и отказ
+
+
+def test_log_lines_have_counters_and_no_source_text(llm_log: LogCapture) -> None:
+    videos = (merge_video(5, "Secret one", "Private https://x.example"), merge_video(6, "Secret two", ""))
+    prompt: MergePrompt = build("en", videos, TEXTS)
+    assert llm_log.messages(logging.INFO) == list(prompt.log_lines)
+    assert prompt.log_lines == (
+        "merge_source_text_prepared language=en source_index=1 row=5 raw_chars=25 cleaned_chars=7 urls_removed=1 "
+        "hashtags_removed=0 service_paragraphs_dropped=0 hard_truncation=disabled",
+        "merge_source_text_prepared language=en source_index=2 row=6 raw_chars=16 cleaned_chars=16 urls_removed=0 "
+        "hashtags_removed=0 service_paragraphs_dropped=0 hard_truncation=disabled",
+        "merge_prompt_sources_ready language=en source_count=2 raw_source_chars_total=41 cleaned_source_chars_total=23 "
+        "hard_truncation=disabled",
+        "merge_prompt_contract_selected language=en source_count=2 contract_mode=compact expected_bullet_range=4-7 "
+        "expanded_structure_enabled=no narrative_trigger=no",
+    )
+    assert not any("Secret" in line or "Private" in line for line in prompt.log_lines)
+
+
+def test_narrative_log_line_has_no_bullet_range() -> None:
+    description: str = "John Smith met Mary Jones while Alex Brown and Nina White and Oleg Ivanov reported."
+    prompt: MergePrompt = build("en", (merge_video(2, "A", description), merge_video(3, "B", description)), TEXTS)
+    assert prompt.log_lines[-1].endswith(
+        "contract_mode=narrative expected_bullet_range=- expanded_structure_enabled=no narrative_trigger=yes"
+    )
+
+
+# --- название языка
+
+
+@pytest.mark.parametrize(
+    ("code", "name"),
+    [("uk", "Ukrainian"), ("ru", "Russian"), ("en", "English"), ("de", "German"), (" EN ", "English"),
+     ("xx", "XX"), (" zz ", "ZZ"), ("", "Unknown"), ("   ", "Unknown")],
+)
+def test_language_name(code: str, name: str) -> None:
+    assert build(code, two_videos(), TEXTS).language_name == name

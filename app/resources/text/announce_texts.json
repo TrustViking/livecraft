@@ -1,0 +1,61 @@
+{
+  "day_start": ["🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵"],
+  "header": [
+    "Ежедневные стримы / Everyday streams",
+    "{time_cet} CET/CEST ({time_local} Kiev, {time_gmt} GMT)",
+    "",
+    "❇️ Эфир 🚨 {date} / Скинуть ключи за час до эфира",
+    "Broadcast / Drop the keys off 1 hour before the stream",
+    "",
+    "❇️ Форма для ключей / Form for keys",
+    "{form_url}"
+  ],
+  "doc": [
+    "",
+    "❇️ Описание / Description",
+    "{doc_url}"
+  ],
+  "slot": [
+    "{date} на {time} по Киеву",
+    "",
+    "📌Название и описание эфира {flags}",
+    "Name and description of stream",
+    "",
+    "{title}",
+    "",
+    "{description}"
+  ],
+  "form_reminder": [
+    "📌📌📌 Форма для ключей 🔑 ( Key registration form) 📍",
+    "{form_url}"
+  ],
+  "day_end": ["✨✨✨✨✨✨✨"],
+  "package_caption": [
+    "📦 Пакет эфиров: {period_from} — {period_to}",
+    "Слотов: {slots}, обложек: {previews}"
+  ],
+  "flag_repeat": 3,
+  "flag_countries": {
+    "uk": "UA",
+    "en": "GB",
+    "ja": "JP",
+    "ko": "KR",
+    "zh": "CN",
+    "ar": "SA",
+    "he": "IL",
+    "hi": "IN",
+    "cs": "CZ",
+    "da": "DK",
+    "el": "GR",
+    "et": "EE",
+    "fa": "IR",
+    "sv": "SE",
+    "sl": "SI",
+    "sq": "AL",
+    "sr": "RS",
+    "ms": "MY",
+    "nb": "NO",
+    "nn": "NO"
+  },
+  "flag_fallback": "🌐"
+}

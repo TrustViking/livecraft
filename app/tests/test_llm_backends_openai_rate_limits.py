@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from app.llm.backends.openai_rate_limits import RateLimitSnapshot, ResetText
+from app.tests.fixtures.clock import StoppedClock
+
+NOW: float = 1_800_000_000.0
+FIXED_CLOCK: StoppedClock = StoppedClock.at(datetime.fromtimestamp(NOW, timezone.utc))
+
+
+@pytest.mark.parametrize(
+    ("raw", "seconds"),
+    [("1m30s", 90.0), ("200ms", 0.2), ("6s", 6.0), ("1h", 3600.0), ("12", 12.0), ("0.5", 0.5), (str(NOW + 42), 42.0)],
+)
+def test_reset_values_become_seconds(raw: str, seconds: float) -> None:
+    assert ResetText(raw).seconds(NOW) == pytest.approx(seconds)
+
+
+def test_unreadable_reset_is_none_and_the_past_is_zero() -> None:
+    assert ResetText("").seconds(NOW) is None
+    assert ResetText("скоро").seconds(NOW) is None
+    assert ResetText(str(NOW - 100)).seconds(NOW) == 0.0
+
+
+def test_the_tightest_limits_are_taken() -> None:
+    headers: dict[str, str] = {
+        "X-RateLimit-Remaining-Requests": "499",
+        "x-ratelimit-remaining-tokens": "29,000",
+        "x-ratelimit-remaining-tokens-usage-based": "12000",
+        "x-ratelimit-reset-requests": "1m30s",
+        "x-ratelimit-reset-tokens": "200ms",
+        "content-type": "application/json",
+    }
+    snapshot: RateLimitSnapshot = RateLimitSnapshot.from_headers(headers, FIXED_CLOCK)
+    assert snapshot == RateLimitSnapshot(
+        remaining_requests=499, remaining_tokens=12000, reset_requests_sec=90.0, reset_tokens_sec=0.2
+    )
+    line: str = snapshot.event("gpt-5.4", "merge").text
+    assert line == "llm_rate_limits model=gpt-5.4 label=merge rem_req=499 rem_tok=12000 reset_req=90s reset_tok=0s"
+
+
+def test_headers_are_found_on_the_raw_response_or_inside_it() -> None:
+    direct: RateLimitSnapshot | None = RateLimitSnapshot.from_raw_response(
+        SimpleNamespace(headers={"x-ratelimit-remaining-requests": "5"}), FIXED_CLOCK
+    )
+    assert direct is not None and direct.remaining_requests == 5
+    nested: RateLimitSnapshot | None = RateLimitSnapshot.from_raw_response(
+        SimpleNamespace(response=SimpleNamespace(headers={"x-ratelimit-reset-tokens": "6s"})), FIXED_CLOCK
+    )
+    assert nested is not None and nested.reset_tokens_sec == 6.0 and nested.remaining_requests is None
+    assert RateLimitSnapshot.from_raw_response(SimpleNamespace(), FIXED_CLOCK) is None
+
+
+def test_no_ratelimit_headers_is_an_empty_snapshot() -> None:
+    snapshot: RateLimitSnapshot = RateLimitSnapshot.from_headers({"content-type": "json"}, FIXED_CLOCK)
+    found: tuple[object, ...] = (
+        snapshot.remaining_requests, snapshot.remaining_tokens, snapshot.reset_requests_sec, snapshot.reset_tokens_sec
+    )
+    assert found == (None, None, None, None)
+    assert snapshot.event("", "").text == "llm_rate_limits model=unknown label=unknown"
+
+
+def test_headers_of_a_holder_that_has_none_are_looked_for_further() -> None:
+    nested: RateLimitSnapshot | None = RateLimitSnapshot.from_raw_response(
+        SimpleNamespace(headers=None, http_response=SimpleNamespace(headers={"x-ratelimit-remaining-tokens": "7"})),
+        FIXED_CLOCK,
+    )
+    assert nested is not None and nested.remaining_tokens == 7

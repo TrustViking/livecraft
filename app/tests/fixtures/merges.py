@@ -1,0 +1,274 @@
+"""Общие объекты тестов merge: годные источники без сети, образцовые ответы модели, нейросеть за разъёмом с очередью
+ответов и заданным исходом пробы, слот и merge запуска, ответ, который не проходит проверку перед публикацией, тексты
+промта с заменёнными шаблонами (CLAUDE.md §11)."""
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
+from types import MappingProxyType
+from zoneinfo import ZoneInfo
+
+from app.config.settings import LlmSettings
+from app.intake.builder import SlotGroup
+from app.llm.backend import LlmRequest, LlmResponse
+from app.llm.errors import LlmErrorKind, LlmFailure, LlmRequestError
+from app.llm.merges.check import MergeAttemptLabel, MergeCheck, MergeCheckRequest
+from app.llm.merges.description import MergedDescription
+from app.llm.merges.job import MergeJob
+from app.llm.merges.merge_rules import MergeRules
+from app.llm.merges.prompt_texts import MergeContractMode, MergePromptTexts
+from app.llm.merges.quality import QualityGateStatus, QualityNormalization, QualityReasonCode
+from app.llm.merges.run import MergeRun
+from app.llm.usage import RunUsage
+from app.slots.slot import SlotKey
+from app.sources.video import SourceCatalog, SourceVideo
+from app.tests.conftest import LLM_SETTINGS
+from app.tests.fixtures.sources import admitted_row, ready_source, stub_catalog
+
+KYIV: ZoneInfo = ZoneInfo("Europe/Kyiv")
+START: datetime = datetime(2026, 10, 16, 19, 0, tzinfo=KYIV)
+# Начало слота merge — тот же момент со смещением вместо пояса.
+SLOT_START: datetime = datetime(2026, 10, 16, 19, 0, tzinfo=timezone(timedelta(hours=3)))
+RULES: MergeRules = MergeRules.load()
+TEXTS: MergePromptTexts = RULES.texts
+FAKE_BACKEND: str = "fake"
+MODEL: str = "gpt-x"
+NEUTRAL: str = chr(0x1F539)
+NOT_JSON: str = "not json at all"
+
+# Три источника об одном вечере: Брюссель, Харьков, Женева — у каждого свои факты и свой спикер.
+EXPANDED_SOURCES: tuple[tuple[str, str], ...] = (
+    (
+        "Brussels sanctions vote briefing",
+        "In Brussels, Anna Kovalenko tracks the March 18 sanctions vote, budget amendments, and customs delays after "
+        "the commission session.",
+    ),
+    (
+        "Kharkiv rail and drone update",
+        "In Kharkiv, Oleh Martynenko reports 17 drone strikes, rail hub outages, and evacuation routes for Saltivka "
+        "districts.",
+    ),
+    (
+        "Geneva relief corridor desk",
+        "From Geneva, Marta Leone outlines the aid corridor timetable, WHO cargo counts, and donor pledges for Odesa "
+        "and Mykolaiv hospitals.",
+    ),
+)
+STRONG_BULLETS: tuple[str, ...] = (
+    "Brussels sanctions vote, budget amendments, and customs delays after the March 18 commission session",
+    "Anna Kovalenko tracks coalition counts and the pressure points before the chamber debate",
+    "Kharkiv rail hub outages after 17 drone strikes across Saltivka districts",
+    "Oleh Martynenko details evacuation routes, depot damage, and recovery sequencing on the eastern line",
+    "Geneva aid corridor timetable, WHO cargo counts, and donor pledges for Odesa hospitals",
+    "Marta Leone breaks down how Mykolaiv deliveries depend on the next donor release window",
+)
+STRONG_HOOK: str = (
+    "Tonight we align the Brussels vote, the Kharkiv transport shock, and the Geneva aid timetable into one grounded "
+    "briefing. Each source keeps its own factual lane, and the summary stays concrete instead of leaning on editorial "
+    "gloss."
+)
+STRONG_CLOSE: str = (
+    "The closing paragraph ties the political vote, frontline logistics, and medical supply chain into a clear "
+    "next-step agenda without flattening the sources into one generic thesis."
+)
+# Перегруженные пункты (длиннее 500 знаков) без общих слов: соседние строки не повтор.
+LONG_ALPHA: str = "alpha " * 90
+LONG_BETA: str = "beta " * 110
+HOOK: str = "Tonight we map the sanctions vote and what it changes for the next operational window."
+
+
+def bullets(lines: tuple[str, ...] | list[str]) -> str:
+    """Пункты с нейтральным маркером, по строке на пункт."""
+    return "\n".join(f"{NEUTRAL} {line}" for line in lines)
+
+
+TITLE: str = "Brussels, Kharkiv, Geneva: the operational agenda tonight"
+STRONG_ANSWER: str = f"{STRONG_HOOK}\n\nIn this stream you'll see:\n{bullets(STRONG_BULLETS)}\n\n{STRONG_CLOSE}"
+THIN_ANSWER: str = f"{STRONG_HOOK}\n\n{bullets(STRONG_BULLETS[:3])}\n\n{STRONG_CLOSE}"
+OVERLOADED_ANSWER: str = f"{STRONG_HOOK}\n\n{bullets([LONG_ALPHA, LONG_BETA, *STRONG_BULLETS[:4]])}\n\n{STRONG_CLOSE}"
+CTA_FIRST_ANSWER: str = f"Subscribe to the channel for more updates.\n\n{STRONG_HOOK}\n\n{bullets(STRONG_BULLETS)}"
+ADJACENT_ANSWER: str = (
+    f"{STRONG_HOOK}\n\n{bullets([STRONG_BULLETS[0]])}\n{bullets([STRONG_BULLETS[0] + ' again'])}\n"
+    f"{bullets(STRONG_BULLETS[1:])}"
+)
+UNDERFLOW_ANSWER: str = "One single paragraph only."
+OVERFLOW_ANSWER: str = "\n\n".join(
+    f"Paragraph number {index} with its own distinct content about topic {index}." for index in range(8)
+)
+
+
+def merge_video(row_number: int, title: str, description: str, language: str = "en") -> SourceVideo:
+    """Годный источник слота без сети; ссылка своя на каждый ряд."""
+    return ready_source(admitted_row(row_number, f"https://youtu.be/{row_number:011d}", START), title, description, language)
+
+
+def sources_of(pairs: tuple[tuple[str, str], ...]) -> tuple[SourceVideo, ...]:
+    """Источники по парам «название, описание» — ряды с первого."""
+    return tuple(merge_video(index + 1, title, body) for index, (title, body) in enumerate(pairs))
+
+
+def answer(description: str, title: str = TITLE) -> str:
+    """Ответ модели по схеме merge."""
+    return json.dumps({"title": title, "description": description}, ensure_ascii=False)
+
+
+def error(kind: LlmErrorKind) -> LlmRequestError:
+    """Отказ нейросети за разъёмом: исключение с отказом этого вида."""
+    return LlmRequestError(LlmFailure(kind, FAKE_BACKEND, detail=kind.value))
+
+
+@dataclass
+class QueueBackend:
+    """Нейросеть за разъёмом: сохранённые ответы по очереди; отказ — `LlmRequestError` в очереди.
+
+    Проба модели — отказ вида `probe_kind` (по умолчанию FAILED: модель остаётся «не проверена»); None — модель
+    ответила на пробу. Пробы запоминаются в `probes`.
+    """
+
+    replies: list[str | LlmRequestError] = field(default_factory=list)
+    structured: bool = False
+    requests: list[LlmRequest] = field(default_factory=list)
+    run_usage: RunUsage = field(default_factory=RunUsage)
+    probe_kind: LlmErrorKind | None = LlmErrorKind.FAILED
+    probes: list[str] = field(default_factory=list)
+
+    @property
+    def name(self) -> str:
+        return FAKE_BACKEND
+
+    def complete(self, request: LlmRequest) -> LlmResponse:
+        self.requests.append(request)
+        reply: str | LlmRequestError = self.replies.pop(0)
+        if isinstance(reply, LlmRequestError):
+            raise reply
+        payload: object = json.loads(reply) if self.structured else None
+        self.run_usage.add(None)
+        return LlmResponse(
+            text=reply,
+            structured=payload if isinstance(payload, dict) else None,
+            model=request.model_name,
+        )
+
+    def probe(self, model_name: str) -> LlmResponse | LlmFailure:
+        self.probes.append(model_name)
+        if self.probe_kind is None:
+            return LlmResponse(text=answer(STRONG_ANSWER), structured=None, model=model_name)
+        return error(self.probe_kind).failure
+
+    @property
+    def prompts(self) -> list[str]:
+        return [request.prompt for request in self.requests]
+
+
+def group_of(pairs: tuple[tuple[str, str], ...] = EXPANDED_SOURCES, start: datetime = SLOT_START) -> SlotGroup:
+    """Группа слота: источники с второго ряда, язык en."""
+    videos: tuple[SourceVideo, ...] = tuple(
+        merge_video(index + 2, title, body) for index, (title, body) in enumerate(pairs)
+    )
+    return SlotGroup(SlotKey(start=start, language="en"), videos)
+
+
+# Ответ, который проходит проверку, но не проверку перед публикацией (повтор абзацев), — у слота на украинском.
+BLOCKED_TITLE: str = "Прямий ефір з NASA"
+BLOCKED_ANSWER: str = (
+    "Сьогодні говоримо про 🌐🌐 🔔 нові санкції, їхні 📌📌 терміни 🌐🌐 та 🚨 реакцію партнерів у Брюсселі. "
+    "#подія 💥💥 ☀ 🔹🔹 ☀ 🚨🚨\n\nУ цьому стрімі ви побачите:\n⚖ міксований текст у пункті\n"
+    "🔹 Віталій Орлов коментує реакцію громади\n🔹 бюджетні правки та голосування\n🎤 проверка через google docs\n"
+    "🔹 бюджетні правки та голосування\n🌐 перевірка домену news.bbc.co.uk\n\n"
+    "Напишіть у коментарях свою думку #расследование"
+)
+BLOCKED_SOURCES: tuple[tuple[str, str], ...] = (
+    EXPANDED_SOURCES[0],
+    ("Lviv grid repair logistics", ""),
+    ("Geneva relief corridor desk", "From Geneva, Marta Leone outlines the aid corridor timetable, WHO cargo counts, "
+     "and donor pledges."),
+    ("Brussels sanctions vote briefing", "Офіційний сайт: <https://example.org/contact> ;\r\n"
+     "From Geneva, Marta Leone outlines the aid corridor timetable, WHO cargo counts, and donor pledges."),
+)
+
+
+def uk_group(pairs: tuple[tuple[str, str], ...], start: datetime = SLOT_START) -> SlotGroup:
+    """Группа слота на украинском: источники с второго ряда."""
+    videos: tuple[SourceVideo, ...] = tuple(
+        merge_video(index + 2, title, body, "uk") for index, (title, body) in enumerate(pairs)
+    )
+    return SlotGroup(SlotKey(start=start, language="uk"), videos)
+
+
+def job_of(group: SlotGroup, merge_run: MergeRun) -> MergeJob:
+    """Merge слота группы: её ключ и источники в порядке рядов."""
+    return MergeJob(group.key, group.videos, merge_run)
+
+
+def run_with(*replies: str | LlmRequestError, catalog: SourceCatalog | None = None) -> tuple[MergeRun, QueueBackend]:
+    """Merge запуска на нейросети с этой очередью ответов; видео запуска — `catalog`, по умолчанию yt-dlp без сети
+    без единого видео."""
+    backend: QueueBackend = QueueBackend(replies=list(replies))
+    videos: SourceCatalog = stub_catalog() if catalog is None else catalog
+    return MergeRun(backend=backend, model=MODEL, settings=LLM_SETTINGS, rules=RULES, catalog=videos), backend
+
+
+# Метка проверки в тестах: слот, язык en, модель тестов, вторая попытка.
+CHECK_LABEL: MergeAttemptLabel = MergeAttemptLabel(slot_id="16-10-2026_1900_en", language="en", model=MODEL, attempt=2)
+# Десять разных эмодзи вне маркеров пунктов: одиннадцатое — уже «много эмодзи».
+EMOJI: tuple[str, ...] = tuple(
+    chr(code) for code in (0x1F525, 0x1F6A8, 0x1F3AF, 0x1F9ED, 0x2728, 0x1F514, 0x1F4A5, 0x1F31F, 0x1F396, 0x1F3F3)
+)
+TWO_SOURCES: tuple[tuple[str, str], ...] = (
+    ("Source one", "Source one paragraph with concrete facts."),
+    ("Source two", "Source two paragraph with concrete facts."),
+)
+
+
+def label_in(language: str) -> MergeAttemptLabel:
+    """Метка проверки тестов с другим языком блока."""
+    return MergeAttemptLabel(CHECK_LABEL.slot_id, language, CHECK_LABEL.model, CHECK_LABEL.attempt)
+
+
+def check_request(title: str, answer: str, pairs: tuple[tuple[str, str], ...], language: str = "en") -> MergeCheckRequest:
+    """Запрос проверки по ответу и источникам-парам «название, описание»."""
+    return MergeCheckRequest.of(label_in(language), title, MergedDescription(answer), sources_of(pairs))
+
+
+def merge_check(
+    answer: str, pairs: tuple[tuple[str, str], ...] = EXPANDED_SOURCES, title: str = "Title", language: str = "en"
+) -> MergeCheck:
+    """Проверка ответа путём программы: нормализация качества с названием и числом источников, затем диагностика."""
+    return MergeCheck.of(check_request(title, answer, pairs, language), MergedDescription(answer), RULES.lexicons)
+
+
+def check_as_is(answer: str, pairs: tuple[tuple[str, str], ...] = (), title: str = "Title") -> MergeCheck:
+    """Проверка текста как есть: диагностика качества — от нормализации, текст — не нормализованный."""
+    request: MergeCheckRequest = check_request(title, answer, pairs)
+    normalized: QualityNormalization = QualityNormalization.of(MergedDescription(answer), request.quality, RULES.lexicons)
+    kept: QualityNormalization = QualityNormalization(MergedDescription(answer), normalized.diagnostics)
+    return MergeCheck.normalized(request, kept, RULES.lexicons)
+
+
+def check_with_gate(
+    check: MergeCheck, status: QualityGateStatus, codes: tuple[QualityReasonCode, ...] | None = None
+) -> MergeCheck:
+    """Та же проверка с другим итогом проверки качества: статус и (если даны) коды причин."""
+    reasons: tuple[QualityReasonCode, ...] = check.quality.semantic_gate_reason_codes if codes is None else codes
+    return replace(check, quality=replace(check.quality, semantic_gate_status=status, semantic_gate_reason_codes=reasons))
+
+
+def llm_settings(**changes: object) -> LlmSettings:
+    """Настройки `llm` тестов с другими значениями полей по имени."""
+    return replace(LLM_SETTINGS, **changes)
+
+
+def texts_with(
+    contracts: Mapping[MergeContractMode, str] | None = None,
+    reinforcements: Mapping[str, tuple[str, ...]] | None = None,
+    **changes: str,
+) -> MergePromptTexts:
+    """Тексты промта с заменёнными шаблонами: контракты, строки повтора, прочие тексты по имени поля."""
+    texts: MergePromptTexts = replace(TEXTS, **changes)
+    if contracts is not None:
+        texts = replace(texts, contracts=MappingProxyType(dict(contracts)))
+    if reinforcements is not None:
+        texts = replace(texts, retry_reinforcements=MappingProxyType(dict(reinforcements)))
+    return texts

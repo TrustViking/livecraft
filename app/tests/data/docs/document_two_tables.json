@@ -1,0 +1,515 @@
+{
+  "documentId": "doc-id",
+  "title": "28-09-2026_Ежедневные стримы - Everyday streams_10:00",
+  "body": {
+    "content": [
+      {
+        "endIndex": 1,
+        "sectionBreak": {
+          "sectionStyle": {}
+        }
+      },
+      {
+        "startIndex": 1,
+        "endIndex": 38,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 1,
+              "endIndex": 38,
+              "textRun": {
+                "content": "Ежедневные стримы / Everyday streams\n"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "startIndex": 38,
+        "endIndex": 39,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 38,
+              "endIndex": 39,
+              "textRun": {
+                "content": "\n"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "startIndex": 39,
+        "endIndex": 61,
+        "table": {
+          "rows": 7,
+          "columns": 1,
+          "tableRows": [
+            {
+              "startIndex": 40,
+              "endIndex": 43,
+              "tableCells": [
+                {
+                  "startIndex": 41,
+                  "endIndex": 43,
+                  "content": [
+                    {
+                      "startIndex": 42,
+                      "endIndex": 43,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 42,
+                            "endIndex": 43,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 43,
+              "endIndex": 46,
+              "tableCells": [
+                {
+                  "startIndex": 44,
+                  "endIndex": 46,
+                  "content": [
+                    {
+                      "startIndex": 45,
+                      "endIndex": 46,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 45,
+                            "endIndex": 46,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 46,
+              "endIndex": 49,
+              "tableCells": [
+                {
+                  "startIndex": 47,
+                  "endIndex": 49,
+                  "content": [
+                    {
+                      "startIndex": 48,
+                      "endIndex": 49,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 48,
+                            "endIndex": 49,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 49,
+              "endIndex": 52,
+              "tableCells": [
+                {
+                  "startIndex": 50,
+                  "endIndex": 52,
+                  "content": [
+                    {
+                      "startIndex": 51,
+                      "endIndex": 52,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 51,
+                            "endIndex": 52,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 52,
+              "endIndex": 55,
+              "tableCells": [
+                {
+                  "startIndex": 53,
+                  "endIndex": 55,
+                  "content": [
+                    {
+                      "startIndex": 54,
+                      "endIndex": 55,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 54,
+                            "endIndex": 55,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 55,
+              "endIndex": 58,
+              "tableCells": [
+                {
+                  "startIndex": 56,
+                  "endIndex": 58,
+                  "content": [
+                    {
+                      "startIndex": 57,
+                      "endIndex": 58,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 57,
+                            "endIndex": 58,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 58,
+              "endIndex": 61,
+              "tableCells": [
+                {
+                  "startIndex": 59,
+                  "endIndex": 61,
+                  "content": [
+                    {
+                      "startIndex": 60,
+                      "endIndex": 61,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 60,
+                            "endIndex": 61,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "startIndex": 61,
+        "endIndex": 62,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 61,
+              "endIndex": 62,
+              "textRun": {
+                "content": "\n"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "startIndex": 62,
+        "endIndex": 87,
+        "table": {
+          "rows": 8,
+          "columns": 1,
+          "tableRows": [
+            {
+              "startIndex": 63,
+              "endIndex": 66,
+              "tableCells": [
+                {
+                  "startIndex": 64,
+                  "endIndex": 66,
+                  "content": [
+                    {
+                      "startIndex": 65,
+                      "endIndex": 66,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 65,
+                            "endIndex": 66,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 66,
+              "endIndex": 69,
+              "tableCells": [
+                {
+                  "startIndex": 67,
+                  "endIndex": 69,
+                  "content": [
+                    {
+                      "startIndex": 68,
+                      "endIndex": 69,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 68,
+                            "endIndex": 69,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 69,
+              "endIndex": 72,
+              "tableCells": [
+                {
+                  "startIndex": 70,
+                  "endIndex": 72,
+                  "content": [
+                    {
+                      "startIndex": 71,
+                      "endIndex": 72,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 71,
+                            "endIndex": 72,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 72,
+              "endIndex": 75,
+              "tableCells": [
+                {
+                  "startIndex": 73,
+                  "endIndex": 75,
+                  "content": [
+                    {
+                      "startIndex": 74,
+                      "endIndex": 75,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 74,
+                            "endIndex": 75,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 75,
+              "endIndex": 78,
+              "tableCells": [
+                {
+                  "startIndex": 76,
+                  "endIndex": 78,
+                  "content": [
+                    {
+                      "startIndex": 77,
+                      "endIndex": 78,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 77,
+                            "endIndex": 78,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 78,
+              "endIndex": 81,
+              "tableCells": [
+                {
+                  "startIndex": 79,
+                  "endIndex": 81,
+                  "content": [
+                    {
+                      "startIndex": 80,
+                      "endIndex": 81,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 80,
+                            "endIndex": 81,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 81,
+              "endIndex": 84,
+              "tableCells": [
+                {
+                  "startIndex": 82,
+                  "endIndex": 84,
+                  "content": [
+                    {
+                      "startIndex": 83,
+                      "endIndex": 84,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 83,
+                            "endIndex": 84,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "startIndex": 84,
+              "endIndex": 87,
+              "tableCells": [
+                {
+                  "startIndex": 85,
+                  "endIndex": 87,
+                  "content": [
+                    {
+                      "startIndex": 86,
+                      "endIndex": 87,
+                      "paragraph": {
+                        "elements": [
+                          {
+                            "startIndex": 86,
+                            "endIndex": 87,
+                            "textRun": {
+                              "content": "\n",
+                              "textStyle": {}
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "startIndex": 87,
+        "endIndex": 88,
+        "paragraph": {
+          "elements": [
+            {
+              "startIndex": 87,
+              "endIndex": 88,
+              "textRun": {
+                "content": "\n"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "revisionId": "rev"
+}

@@ -1,0 +1,108 @@
+"""Сборка описания после санации и заголовки блоков."""
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterator
+
+import pytest
+
+from app.observability.log_event import LogArea
+from app.resources.loader import TextResource
+from app.tests.fixtures.logs import LogCapture
+from app.texts.composer import HEADINGS_RESOURCE, DescriptionParts, HeadingKind, PublishHeadings, RecommendedEntry
+
+HEADINGS: PublishHeadings = PublishHeadings.load()
+# Заголовки блоков трёх основных языков — стартовые данные ресурса.
+STARTING_HEADINGS: dict[str, dict[str, str]] = {
+    "official_links": {"uk": "🌐 Офіційні ресурси:", "en": "🌐 Official links:", "ru": "🌐 Официальные ссылки:"},
+    "recommended_materials": {
+        "uk": "📌 Рекомендовані матеріали:",
+        "en": "📌 Recommended materials:",
+        "ru": "📌 Рекомендуемые материалы:",
+    },
+}
+
+
+@pytest.fixture
+def texts_log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.TEXTS, logging.DEBUG) as capture:
+        yield capture
+
+
+# --- заголовки
+
+
+def test_headings_resource_holds_the_starting_headings() -> None:
+    assert {kind: dict(values) for kind, values in TextResource(HEADINGS_RESOURCE).data.items()} == STARTING_HEADINGS
+
+
+@pytest.mark.parametrize(("language", "expected"), [("uk", "🌐 Офіційні ресурси:"), ("en", "🌐 Official links:"),
+                                                   ("ru", "🌐 Официальные ссылки:"), (" RU ", "🌐 Официальные ссылки:")])
+def test_seeded_languages_have_their_headings(language: str, expected: str) -> None:
+    assert HEADINGS.official_links(language) == expected
+
+
+@pytest.mark.parametrize("language", ["unknown", "other", "", "xx", "und", "none"])
+def test_service_language_codes_give_english_silently(language: str, texts_log: LogCapture) -> None:
+    assert HEADINGS.official_links(language) == "🌐 Official links:"
+    assert HEADINGS.recommended_materials(language) == "📌 Recommended materials:"
+    assert texts_log.messages() == []
+
+
+@pytest.mark.parametrize("language", ["ru-RU", "english", "12"])
+def test_malformed_language_codes_give_english_with_a_warning(language: str, texts_log: LogCapture) -> None:
+    assert HEADINGS.official_links(language) == "🌐 Official links:"
+    assert texts_log.messages(logging.WARNING) == [
+        f"heading_cache_invalid_language_format kind=official_links language={language!r}"
+    ]
+
+
+def test_a_language_outside_the_file_gives_english_and_a_log_line(texts_log: LogCapture) -> None:
+    assert HEADINGS.resolve(HeadingKind.RECOMMENDED_MATERIALS, "de") == "📌 Recommended materials:"
+    assert texts_log.messages() == ["heading_fallback_en kind=recommended_materials language=de"]
+
+
+# --- раскладка и сборка
+
+
+def test_layout_names_the_parts_in_order() -> None:
+    parts: DescriptionParts = DescriptionParts(
+        body="Body.", hashtags_line="#a", recommended=(RecommendedEntry("Talk", "https://youtu.be/aaaaaaaaaaa"),),
+        official_urls=("https://example.org",), cta="Join us.",
+    )
+    assert parts.layout == "body_blank_recommended_materials_blank_official_links_blank_cta_blank_hashtags"
+    assert DescriptionParts(body="").layout == "empty"
+    assert DescriptionParts(body="", hashtags_line="#a").layout == "blank_hashtags"
+
+
+def test_compose_joins_the_blocks_with_blank_lines() -> None:
+    parts: DescriptionParts = DescriptionParts(
+        body=" Body paragraph. ",
+        hashtags_line="#nano #micro",
+        official_urls=("https://www.example.org/official", " ", "https://t.me/channel/1?utm_source=x"),
+    )
+    assert parts.compose("en", HEADINGS) == (
+        "Body paragraph.\n\n🌐 Official links:\nhttps://example.org\nhttps://t.me/channel/1\n\n#nano #micro"
+    )
+    assert parts.compose("uk", HEADINGS).count("🌐 Офіційні ресурси:") == 1
+
+
+def test_a_recommended_video_is_its_title_then_its_link(texts_log: LogCapture) -> None:
+    """Зритель видит, что за ролик, прежде чем идти по ссылке: название, под ним ссылка; записи — через пустую строку."""
+    parts: DescriptionParts = DescriptionParts(
+        body="Body.",
+        recommended=(
+            RecommendedEntry("First talk", "https://youtu.be/aaaaaaaaaaa"),
+            RecommendedEntry("Second talk", "https://youtu.be/bbbbbbbbbbb"),
+        ),
+        official_urls=("https://example.org",),
+    )
+    assert parts.compose("ru", HEADINGS) == (
+        "Body.\n\n📌 Рекомендуемые материалы:\n\n✅ First talk\n👉 https://youtu.be/aaaaaaaaaaa\n\n"
+        "✅ Second talk\n👉 https://youtu.be/bbbbbbbbbbb\n\n🌐 Официальные ссылки:\nhttps://example.org"
+    )
+    assert texts_log.messages() == []
+
+
+def test_compose_of_nothing_is_empty() -> None:
+    assert DescriptionParts(body="").compose("en", HEADINGS) == ""

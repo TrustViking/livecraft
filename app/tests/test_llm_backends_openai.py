@@ -1,0 +1,314 @@
+from __future__ import annotations
+
+import logging
+import random
+import traceback
+from collections.abc import Iterator
+from datetime import datetime, timezone
+from typing import Any
+
+import openai
+import pytest
+
+from app.config.loader import LlmSettings, ReasoningEffort, ServiceTier
+from app.core.retry import RetryPolicy
+from app.llm.backend import PROBE_MAX_OUTPUT_TOKENS, LlmBackend, LlmRequest, LlmResponse
+from app.llm.backends.openai import FLEX_RETRY_DELAYS_SEC, OpenAiClient, OpenAiEvent
+from app.llm.backends.openai_request import OpenAiRequest
+from app.llm.backends.openai_model import ServiceTierRule
+from app.llm.errors import LlmErrorKind, LlmFailure, LlmRequestError
+from app.llm.usage import RequestUsage
+from app.observability.log_event import LogArea
+from app.secretsafe.value import SecretField, SecretValue
+from app.secretsafe.vault import Vault, VaultOrigin
+from app.tests.conftest import (
+    LLM_SETTINGS,
+    TOKEN_VALUES,
+    FakeLlmSdk,
+    api_error,
+    connection_error,
+    llm_answer,
+    timeout_error,
+)
+from app.tests.fixtures.clock import StoppedClock
+from app.tests.fixtures.logs import LogCapture
+from app.tests.fixtures.merges import llm_settings
+
+KEY_TEXT: str = TOKEN_VALUES[SecretField.OPENAI_API_KEY]
+KEY: SecretValue = SecretValue(field=SecretField.OPENAI_API_KEY, value=KEY_TEXT)
+SCHEMA: dict[str, Any] = {
+    "name": "merge_v2",
+    "schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]},
+}
+DEFAULT_TIER: LlmSettings = llm_settings(service_tier=ServiceTier.DEFAULT)
+STOPPED_CLOCK: StoppedClock = StoppedClock.at(datetime(2026, 9, 24, 18, 30, tzinfo=timezone.utc))
+FALLBACK_EVENTS: tuple[str, ...] = (
+    "llm_flex_fallback_to_default",
+    "llm_max_output_retry",
+    "llm_temperature_unsupported_retry",
+)
+
+
+@pytest.fixture
+def llm_log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.LLM, logging.DEBUG) as capture:
+        yield capture
+
+
+def make_client(sdk: FakeLlmSdk, settings: LlmSettings = LLM_SETTINGS) -> tuple[OpenAiClient, list[float]]:
+    sleeps: list[float] = []
+    client: OpenAiClient = OpenAiClient(
+        key=KEY, settings=settings, sdk=sdk, rng=random.Random(7), sleep=sleeps.append, clock=STOPPED_CLOCK
+    )
+    return client, sleeps
+
+
+def lines_of(log: LogCapture, event: str) -> list[str]:
+    return [line for line in log.messages() if line.startswith(f"{event} ")]
+
+
+def fallbacks(log: LogCapture) -> list[str]:
+    """События откатов обмена в порядке появления."""
+    return [event for line in log.messages() for event in FALLBACK_EVENTS if line.startswith(f"{event} ")]
+
+
+def finish_reasons(log: LogCapture) -> list[str]:
+    """Причина завершения каждого полученного ответа по строкам `llm_response`."""
+    return [line.rsplit("finish_reason=", 1)[1] for line in lines_of(log, "llm_response")]
+
+
+def request(settings: LlmSettings = LLM_SETTINGS, model: str = "gpt-5.6-sol", schema: dict[str, Any] | None = None) -> LlmRequest:
+    plain: LlmRequest = LlmRequest.from_settings(settings, model, "Промт слота: секретов тут нет", "merge")
+    return plain if schema is None else plain.with_schema(schema)
+
+
+def openai_request(
+    settings: LlmSettings = LLM_SETTINGS, model: str = "gpt-5.6-sol", schema: dict[str, Any] | None = None
+) -> OpenAiRequest:
+    return OpenAiRequest.of(request(settings, model, schema), settings)
+
+
+def test_the_client_is_an_llm_backend() -> None:
+    client, _ = make_client(FakeLlmSdk())
+    assert isinstance(client, LlmBackend) and client.name == "openai"
+
+
+def test_kwargs_for_gpt5_with_reasoning_and_schema() -> None:
+    kwargs: dict[str, Any] = openai_request(DEFAULT_TIER, schema=SCHEMA).to_kwargs()
+    assert kwargs == {
+        "model": "gpt-5.6-sol",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "Промт слота: секретов тут нет"}]}],
+        "max_output_tokens": 8000,
+        "timeout": 900.0,
+        "reasoning": {"effort": "medium"},
+        "text": {"format": {"type": "json_schema", "name": "merge_v2", "strict": True, "schema": SCHEMA["schema"]}},
+    }
+
+
+def test_flex_goes_into_kwargs_and_other_models_follow_their_capabilities() -> None:
+    assert openai_request().to_kwargs()["service_tier"] == "flex"
+    gpt4o: dict[str, Any] = openai_request(DEFAULT_TIER, model="gpt-4o").to_kwargs()
+    assert "reasoning" not in gpt4o and "temperature" not in gpt4o and "service_tier" not in gpt4o
+    o3: dict[str, Any] = openai_request(DEFAULT_TIER, model="o3").to_kwargs()
+    assert o3["temperature"] == 0.0 and o3["reasoning"] == {"effort": "medium"}
+    unnamed_schema: dict[str, Any] = openai_request(schema={"schema": {}}).to_kwargs()
+    assert unnamed_schema["text"]["format"]["name"] == "response"
+    none_effort: LlmSettings = llm_settings(reasoning_effort=ReasoningEffort.NONE)
+    assert openai_request(none_effort).to_kwargs()["reasoning"] == {"effort": "none"}
+
+
+def test_request_repr_and_log_line_carry_no_prompt() -> None:
+    subject: OpenAiRequest = openai_request(schema=SCHEMA)
+    line: str = subject.event(OpenAiEvent.RESPONSE).text
+    assert "Промт" not in repr(subject) and "Промт" not in line
+    assert line == (
+        "llm_response label=merge model=gpt-5.6-sol family=gpt-5 service_tier=flex reasoning_effort=medium "
+        "max_output_tokens=8000 structured=yes temperature=no prompt_chars=29 backend=openai"
+    )
+
+
+def test_no_key_in_vault_is_not_configured() -> None:
+    with pytest.raises(LlmRequestError) as caught:
+        OpenAiClient.from_vault(Vault.empty(), LLM_SETTINGS)
+    assert caught.value.reason is LlmErrorKind.NOT_CONFIGURED and caught.value.failure.is_model_configuration
+
+
+def test_client_takes_the_key_from_the_vault_and_creates_the_sdk_once() -> None:
+    vault: Vault = Vault.empty().with_field(SecretField.OPENAI_API_KEY, KEY, VaultOrigin.OWN)
+    sdk: FakeLlmSdk = FakeLlmSdk(llm_answer(), llm_answer())
+    client: OpenAiClient = OpenAiClient.from_vault(vault, LLM_SETTINGS, sdk=sdk)
+    assert sdk.created == []                                 # клиент SDK — только к первому запросу
+    client.complete(request())
+    client.complete(request())
+    assert sdk.created == [{"api_key": KEY_TEXT, "timeout": 900.0, "max_retries": 0}]
+
+
+def test_answer_text_usage_cost_and_limits(llm_log: LogCapture) -> None:
+    headers: dict[str, str] = {"x-ratelimit-remaining-requests": "99", "x-ratelimit-reset-tokens": "1m30s"}
+    sdk: FakeLlmSdk = FakeLlmSdk(llm_answer('```json\n{"title": "Эфир"}\n```', headers=headers))
+    client, sleeps = make_client(sdk)
+    response: LlmResponse = client.complete(request(schema=SCHEMA))
+    assert response.structured == {"title": "Эфир"}
+    assert response.model == "gpt-5.6-sol-2026-08-01"
+    assert len(sdk.calls) == 1 and sleeps == [] and fallbacks(llm_log) == []
+    report: RequestUsage = client.run_usage.reports[0]
+    assert (report.tokens.output_tokens, report.tier, report.label) == (100, "flex", "merge")
+    assert finish_reasons(llm_log) == ["completed"]
+    # sol по flex: (800 * 4.00 + 200 * 0.40 + 100 * 20.00) / 1e6 / 2
+    assert client.run_usage.cost_usd == pytest.approx((800 * 4.00 + 200 * 0.40 + 100 * 20.00) / 1e6 / 2)
+    assert client.run_usage.requests == 1
+    messages: list[str] = llm_log.messages()
+    assert "llm_rate_limits model=gpt-5.6-sol label=merge rem_req=99 reset_tok=90s" in messages
+    assert any(line.startswith("llm_response label=merge") and "cost_usd=0.00" in line for line in messages)
+    assert all("Промт" not in line and "Эфир" not in line for line in messages)
+
+
+def test_plain_request_has_no_structured_payload() -> None:
+    client, _ = make_client(FakeLlmSdk(llm_answer('{"title": "x"}')))
+    assert client.complete(request()).structured is None
+
+
+def test_flex_busy_waits_20_40_80_and_then_goes_to_the_default_tier(llm_log: LogCapture) -> None:
+    busy: list[Exception] = [api_error(429, "Resource unavailable", code="resource_unavailable") for _ in range(4)]
+    sdk: FakeLlmSdk = FakeLlmSdk(*busy, llm_answer(service_tier="default"))
+    client, sleeps = make_client(sdk)
+    client.complete(request())
+    assert sleeps == list(FLEX_RETRY_DELAYS_SEC) == [20.0, 40.0, 80.0]
+    assert [call.get("service_tier") for call in sdk.calls] == ["flex", "flex", "flex", "flex", None]
+    assert client.run_usage.requests == 1 and [report.tier for report in client.run_usage.reports] == ["default"]
+    assert fallbacks(llm_log) == ["llm_flex_fallback_to_default"]
+    assert len(lines_of(llm_log, "llm_flex_unavailable")) == 3
+    assert "service_tier=default" in lines_of(llm_log, "llm_flex_fallback_to_default")[0]
+
+
+def test_flex_recovers_on_the_second_try_without_leaving_flex(llm_log: LogCapture) -> None:
+    sdk: FakeLlmSdk = FakeLlmSdk(api_error(429, "Resource unavailable"), llm_answer())
+    client, sleeps = make_client(sdk)
+    client.complete(request())
+    assert fallbacks(llm_log) == [] and [report.tier for report in client.run_usage.reports] == ["flex"]
+    assert sleeps == [20.0]
+    assert [call["service_tier"] for call in sdk.calls] == ["flex", "flex"]
+
+
+def test_flex_quota_is_not_waited_out() -> None:
+    client, sleeps = make_client(FakeLlmSdk(api_error(429, "You exceeded your current quota")))
+    with pytest.raises(LlmRequestError) as caught:
+        client.complete(request())
+    assert caught.value.reason is LlmErrorKind.QUOTA and sleeps == []
+
+
+def test_max_output_hit_is_retried_once_with_double_limit(llm_log: LogCapture) -> None:
+    sdk: FakeLlmSdk = FakeLlmSdk(
+        llm_answer('{"title": "обр', incomplete="max_output_tokens"), llm_answer('{"title": "целое"}')
+    )
+    client, _ = make_client(sdk, DEFAULT_TIER)
+    response: LlmResponse = client.complete(request(DEFAULT_TIER, schema=SCHEMA))
+    assert [call["max_output_tokens"] for call in sdk.calls] == [8000, 16000]
+    assert response.structured == {"title": "целое"}
+    assert fallbacks(llm_log) == ["llm_max_output_retry"]
+    assert "max_output_tokens=16000" in lines_of(llm_log, "llm_max_output_retry")[0]
+    assert finish_reasons(llm_log) == ["max_output_tokens", "completed"]
+    assert client.run_usage.requests == 2                    # оплачены оба ответа
+
+
+def test_max_output_hit_twice_is_returned_as_is(llm_log: LogCapture) -> None:
+    sdk: FakeLlmSdk = FakeLlmSdk(
+        llm_answer("часть", incomplete="max_output_tokens"), llm_answer("часть 2", incomplete="max_output_tokens")
+    )
+    client, _ = make_client(sdk, DEFAULT_TIER)
+    response: LlmResponse = client.complete(request(DEFAULT_TIER))
+    assert len(sdk.calls) == 2 and response.text == "часть 2"
+    assert fallbacks(llm_log) == ["llm_max_output_retry"]
+    assert finish_reasons(llm_log) == ["max_output_tokens", "max_output_tokens"]
+
+
+def test_empty_answer_is_an_error() -> None:
+    client, _ = make_client(FakeLlmSdk(llm_answer("   ")), DEFAULT_TIER)
+    with pytest.raises(LlmRequestError) as caught:
+        client.complete(request(DEFAULT_TIER))
+    assert caught.value.reason is LlmErrorKind.EMPTY_OUTPUT and caught.value.failure.backend == "openai"
+
+
+def test_network_failures_are_retried_by_the_policy() -> None:
+    sdk: FakeLlmSdk = FakeLlmSdk(timeout_error(), api_error(500, "boom"), api_error(429, "slow down"), llm_answer())
+    client, sleeps = make_client(sdk, DEFAULT_TIER)
+    assert client.complete(request(DEFAULT_TIER)).text == "OK"
+    policy: RetryPolicy = RetryPolicy()
+    rng: random.Random = random.Random(7)
+    assert sleeps == [policy.delay_sec(number, rng) for number in (1, 2, 3)]
+    assert len(sdk.calls) == 4 and client.run_usage.requests == 1
+
+
+def test_retries_end_with_the_last_error() -> None:
+    sdk: FakeLlmSdk = FakeLlmSdk(*[connection_error() for _ in range(5)])
+    client, sleeps = make_client(sdk, DEFAULT_TIER)
+    with pytest.raises(LlmRequestError) as caught:
+        client.complete(request(DEFAULT_TIER))
+    assert caught.value.reason is LlmErrorKind.CONNECTION
+    assert len(sdk.calls) == RetryPolicy().max_attempts == 5 and len(sleeps) == 4
+    assert isinstance(caught.value.__cause__, openai.APIConnectionError)
+
+
+def test_configuration_errors_are_not_retried() -> None:
+    sdk: FakeLlmSdk = FakeLlmSdk(api_error(404, "The model does not exist", code="model_not_found"))
+    client, sleeps = make_client(sdk)
+    with pytest.raises(LlmRequestError) as caught:
+        client.complete(request())
+    assert caught.value.reason is LlmErrorKind.MODEL_NOT_FOUND and len(sdk.calls) == 1 and sleeps == []
+
+
+def test_temperature_unsupported_is_retried_without_it(llm_log: LogCapture) -> None:
+    refusal: Exception = api_error(
+        400, "Unsupported parameter: 'temperature' is not supported with this model.", code="unsupported_parameter",
+        param="temperature",
+    )
+    sdk: FakeLlmSdk = FakeLlmSdk(refusal, llm_answer(model="o3"))
+    client, _ = make_client(sdk, DEFAULT_TIER)
+    client.complete(request(DEFAULT_TIER, model="o3"))
+    assert [("temperature" in call) for call in sdk.calls] == [True, False]
+    assert fallbacks(llm_log) == ["llm_temperature_unsupported_retry"]
+    assert "temperature=no" in lines_of(llm_log, "llm_temperature_unsupported_retry")[0]
+
+
+def test_temperature_refusal_without_temperature_is_raised() -> None:
+    refusal: Exception = api_error(400, "Unsupported parameter: 'temperature'", code="unsupported_parameter", param="temperature")
+    client, _ = make_client(FakeLlmSdk(refusal), DEFAULT_TIER)
+    with pytest.raises(LlmRequestError):
+        client.complete(request(DEFAULT_TIER))                 # gpt-5 температуру и не слал — откатывать нечего
+
+
+def test_probe_is_one_cheap_call_and_returns_the_refusal() -> None:
+    sdk: FakeLlmSdk = FakeLlmSdk(api_error(403, "no access"), llm_answer("", incomplete="max_output_tokens"))
+    client, sleeps = make_client(sdk)
+    refused: LlmResponse | LlmFailure = client.probe("gpt-5.6-sol")
+    assert isinstance(refused, LlmFailure) and refused.kind is LlmErrorKind.ACCESS_DENIED
+    passed: LlmResponse | LlmFailure = client.probe("gpt-5.4")
+    assert isinstance(passed, LlmResponse)                   # обрезанный пустой ответ — доступ всё равно есть
+    assert sdk.calls[1]["max_output_tokens"] == PROBE_MAX_OUTPUT_TOKENS
+    assert sdk.calls[1]["timeout"] == 30.0 and "service_tier" not in sdk.calls[1]
+    assert sdk.calls[1]["reasoning"] == {"effort": "medium"} and sleeps == []
+
+
+def test_probe_timeout_is_not_longer_than_the_settings() -> None:
+    short: LlmSettings = llm_settings(timeout_sec=10)
+    probe: OpenAiRequest = OpenAiRequest.probe("gpt-5.4", short)
+    assert probe.request.timeout_sec == 10.0 and probe.request.label == "model_probe"
+    assert probe.service_tier == ServiceTierRule.of("default") and probe.reasoning_effort is ReasoningEffort.MEDIUM
+
+
+def test_the_key_never_leaves_the_client(llm_log: LogCapture) -> None:
+    leak: Exception = api_error(401, f"Incorrect API key provided: {KEY_TEXT}. You can find your API key at …")
+    sdk: FakeLlmSdk = FakeLlmSdk(leak)
+    client, _ = make_client(sdk)
+    with pytest.raises(LlmRequestError) as caught:
+        client.complete(request())
+    error: LlmRequestError = caught.value
+    secret: str = KEY.reveal()
+    assert sdk.created[0]["api_key"] == secret               # дошёл до SDK — и только туда
+    assert secret not in str(error) and secret not in repr(error)
+    assert secret not in error.failure.detail and KEY.log_label in error.failure.detail
+    assert secret not in error.log_line
+    assert secret not in repr(client) and secret not in repr(request())
+    assert all(secret not in line for line in llm_log.messages())
+    own_frames: str = "".join(traceback.format_exception_only(type(error), error))
+    assert secret not in own_frames

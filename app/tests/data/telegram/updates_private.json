@@ -1,0 +1,26 @@
+{
+  "ok": true,
+  "result": [
+    {
+      "update_id": 1,
+      "message": {
+        "message_id": 10,
+        "from": {
+          "id": 111000111,
+          "is_bot": false,
+          "first_name": "Test",
+          "username": "test_user"
+        },
+        "chat": {
+          "id": 111000111,
+          "first_name": "Test",
+          "last_name": "User",
+          "username": "test_user",
+          "type": "private"
+        },
+        "date": 1790000000,
+        "text": "/start"
+      }
+    }
+  ]
+}

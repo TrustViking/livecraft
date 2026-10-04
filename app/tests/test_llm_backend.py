@@ -1,0 +1,126 @@
+"""Разъём нейросети: общие объекты не знают про OpenAI, выбор модели работает с любой реализацией разъёма."""
+from __future__ import annotations
+
+import dataclasses
+from dataclasses import dataclass, field
+
+import pytest
+
+from app.llm.backend import (
+    DEFAULT_TEMPERATURE,
+    PROBE_LABEL,
+    PROBE_MAX_OUTPUT_TOKENS,
+    LlmBackend,
+    LlmRequest,
+    LlmResponse,
+)
+from app.llm.errors import LlmErrorKind, LlmFailure
+from app.llm.selection import ChoiceReason, ModelChoice
+from app.llm.usage import RequestUsage, RunUsage, TokenCounts
+from app.tests.conftest import LLM_SETTINGS, REPO_ROOT
+from app.tools.code_standard.source import SourceKey, SourceTree
+
+FAKE_BACKEND: str = "fake"
+NEUTRAL_MODULES: tuple[str, ...] = ("backend.py", "selection.py", "usage.py")
+BACKEND_WORDS: tuple[str, ...] = ("openai", "flex", "service_tier", "reasoning")
+
+
+@dataclass
+class FakeBackend:
+    """Реализация разъёма без OpenAI: на пробу каждой модели — заранее заданный отказ или ответ."""
+
+    refusals: dict[str, LlmErrorKind] = field(default_factory=dict)
+    run_usage: RunUsage = field(default_factory=RunUsage)
+    probed: list[str] = field(default_factory=list)
+    completed: list[LlmRequest] = field(default_factory=list)
+
+    @property
+    def name(self) -> str:
+        return FAKE_BACKEND
+
+    def complete(self, request: LlmRequest) -> LlmResponse:
+        self.completed.append(request)
+        return self._answer(request.model_name, request.label)
+
+    def probe(self, model_name: str) -> LlmResponse | LlmFailure:
+        self.probed.append(model_name)
+        kind: LlmErrorKind | None = self.refusals.get(model_name)
+        if kind is not None:
+            return LlmFailure(kind, FAKE_BACKEND)
+        return self._answer(model_name, PROBE_LABEL)
+
+    def _answer(self, model_name: str, label: str) -> LlmResponse:
+        tokens: TokenCounts = TokenCounts(input_tokens=3, output_tokens=1, total_tokens=4)
+        usage: RequestUsage = RequestUsage(tokens, response_id="r", model=model_name, tier="", label=label, cost_usd=0.0)
+        self.run_usage.add(usage)
+        return LlmResponse(text="OK", structured=None, model=model_name)
+
+
+def test_the_fake_is_an_llm_backend() -> None:
+    assert isinstance(FakeBackend(), LlmBackend)
+
+
+def test_the_primary_that_answers_is_chosen() -> None:
+    backend: FakeBackend = FakeBackend()
+    choice: ModelChoice = ModelChoice.select(backend, " model-main ", "model-spare")
+    assert choice.chosen == "model-main" and choice.reason is ChoiceReason.PRIMARY_CONFIRMED
+    assert choice.models.fallback == "model-spare" and backend.probed == ["model-main"]
+
+
+def test_access_denial_goes_to_the_fallback() -> None:
+    backend: FakeBackend = FakeBackend(refusals={"model-main": LlmErrorKind.ACCESS_DENIED})
+    choice: ModelChoice = ModelChoice.select(backend, "model-main", "model-spare")
+    assert choice.chosen == "model-spare" and choice.reason is ChoiceReason.FALLBACK_CONFIRMED
+    assert choice.failure is not None and choice.failure.backend == FAKE_BACKEND
+    assert backend.probed == ["model-main", "model-spare"]
+
+
+def test_another_failure_keeps_the_primary_unchecked() -> None:
+    for kind in (LlmErrorKind.TIMEOUT, LlmErrorKind.RATE_LIMIT, LlmErrorKind.SERVER):
+        backend: FakeBackend = FakeBackend(refusals={"model-main": kind})
+        choice: ModelChoice = ModelChoice.select(backend, "model-main", "model-spare")
+        assert choice.chosen == "model-main" and choice.reason is ChoiceReason.PRIMARY_UNCHECKED
+        assert backend.probed == ["model-main"]
+
+
+def test_a_configuration_failure_leaves_no_model() -> None:
+    backend: FakeBackend = FakeBackend(refusals={"model-main": LlmErrorKind.AUTH})
+    choice: ModelChoice = ModelChoice.select(backend, "model-main", "model-spare")
+    assert choice.chosen is None and choice.reason is ChoiceReason.REFUSED and not choice.is_usable
+
+
+def test_the_same_fallback_in_another_case_is_no_fallback() -> None:
+    backend: FakeBackend = FakeBackend(refusals={"Model-Main": LlmErrorKind.MODEL_NOT_FOUND})
+    choice: ModelChoice = ModelChoice.select(backend, "Model-Main", " model-main ")
+    assert choice.models.fallback is None and choice.chosen is None and backend.probed == ["Model-Main"]
+
+
+def test_the_request_has_no_fields_of_a_particular_backend() -> None:
+    names: set[str] = {item.name for item in dataclasses.fields(LlmRequest)}
+    assert names == {"prompt", "model_name", "max_output_tokens", "label", "timeout_sec", "schema", "temperature"}
+    assert not any(word in name for name in names for word in BACKEND_WORDS)
+
+
+def test_the_request_from_settings_and_the_probe() -> None:
+    request: LlmRequest = LlmRequest.from_settings(LLM_SETTINGS, "model-a", "промт", "merge")
+    assert (request.max_output_tokens, request.timeout_sec, request.temperature) == (8000, 900.0, DEFAULT_TEMPERATURE)
+    assert "промт" not in repr(request) and not request.is_structured
+    structured: LlmRequest = request.with_schema({"name": "answer", "schema": {}})
+    assert structured.is_structured and structured.prompt == request.prompt and "answer" not in repr(structured)
+    probe: LlmRequest = LlmRequest.probe("model-a", 10)
+    assert (probe.max_output_tokens, probe.timeout_sec, probe.label) == (PROBE_MAX_OUTPUT_TOKENS, 10.0, PROBE_LABEL)
+    assert probe.prompt == "Reply with OK."
+    assert LlmRequest.probe("model-a", 900).timeout_sec == 30.0
+
+
+def test_the_response_carries_text_json_and_model_and_hides_the_text() -> None:
+    assert {item.name for item in dataclasses.fields(LlmResponse)} == {"text", "structured", "model"}
+    response: LlmResponse = LlmResponse(text="секретный ответ", structured={"title": "секретный"}, model="m")
+    assert "секретный" not in repr(response) and "m" in repr(response)
+
+
+@pytest.mark.parametrize("module", NEUTRAL_MODULES)
+def test_neutral_modules_name_no_backend(module: str) -> None:
+    text: str = SourceTree.from_root(REPO_ROOT).by_key[SourceKey.of(f"app/llm/{module}").text].text.lower()
+    assert not [word for word in BACKEND_WORDS if word in text]
+    assert "app.llm.backends" not in text

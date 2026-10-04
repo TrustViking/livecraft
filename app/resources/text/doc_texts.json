@@ -1,0 +1,37 @@
+{
+  "name": "{date}_Ежедневные стримы - Everyday streams_{created}",
+  "header": [
+    {"text": "Ежедневные стримы / Everyday streams", "bold": true},
+    {"text": "{time_cet} CET/CEST ({time_local} Kiev, {time_gmt} GMT)", "bold": false},
+    {"text": "", "bold": false},
+    {"text": "❇️ Эфир {date}  Скинуть ключи до {keys_local} по Киеву", "bold": true},
+    {"text": "Drop the keys off before {keys_gmt} GMT", "bold": false},
+    {"text": "", "bold": false},
+    {"text": "❇️ Форма для ключей /  Form for keys", "bold": true},
+    {"text": "{form_url}", "bold": false},
+    {"text": "", "bold": false}
+  ],
+  "contacts": [
+    {"text": "При технических проблемах / In case of technical problems", "bold": true},
+    {"text": "Contact: {contacts}", "bold": false},
+    {"text": "", "bold": false}
+  ],
+  "slots": [
+    {"text": "❇️ Опис / Description / Описание", "bold": true},
+    {"text": "", "bold": false}
+  ],
+  "slot": [
+    {"text": "{heading}", "bold": true},
+    {"text": "{title}", "bold": false}
+  ],
+  "slot_gap": [
+    {"text": "", "bold": false}
+  ],
+  "heading": "{language} - {time}",
+  "labels": {
+    "uk": {"title": "НАЗВА", "description": "ОПИС", "preview": "ПРЕВ'Ю"},
+    "en": {"title": "TITLE", "description": "DESCRIPTION", "preview": "PREVIEW"},
+    "ru": {"title": "НАЗВАНИЕ", "description": "ОПИСАНИЕ", "preview": "ПРЕВЬЮ"}
+  },
+  "labels_fallback": "en"
+}

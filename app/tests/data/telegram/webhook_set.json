@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "result": {
+    "url": "https://hooks.example.org/telegram",
+    "has_custom_certificate": false,
+    "pending_update_count": 3,
+    "max_connections": 40
+  }
+}
