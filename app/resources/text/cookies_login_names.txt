@@ -1,0 +1,4 @@
+# Имена cookies входа в аккаунт YouTube (домен youtube.com): по ним yt-dlp решает, вошёл ли он. По одному на строку.
+SAPISID
+__Secure-1PAPISID
+__Secure-3PAPISID

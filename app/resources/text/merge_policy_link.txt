@@ -1,0 +1,5 @@
+# restreamer 35324e5, app/llm/merges/merge_prompt.py::build_llm_merge_prompt_text: link_policy_block, без правки строк
+SYSTEM LINK POLICY
+Do not include any URLs in the output.
+Do not add a recommended materials block or an official links block.
+Link blocks will be assembled later by the system.

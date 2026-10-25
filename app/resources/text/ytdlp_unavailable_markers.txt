@@ -1,0 +1,3 @@
+# Подстроки stderr yt-dlp, по которым отказ называется «видео удалено или заблокировано»: по одной на строку.
+Video unavailable
+removed by the uploader

@@ -1,0 +1,3 @@
+# Подстроки stderr yt-dlp, по которым отказ называется «нужно подтвердить возраст» (видео 18+): по одной на строку.
+Sign in to confirm your age
+age-restricted

@@ -1,0 +1,22 @@
+{
+  "source": "снимок страницы цен OpenAI (developers.openai.com/api/docs/pricing), сентябрь 2026: доллары за миллион токенов, тариф Standard, короткий контекст; страница поменялась — правится здесь и только здесь",
+  "prices": {
+    "gpt-5.2": {"input_usd": 1.75, "cached_input_usd": 0.175, "cache_write_usd": 1.75, "output_usd": 14.00},
+    "gpt-5.4": {"input_usd": 2.50, "cached_input_usd": 0.25, "cache_write_usd": 2.50, "output_usd": 15.00},
+    "gpt-5.5": {"input_usd": 5.00, "cached_input_usd": 0.50, "cache_write_usd": 5.00, "output_usd": 30.00},
+    "gpt-5.6-sol": {"input_usd": 4.00, "cached_input_usd": 0.40, "cache_write_usd": 5.00, "output_usd": 20.00},
+    "gpt-5.6-terra": {"input_usd": 2.00, "cached_input_usd": 0.20, "cache_write_usd": 2.50, "output_usd": 12.00},
+    "gpt-5.6-luna": {"input_usd": 0.20, "cached_input_usd": 0.02, "cache_write_usd": 0.25, "output_usd": 1.20},
+    "gpt-6-astra": {"input_usd": 10.00, "cached_input_usd": 1.00, "cache_write_usd": 12.50, "output_usd": 50.00}
+  },
+  "aliases": {
+    "gpt-5.6": "gpt-5.6-sol"
+  },
+  "tier_multipliers": {
+    "default": 1.0,
+    "auto": 1.0,
+    "flex": 0.5,
+    "priority": 2.0,
+    "fast": 2.0
+  }
+}

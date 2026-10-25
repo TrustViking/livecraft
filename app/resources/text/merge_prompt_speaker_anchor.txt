@@ -1,0 +1,2 @@
+# restreamer 35324e5, app/llm/merges/merge_prompt.py::_build_speaker_anchor_line, без правки строк; f-строка донора — подстановки {source_count}, {min_names}, {names_joined}
+For {source_count} sources surface at least {min_names} distinct named speakers or participants from the list below, covering as many sources as possible. Do not drop any speaker from this list without clear overlap reason. Known names from sources: {names_joined}.

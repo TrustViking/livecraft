@@ -1,0 +1,36 @@
+{
+  "source": "перенесено из restreamer quality_service_lines.py: _UKRAINIAN_HINTS, _RUSSIAN_HINTS, _ENGLISH_HINTS, _UKRAINIAN_WORD_HINTS, _RUSSIAN_WORD_HINTS",
+  "uk_phrases": [
+    "у цьому стрімі",
+    "офіційні ресурси",
+    "дивіться ефір",
+    "діліться думками"
+  ],
+  "ru_phrases": [
+    "в этом стриме",
+    "официальные ссылки",
+    "смотрите эфир",
+    "делитесь мнением"
+  ],
+  "en_phrases": [
+    "in this stream",
+    "official links",
+    "watch the stream",
+    "share your thoughts"
+  ],
+  "uk_words": [
+    " це ",
+    " про ",
+    " у ",
+    " та ",
+    " ефір",
+    " стрімі"
+  ],
+  "ru_words": [
+    " это ",
+    " про ",
+    " эфир",
+    " стриме",
+    " этом "
+  ]
+}

@@ -1,0 +1,4 @@
+# Блок источника в промте merge: номер источника, его название и подготовленное описание
+SOURCE {index}
+TITLE: {title}
+DESCRIPTION: {description}

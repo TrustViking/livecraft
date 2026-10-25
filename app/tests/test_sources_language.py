@@ -1,0 +1,334 @@
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterator
+from unittest.mock import patch
+
+import pytest
+
+from app.observability.log_event import LogArea
+from app.sources.language import (
+    LanguageDecision,
+    LanguageProfile,
+    LanguageResolver,
+    LanguageSignal,
+    LanguageSource,
+    LanguageVoting,
+)
+from app.sources.metadata import SourceMetadata
+from app.texts.language_detector import TextLanguageDetector
+from app.tests.fixtures.logs import LogCapture
+
+LINK: str = "https://youtu.be/aaaaaaaaaaa"
+UKRAINIAN: str = "Сьогодні ввечері говоримо про новини економіки та політики України"
+RUSSIAN: str = "Сегодня вечером говорим о новостях экономики и политики в нашей стране"
+ENGLISH: str = "Tonight we talk about the latest news on the economy and politics"
+DETECT_TARGET: str = "app.texts.language_detector.detect"
+
+
+@pytest.fixture(scope="module")
+def detector() -> TextLanguageDetector:
+    return TextLanguageDetector.from_resources()
+
+
+@pytest.fixture(scope="module")
+def resolver() -> LanguageResolver:
+    return LanguageResolver.from_resources()
+
+
+def metadata(
+    *,
+    title: str = "",
+    description: str = "",
+    youtube_language: str | None = None,
+    channel_language: str | None = None,
+    audio_languages: tuple[str, ...] = (),
+    subtitle_languages: tuple[str, ...] = (),
+    auto_caption_languages: tuple[str, ...] = (),
+) -> SourceMetadata:
+    return SourceMetadata(
+        url=LINK,
+        video_id="aaaaaaaaaaa",
+        title=title,
+        description=description,
+        thumbnail_url="https://i.ytimg.com/vi/aaaaaaaaaaa/hqdefault.jpg",
+        youtube_language=youtube_language,
+        channel_language=channel_language,
+        duration_seconds=None,
+        audio_languages=audio_languages,
+        subtitle_languages=subtitle_languages,
+        auto_caption_languages=auto_caption_languages,
+    )
+
+
+@pytest.fixture
+def log() -> Iterator[LogCapture]:
+    with LogCapture.on(LogArea.SOURCES, logging.DEBUG) as capture:
+        yield capture
+
+
+# --- LanguageProfile.of
+
+
+def test_profile_normalizes_and_deduplicates_in_order(detector: TextLanguageDetector) -> None:
+    source: SourceMetadata = metadata(
+        youtube_language="fr-FR",
+        channel_language="en-US",
+        audio_languages=("fr", "fr-FR", "", "en", "fr"),
+        subtitle_languages=("de-DE", "", "de"),
+        auto_caption_languages=("en", "", "fr-FR"),
+    )
+    profile: LanguageProfile = LanguageProfile.of(source, detector)
+    assert profile.video_language == "fr"
+    assert profile.channel_language == "en"
+    assert profile.audio_languages == ("fr", "en")
+    assert profile.subtitle_languages == ("de",)
+    assert profile.auto_caption_languages == ("en", "fr")
+    assert profile.metadata_candidates == ("fr", "en")
+
+
+def test_empty_metadata_gives_an_empty_profile(detector: TextLanguageDetector) -> None:
+    profile: LanguageProfile = LanguageProfile.of(metadata(), detector)
+    assert profile == LanguageProfile(video_language=None, channel_language=None)
+
+
+def test_original_caption_key_is_the_audio_language(detector: TextLanguageDetector) -> None:
+    source: SourceMetadata = metadata(auto_caption_languages=("ab", "aa", "uk-orig", "uk", "uk", "en"))
+    profile: LanguageProfile = LanguageProfile.of(source, detector)
+    assert profile.auto_caption_orig_language == "uk"
+    assert profile.auto_caption_languages == ("ab", "aa", "uk", "en")
+
+
+@pytest.mark.parametrize("keys", [(), ("ab", "en", "fr", "de")])
+def test_no_original_caption_key_is_none(detector: TextLanguageDetector, keys: tuple[str, ...]) -> None:
+    assert LanguageProfile.of(metadata(auto_caption_languages=keys), detector).auto_caption_orig_language is None
+
+
+def test_title_description_and_both_are_detected_separately(detector: TextLanguageDetector) -> None:
+    profile: LanguageProfile = LanguageProfile.of(metadata(title=ENGLISH, description=UKRAINIAN), detector)
+    assert profile.title_language == "en"
+    assert profile.description_language == "uk"
+    assert profile.text_language in {"uk", "en"}
+
+
+def test_detector_gets_title_description_and_joined_text(detector: TextLanguageDetector) -> None:
+    seen: list[str] = []
+
+    def fake_detect(text: str) -> str:
+        seen.append(text)
+        return "de"
+
+    with patch(DETECT_TARGET, side_effect=fake_detect):
+        profile: LanguageProfile = LanguageProfile.of(metadata(title=ENGLISH, description=RUSSIAN), detector)
+    assert seen == [ENGLISH, RUSSIAN, f"{ENGLISH}\n{RUSSIAN}"]
+    assert (profile.title_language, profile.description_language, profile.text_language) == ("de", "de", "de")
+
+
+# --- LanguageVoting.decide: каждая ветка правила
+
+
+def profile(**fields: object) -> LanguageProfile:
+    base: dict[str, object] = {"video_language": None, "channel_language": None}
+    return LanguageProfile(**(base | fields))   # type: ignore[arg-type]
+
+
+def decide(**fields: object) -> LanguageDecision:
+    return LanguageVoting(profile(**fields)).decide()
+
+
+def test_votes_are_the_five_signals_in_order() -> None:
+    subject: LanguageVoting = LanguageVoting(profile(
+        video_language="uk", audio_languages=("ru", "en"), auto_caption_orig_language="uk",
+        description_language="en", text_language="ru", title_language="de", subtitle_languages=("fr",),
+    ))
+    assert subject.votes == {
+        LanguageSignal.VIDEO_LANGUAGE: "uk",
+        LanguageSignal.AUDIO_FIRST: "ru",
+        LanguageSignal.AUTO_CAPTION_ORIG: "uk",
+        LanguageSignal.DESCRIPTION_LANGUAGE: "en",
+        LanguageSignal.LANGDETECT_TEXT: "ru",
+    }
+    assert list(subject.arbiter_votes) == [
+        LanguageSignal.AUDIO_FIRST, LanguageSignal.AUTO_CAPTION_ORIG, LanguageSignal.DESCRIPTION_LANGUAGE
+    ]
+
+
+def test_consensus_of_three_signals() -> None:
+    decision: LanguageDecision = decide(
+        video_language="fr", audio_languages=("fr",), auto_caption_orig_language="fr", text_language="en"
+    )
+    assert (decision.language, decision.source, decision.is_conflict) == ("fr", LanguageSource.CONSENSUS, False)
+
+
+def test_consensus_can_outvote_the_video_language() -> None:
+    decision: LanguageDecision = decide(
+        video_language="de", audio_languages=("en",), auto_caption_orig_language="en", text_language="en"
+    )
+    assert (decision.language, decision.source) == ("en", LanguageSource.CONSENSUS)
+
+
+def test_three_votes_without_three_alike_are_not_a_consensus() -> None:
+    decision: LanguageDecision = decide(video_language="uk", audio_languages=("uk",), text_language="ru")
+    assert decision.source is not LanguageSource.CONSENSUS
+
+
+def test_langdetect_agrees_with_the_video_language() -> None:
+    decision: LanguageDecision = decide(video_language="en", channel_language="en", text_language="en")
+    assert (decision.language, decision.source, decision.is_conflict) == (
+        "en", LanguageSource.LANGDETECT_METADATA_AGREEMENT, False
+    )
+
+
+def test_arbiters_side_with_the_video_language() -> None:
+    decision: LanguageDecision = decide(video_language="de", audio_languages=("de",), text_language="en")
+    assert (decision.language, decision.source, decision.is_conflict) == (
+        "de", LanguageSource.METADATA_ARBITRATION, True
+    )
+
+
+def test_arbiters_side_with_langdetect() -> None:
+    decision: LanguageDecision = decide(
+        video_language="de", auto_caption_orig_language="en", text_language="en"
+    )
+    assert (decision.language, decision.source, decision.is_conflict) == (
+        "en", LanguageSource.LANGDETECT_ARBITRATION, True
+    )
+
+
+def test_tie_of_arbiters_falls_back_to_the_video_language() -> None:
+    decision: LanguageDecision = decide(
+        video_language="uk", audio_languages=("uk",), description_language="ru", text_language="ru"
+    )
+    assert (decision.language, decision.source, decision.is_conflict) == (
+        "uk", LanguageSource.METADATA_ARBITRATION_FALLBACK, True
+    )
+
+
+def test_arbiters_for_a_third_language_are_a_tie() -> None:
+    decision: LanguageDecision = decide(video_language="uk", audio_languages=("en",), text_language="ru")
+    assert (decision.language, decision.source) == ("uk", LanguageSource.METADATA_ARBITRATION_FALLBACK)
+
+
+def test_no_arbiters_falls_back_to_the_video_language() -> None:
+    decision: LanguageDecision = decide(video_language="en", text_language="uk")
+    assert (decision.language, decision.source, decision.is_conflict) == (
+        "en", LanguageSource.METADATA_ARBITRATION_FALLBACK, True
+    )
+
+
+def test_only_langdetect() -> None:
+    decision: LanguageDecision = decide(channel_language="ru", text_language="de")
+    assert (decision.language, decision.source, decision.is_conflict) == ("de", LanguageSource.LANGDETECT, False)
+
+
+def test_only_the_video_language() -> None:
+    decision: LanguageDecision = decide(video_language="ru", description_language="en")
+    assert (decision.language, decision.source, decision.is_conflict) == (
+        "ru", LanguageSource.METADATA_FALLBACK, False
+    )
+
+
+def test_channel_language_alone_does_not_decide() -> None:
+    decision: LanguageDecision = decide(channel_language="uk", title_language="uk", subtitle_languages=("uk",))
+    assert (decision.language, decision.source, decision.is_resolved) == (None, LanguageSource.UNDETECTED, False)
+
+
+def test_nothing_is_undetected() -> None:
+    decision: LanguageDecision = decide()
+    assert decision.language is None
+    assert decision.source is LanguageSource.UNDETECTED
+    assert not decision.is_conflict and not decision.is_resolved
+
+
+def test_source_values_are_the_log_values() -> None:
+    assert {source.value for source in LanguageSource} == {
+        "langdetect", "langdetect_metadata_agreement", "metadata_fallback", "undetected",
+        "consensus", "metadata_arbitration", "langdetect_arbitration", "metadata_arbitration_fallback",
+    }
+
+
+# --- боевые случаи через весь путь с подменённым langdetect
+
+
+def resolve_with(resolver: LanguageResolver, detected: str, source: SourceMetadata) -> LanguageDecision:
+    with patch(DETECT_TARGET, return_value=detected):
+        return resolver.resolve(source)
+
+
+def test_german_video_with_english_text_stays_german(resolver: LanguageResolver) -> None:
+    source: SourceMetadata = metadata(
+        title="Learn German with this easy lesson for beginners",
+        description="In this video we practice everyday German conversations.",
+        youtube_language="de",
+        audio_languages=("de",),
+        subtitle_languages=("en", "de"),
+        auto_caption_languages=("ab", "aa", "de-orig", "de", "en"),
+    )
+    decision: LanguageDecision = resolve_with(resolver, "en", source)
+    # видео, звук и «de-orig» — три голоса за de: консенсус; первые субтитры (en) не голосуют
+    assert (decision.language, decision.source, decision.is_conflict) == ("de", LanguageSource.CONSENSUS, False)
+
+
+def test_conflict_without_arbiters_returns_metadata(resolver: LanguageResolver) -> None:
+    source: SourceMetadata = metadata(title="English evidence review", youtube_language="ru", channel_language="ru")
+    decision: LanguageDecision = resolve_with(resolver, "en", source)
+    assert (decision.language, decision.source) == ("ru", LanguageSource.METADATA_ARBITRATION_FALLBACK)
+
+
+def test_dynamic_language_from_langdetect(resolver: LanguageResolver) -> None:
+    source: SourceMetadata = metadata(
+        title="Deutscher Titel", description="Deutscher Beschreibungstext fuer die Sendung"
+    )
+    decision: LanguageDecision = resolve_with(resolver, "de", source)
+    assert (decision.language, decision.source) == ("de", LanguageSource.LANGDETECT)
+
+
+def test_metadata_fallback_with_empty_texts(resolver: LanguageResolver) -> None:
+    decision: LanguageDecision = resolver.resolve(metadata(youtube_language="uk"))
+    assert (decision.language, decision.source) == ("uk", LanguageSource.METADATA_FALLBACK)
+
+
+def test_russian_text_with_a_ukrainian_word_is_russian(resolver: LanguageResolver) -> None:
+    source: SourceMetadata = metadata(
+        title="Обсуждение новостей",
+        description=(
+            "Сегодня обсуждаем экономику, политику и ситуацию вокруг слова Україна "
+            "в контексте русскоязычного обсуждения в одном выпуске."
+        ),
+    )
+    assert resolver.resolve(source).language == "ru"
+
+
+# --- LanguageDecision и LanguageResolver: лог
+
+
+def test_the_decision_line_names_the_signals_it_stands_on() -> None:
+    decision: LanguageDecision = decide(
+        video_language="uk", channel_language="ru", audio_languages=("uk", "en"), title_language="uk",
+        text_language="ru",
+    )
+    assert decision.event(LINK).text == (
+        f"language_decision url={LINK} "
+        "final_language=uk source=metadata_arbitration conflict=yes metadata_candidates=uk,ru "
+        "langdetect=ru description_lang=- title_lang=uk audio_lang=uk auto_caption_orig=-"
+    )
+
+
+def test_undetected_line_says_unknown_and_writes_empty_as_dash() -> None:
+    assert decide().event(LINK).text == (
+        f"language_decision url={LINK} final_language=unknown source=undetected conflict=no metadata_candidates=- "
+        "langdetect=- description_lang=- title_lang=- audio_lang=- auto_caption_orig=-"
+    )
+
+
+def test_resolver_logs_info_for_a_decision(resolver: LanguageResolver, log: LogCapture) -> None:
+    decision: LanguageDecision = resolver.resolve(metadata(title=UKRAINIAN, youtube_language="uk"))
+    assert decision.language == "uk"
+    assert decision.event(LINK).text in log.messages(logging.INFO)
+    assert not log.messages(logging.WARNING)
+
+
+def test_resolver_warns_when_undetected(resolver: LanguageResolver, log: LogCapture) -> None:
+    decision: LanguageDecision = resolver.resolve(metadata(title="Коротко"))
+    assert not decision.is_resolved
+    assert decision.event(LINK).text in log.messages(logging.WARNING)

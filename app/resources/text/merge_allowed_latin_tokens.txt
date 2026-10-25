@@ -1,0 +1,10 @@
+# перенесено из restreamer quality_diagnostics.py::_ALLOWED_LATIN_SCRIPT_TOKENS
+ai
+api
+docs
+gpt
+google
+nasa
+openai
+telegram
+youtube

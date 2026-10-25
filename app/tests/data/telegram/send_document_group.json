@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "result": {
+    "message_id": 7,
+    "chat": {
+      "id": -4000000001,
+      "title": "Livecraft group",
+      "type": "group"
+    },
+    "date": 1790000012,
+    "document": {
+      "file_name": "plan_test.bcast",
+      "mime_type": "application/zip",
+      "file_id": "BQAC",
+      "file_unique_id": "AgAD",
+      "file_size": 3
+    },
+    "caption": "plan"
+  }
+}

@@ -1,0 +1,7 @@
+# restreamer 35324e5, app/llm/merges/merge_prompt.py::build_llm_merge_prompt_text: cross_domain_sentence_policy_block, без правки строк
+CROSS-DOMAIN SENTENCE POLICY
+If the sources touch different semantic domains, do not compress them into one sentence.
+Especially do not merge medicine or biology or neurobiology, climate or weather or ecology, disasters or geophysics or natural hazards, psychology or thinking or behavior, and social or moral or civilizational conclusions into one sentence.
+These topics may stay in one final description, but present them as separate lines of discussion in separate sentences.
+Do not build one long cause-and-effect chain across all of those domains in a single sentence.
+Several calm sentences are better than one overloaded super-sentence.
